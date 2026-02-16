@@ -4,6 +4,7 @@
   "private": true,
   "description": "DDNet web login + invite API for Cloudflare Pages Functions",
   "scripts": {
+    "build": "echo \"No build step needed for Pages Functions\"",
     "dev": "wrangler pages dev public",
     "deploy": "wrangler pages deploy public",
     "d1:migrate": "wrangler d1 migrations apply ddnet_req_login",
