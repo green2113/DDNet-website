@@ -1,0 +1,9 @@
+name = "ddnet-req-login"
+compatibility_date = "2025-01-01"
+pages_build_output_dir = "public"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "ddnet_req_login"
+database_id = "REPLACE_WITH_REAL_D1_DATABASE_ID"
+preview_database_id = "REPLACE_WITH_REAL_D1_DATABASE_ID"

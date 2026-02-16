@@ -1,0 +1,158 @@
+:root {
+  --bg: #0f172a;
+  --panel: #111827;
+  --panel-2: #1f2937;
+  --text: #e5e7eb;
+  --muted: #93a4b5;
+  --ok: #16a34a;
+  --error: #dc2626;
+  --info: #2563eb;
+  --border: #243244;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  color: var(--text);
+  background:
+    radial-gradient(circle at 15% 20%, #1e293b 0%, transparent 30%),
+    radial-gradient(circle at 85% 10%, #172554 0%, transparent 35%),
+    linear-gradient(120deg, #020617 0%, #0f172a 50%, #020617 100%);
+  font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+  min-height: 100vh;
+}
+
+.container {
+  width: min(1100px, 92vw);
+  margin: 0 auto;
+  padding: 2rem 0 3rem;
+}
+
+.hero h1 {
+  margin: 0;
+  font-size: clamp(1.6rem, 2.7vw, 2.4rem);
+}
+
+.hero p {
+  margin-top: 0.6rem;
+  color: var(--muted);
+}
+
+.card-grid {
+  margin-top: 1.2rem;
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+}
+
+.card {
+  background: linear-gradient(180deg, rgba(31, 41, 55, 0.94), rgba(17, 24, 39, 0.96));
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 1rem;
+}
+
+.card h2 {
+  margin-top: 0;
+}
+
+.form {
+  display: grid;
+  gap: 0.7rem;
+}
+
+label {
+  display: grid;
+  gap: 0.35rem;
+  font-size: 0.92rem;
+  color: var(--muted);
+}
+
+input,
+button {
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  padding: 0.62rem 0.72rem;
+  font-size: 0.95rem;
+}
+
+input {
+  background: #0b1220;
+  color: var(--text);
+}
+
+button {
+  background: linear-gradient(120deg, #1d4ed8, #2563eb);
+  color: #eff6ff;
+  border: none;
+  cursor: pointer;
+  font-weight: 600;
+}
+
+button.ghost {
+  background: transparent;
+  border: 1px solid #4b5563;
+}
+
+.muted {
+  color: var(--muted);
+}
+
+.result {
+  margin-top: 1rem;
+  padding: 0.8rem 1rem;
+  border-radius: 10px;
+  border: 1px solid transparent;
+}
+
+.result.ok {
+  border-color: #14532d;
+  background: rgba(22, 163, 74, 0.17);
+}
+
+.result.error {
+  border-color: #7f1d1d;
+  background: rgba(220, 38, 38, 0.17);
+}
+
+.result.info {
+  border-color: #1e3a8a;
+  background: rgba(37, 99, 235, 0.2);
+}
+
+.hidden {
+  display: none;
+}
+
+.info {
+  display: grid;
+  grid-template-columns: 160px 1fr;
+  gap: 0.5rem 0.75rem;
+  margin: 0;
+}
+
+.info dt {
+  color: var(--muted);
+}
+
+.info dd {
+  margin: 0;
+}
+
+.mono {
+  font-family: "IBM Plex Mono", "Cascadia Code", monospace;
+  background: rgba(2, 6, 23, 0.55);
+  border: 1px dashed #334155;
+  border-radius: 10px;
+  padding: 0.7rem;
+  overflow-x: auto;
+}
+
+@media (max-width: 700px) {
+  .info {
+    grid-template-columns: 1fr;
+  }
+}
