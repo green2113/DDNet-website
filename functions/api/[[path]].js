@@ -42,6 +42,16 @@ function vpnProxyBlockedResponse(action) {
   }, 403);
 }
 
+async function hasGameCodePlainColumn(env) {
+  const row = await env.DB.prepare(`
+    SELECT 1 AS ok
+    FROM pragma_table_info('users')
+    WHERE name = 'game_login_code_plain'
+    LIMIT 1
+  `).first();
+  return !!row;
+}
+
 async function publicUserById(env, userId) {
   return env.DB.prepare(`
     SELECT
@@ -184,6 +194,7 @@ async function handleRegister(context) {
   const passwordHash = await hashPassword(password);
   const signupIp = getClientIp(request);
   const inviteQuota = Number(env.INVITE_DEFAULT_QUOTA || 1);
+  const supportsPlainGameCode = await hasGameCodePlainColumn(env);
 
   let userId = 0;
   let gameCode = '';
@@ -208,36 +219,69 @@ async function handleRegister(context) {
       }
 
       const now = nowIso();
-      const inserted = await env.DB.prepare(`
-        INSERT INTO users (
+      const inserted = supportsPlainGameCode
+        ? await env.DB.prepare(`
+          INSERT INTO users (
+            username,
+            username_lower,
+            email,
+            email_lower,
+            password_hash,
+            invite_code,
+            invite_quota,
+            invite_used,
+            inviter_id,
+            country_signup,
+            game_login_code_hash,
+            game_login_code_plain,
+            game_login_code_rotated_at,
+            created_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)
+        `).bind(
           username,
-          username_lower,
+          lower(username),
           email,
-          email_lower,
-          password_hash,
-          invite_code,
-          invite_quota,
-          invite_used,
-          inviter_id,
-          country_signup,
-          game_login_code_hash,
-          game_login_code_rotated_at,
-          created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)
-      `).bind(
-        username,
-        lower(username),
-        email,
-        email,
-        passwordHash,
-        inviteCode,
-        inviteQuota,
-        inviter ? inviter.id : null,
-        country,
-        gameData.hash,
-        now,
-        now,
-      ).run();
+          email,
+          passwordHash,
+          inviteCode,
+          inviteQuota,
+          inviter ? inviter.id : null,
+          country,
+          gameData.hash,
+          gameData.code,
+          now,
+          now,
+        ).run()
+        : await env.DB.prepare(`
+          INSERT INTO users (
+            username,
+            username_lower,
+            email,
+            email_lower,
+            password_hash,
+            invite_code,
+            invite_quota,
+            invite_used,
+            inviter_id,
+            country_signup,
+            game_login_code_hash,
+            game_login_code_rotated_at,
+            created_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)
+        `).bind(
+          username,
+          lower(username),
+          email,
+          email,
+          passwordHash,
+          inviteCode,
+          inviteQuota,
+          inviter ? inviter.id : null,
+          country,
+          gameData.hash,
+          now,
+          now,
+        ).run();
 
       if((inserted.meta?.changes || 0) !== 1) {
         throw new Error('Insert failed');
@@ -380,16 +424,23 @@ async function handleRotateGameCode(context) {
   }
 
   const userId = result.user.id;
+  const supportsPlainGameCode = await hasGameCodePlainColumn(env);
 
   for(let attempt = 0; attempt < 5; attempt += 1) {
     const gameData = await allocateGameCode(env);
 
     try {
-      const updated = await env.DB.prepare(`
-        UPDATE users
-        SET game_login_code_hash = ?, game_login_code_rotated_at = ?
-        WHERE id = ?
-      `).bind(gameData.hash, nowIso(), userId).run();
+      const updated = supportsPlainGameCode
+        ? await env.DB.prepare(`
+          UPDATE users
+          SET game_login_code_hash = ?, game_login_code_plain = ?, game_login_code_rotated_at = ?
+          WHERE id = ?
+        `).bind(gameData.hash, gameData.code, nowIso(), userId).run()
+        : await env.DB.prepare(`
+          UPDATE users
+          SET game_login_code_hash = ?, game_login_code_rotated_at = ?
+          WHERE id = ?
+        `).bind(gameData.hash, nowIso(), userId).run();
 
       if((updated.meta?.changes || 0) !== 1) {
         return json({ ok: false, message: 'Could not rotate game code' }, 500);
@@ -407,6 +458,28 @@ async function handleRotateGameCode(context) {
   }
 
   return json({ ok: false, message: 'Could not rotate game code' }, 500);
+}
+
+async function handleGetCurrentGameCode(context) {
+  const { env } = context;
+  const result = await currentUser(context);
+  if(result.error) {
+    return result.error;
+  }
+
+  if(!(await hasGameCodePlainColumn(env))) {
+    return json({ ok: true, code: '', hasCode: false });
+  }
+
+  const row = await env.DB.prepare(`
+    SELECT game_login_code_plain
+    FROM users
+    WHERE id = ?
+    LIMIT 1
+  `).bind(result.user.id).first();
+
+  const code = String(row?.game_login_code_plain || '');
+  return json({ ok: true, code, hasCode: code.length > 0 });
 }
 
 async function handleGameVerify(context) {
@@ -497,6 +570,10 @@ export async function onRequest(context) {
 
   if(request.method === 'POST' && path === '/game-code/rotate') {
     return handleRotateGameCode(context);
+  }
+
+  if(request.method === 'GET' && path === '/game-code/current') {
+    return handleGetCurrentGameCode(context);
   }
 
   if(request.method === 'POST' && path === '/game/verify') {

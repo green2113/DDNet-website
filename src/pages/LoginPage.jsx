@@ -7,7 +7,7 @@ import { Feedback, LanguageSelector } from '../components/Layout';
 
 export default function LoginPage() {
   const navigate = useNavigate();
-  const { user, refresh } = useAuth();
+  const { refresh } = useAuth();
   const { t } = useI18n();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -62,15 +62,6 @@ export default function LoginPage() {
         <p className="eyebrow">{t('login.eyebrow')}</p>
         <h1>{t('login.title')}</h1>
         <p className="muted">{t('login.subtitle')}</p>
-
-        {user ? (
-          <section className="panel soft-gap">
-            <p className="muted">{t('common.goToDashboard')}</p>
-            <div className="hero-actions">
-              <button className="btn" type="button" onClick={() => navigate('/dashboard')}>{t('common.dashboard')}</button>
-            </div>
-          </section>
-        ) : null}
 
         <form className="form" onSubmit={onSubmit}>
           <label>

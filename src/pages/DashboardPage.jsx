@@ -1,6 +1,6 @@
-import { Fragment, useMemo, useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
-import { rotateGameCode } from '../lib/api';
+import { Fragment, useEffect, useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { getCurrentGameCode, rotateGameCode } from '../lib/api';
 import { useAuth } from '../components/AuthProvider';
 import { useI18n } from '../components/I18nProvider';
 import { Feedback, TopBar } from '../components/Layout';
@@ -12,12 +12,38 @@ function formatIso(value, locale) {
   return d.toLocaleString(locale, { hour12: false });
 }
 
+function EyeIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+      <path fill="currentColor" d="M12 5c5.6 0 9.6 4.9 10.7 6.4.4.5.4 1.2 0 1.7C21.6 14.6 17.6 19.5 12 19.5S2.4 14.6 1.3 13.1a1.45 1.45 0 0 1 0-1.7C2.4 9.9 6.4 5 12 5Zm0 2C7.9 7 4.7 10.2 3.4 12c1.3 1.8 4.5 5 8.6 5s7.3-3.2 8.6-5C19.3 10.2 16.1 7 12 7Zm0 2.2a2.8 2.8 0 1 1 0 5.6 2.8 2.8 0 0 1 0-5.6Z" />
+    </svg>
+  );
+}
+
+function EyeOffIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+      <path fill="currentColor" d="m2.7 2 19.3 19.3-1.4 1.4-3.1-3.1a12.88 12.88 0 0 1-5.5 1.3C6.4 21 2.4 16.1 1.3 14.6a1.45 1.45 0 0 1 0-1.7A19.5 19.5 0 0 1 7 7.8L1.3 2.1 2.7 2Zm9.3 5c4.1 0 7.3 3.2 8.6 5a15.38 15.38 0 0 1-4.5 3.8l-2.1-2.1a2.8 2.8 0 0 0-3.7-3.7L8.2 8a11.82 11.82 0 0 1 3.8-1Zm0 4a1 1 0 0 1 1 1c0 .2-.1.5-.2.7l-1.5-1.5c.2-.1.5-.2.7-.2Z" />
+    </svg>
+  );
+}
+
+function CopyIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+      <path fill="currentColor" d="M8 3h10a2 2 0 0 1 2 2v12h-2V5H8V3ZM5 7h10a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V9a2 2 0 0 1 2-2Zm0 2v10h10V9H5Z" />
+    </svg>
+  );
+}
+
 export default function DashboardPage() {
   const { user, refresh, logout } = useAuth();
   const { t, locale } = useI18n();
   const navigate = useNavigate();
   const [feedback, setFeedback] = useState(null);
-  const [newCode, setNewCode] = useState('');
+  const [gameCode, setGameCode] = useState('');
+  const [loadingCode, setLoadingCode] = useState(true);
+  const [revealed, setRevealed] = useState(false);
   const [rotating, setRotating] = useState(false);
 
   const rows = useMemo(() => ([
@@ -34,7 +60,8 @@ export default function DashboardPage() {
     setRotating(true);
     try {
       const result = await rotateGameCode();
-      setNewCode(result.code);
+      setGameCode(result.code || '');
+      setRevealed(true);
       await refresh();
       setFeedback({ type: 'ok', message: t('dashboard.rotated') });
     } catch (err) {
@@ -43,6 +70,47 @@ export default function DashboardPage() {
       setRotating(false);
     }
   };
+
+  useEffect(() => {
+    let canceled = false;
+    const loadCurrentCode = async () => {
+      setLoadingCode(true);
+      try {
+        const data = await getCurrentGameCode();
+        if(!canceled) {
+          setGameCode(String(data.code || ''));
+        }
+      } catch (err) {
+        if(!canceled) {
+          setFeedback({ type: 'error', message: err.message });
+        }
+      } finally {
+        if(!canceled) {
+          setLoadingCode(false);
+        }
+      }
+    };
+    loadCurrentCode();
+    return () => {
+      canceled = true;
+    };
+  }, []);
+
+  const onCopyCode = async () => {
+    if(!gameCode) {
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(gameCode);
+      setFeedback({ type: 'ok', message: t('dashboard.copied') });
+    } catch {
+      setFeedback({ type: 'error', message: t('dashboard.copyFailed') });
+    }
+  };
+
+  const displayCode = loadingCode
+    ? '••••••••••••••••••••'
+    : (!gameCode ? '-' : (revealed ? gameCode : '•'.repeat(gameCode.length)));
 
   const onLogout = async () => {
     try {
@@ -57,10 +125,7 @@ export default function DashboardPage() {
     <main className="shell">
       <TopBar
         right={
-          <>
-            <Link className="btn ghost" to="/">{t('common.home')}</Link>
-            <button className="btn" type="button" onClick={onLogout}>{t('common.logout')}</button>
-          </>
+          <button className="btn" type="button" onClick={onLogout}>{t('common.logout')}</button>
         }
       />
 
@@ -93,10 +158,34 @@ export default function DashboardPage() {
         <article className="panel">
           <h3>{t('dashboard.gameCodeTitle')}</h3>
           <p className="muted">{t('dashboard.gameCodeBody')}</p>
+          <div className="code-line">
+            <pre className="mono code-mono">{displayCode}</pre>
+            <div className="code-actions">
+              <button
+                className="btn ghost icon-btn"
+                type="button"
+                onClick={() => setRevealed((prev) => !prev)}
+                disabled={!gameCode || loadingCode}
+                title={revealed ? t('dashboard.hideCode') : t('dashboard.showCode')}
+              >
+                {revealed ? <EyeOffIcon /> : <EyeIcon />}
+              </button>
+              <button
+                className="btn ghost icon-btn"
+                type="button"
+                onClick={onCopyCode}
+                disabled={!gameCode || loadingCode}
+                title={t('dashboard.copyCode')}
+              >
+                <CopyIcon />
+              </button>
+            </div>
+          </div>
+          {!loadingCode && !gameCode ? <p className="muted">{t('dashboard.noCurrentCode')}</p> : null}
           <button className="btn" type="button" onClick={onRotate} disabled={rotating}>
             {rotating ? t('dashboard.rotating') : t('dashboard.rotate')}
           </button>
-          {newCode ? <pre className="mono">{t('dashboard.newCodeHeader')}{`\n`}{newCode}{`\n\n`}{t('dashboard.newCodeInGame')}: /login {newCode}</pre> : null}
+          {gameCode ? <pre className="mono">{t('dashboard.newCodeInGame')}: /login {gameCode}</pre> : null}
         </article>
       </section>
 

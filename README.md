@@ -24,6 +24,9 @@ npm install
 npm run d1:migrate
 ```
 
+If you already deployed before this update, run migrations again so `game_login_code_plain` is added.
+Without this migration, dashboard current-code view will stay empty.
+
 5. Set production variables in Pages project:
 
 - `SESSION_SECRET`

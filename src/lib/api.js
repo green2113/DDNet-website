@@ -49,3 +49,7 @@ export async function logout() {
 export async function rotateGameCode() {
   return api('/api/game-code/rotate', { method: 'POST' });
 }
+
+export async function getCurrentGameCode() {
+  return api('/api/game-code/current', { method: 'GET' });
+}
