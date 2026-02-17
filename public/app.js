@@ -16,21 +16,21 @@ async function api(path, options = {}) {
   return data;
 }
 
+function resultBox() {
+  return document.getElementById('result');
+}
+
 function showResult(message, type = 'info') {
-  const box = document.getElementById('result');
-  if(!box) {
-    return;
-  }
+  const box = resultBox();
+  if(!box) return;
   box.classList.remove('hidden', 'ok', 'error', 'info');
   box.classList.add(type);
   box.textContent = message;
 }
 
 function hideResult() {
-  const box = document.getElementById('result');
-  if(!box) {
-    return;
-  }
+  const box = resultBox();
+  if(!box) return;
   box.classList.add('hidden');
   box.textContent = '';
 }
@@ -44,21 +44,99 @@ async function ensureSession() {
   }
 }
 
-async function setupIndexPage() {
+function renderUser(user) {
+  const info = document.getElementById('account-info');
+  if(!info) return;
+
+  const rows = [
+    ['User ID', user.id],
+    ['Username', user.username],
+    ['Email', user.email],
+    ['Signup Country', user.country_signup],
+    ['Created At', user.created_at],
+    ['Code Rotated', user.game_login_code_rotated_at],
+  ];
+
+  info.innerHTML = rows
+    .map(([key, value]) => `<dt>${key}</dt><dd>${value ?? '-'}</dd>`)
+    .join('');
+
+  const inviteCode = document.getElementById('invite-code');
+  const inviteUsage = document.getElementById('invite-usage');
+  if(inviteCode) inviteCode.textContent = user.invite_code || '-';
+  if(inviteUsage) inviteUsage.textContent = `사용 ${user.invite_used} / ${user.invite_quota}`;
+}
+
+async function initHome() {
+  const user = await ensureSession();
+  const authLinks = document.getElementById('home-auth-links');
+  const userLinks = document.getElementById('home-user-links');
+  const mainActions = document.getElementById('home-main-actions');
+
+  if(user) {
+    authLinks?.classList.add('hidden');
+    userLinks?.classList.remove('hidden');
+    if(mainActions) {
+      mainActions.innerHTML = '<a class="btn" href="/dashboard">대시보드로 이동</a>';
+    }
+  }
+
+  document.getElementById('home-logout')?.addEventListener('click', async () => {
+    try {
+      await api('/api/auth/logout', { method: 'POST' });
+      window.location.reload();
+    } catch(err) {
+      showResult(err.message, 'error');
+    }
+  });
+}
+
+async function initLogin() {
   const user = await ensureSession();
   if(user) {
     window.location.href = '/dashboard';
     return;
   }
 
-  const registerForm = document.getElementById('register-form');
-  const loginForm = document.getElementById('login-form');
-
-  registerForm?.addEventListener('submit', async (event) => {
+  const form = document.getElementById('login-form');
+  form?.addEventListener('submit', async (event) => {
     event.preventDefault();
     hideResult();
 
-    const formData = new FormData(registerForm);
+    const formData = new FormData(form);
+    const payload = {
+      identifier: String(formData.get('identifier') || '').trim(),
+      password: String(formData.get('password') || ''),
+    };
+
+    try {
+      await api('/api/auth/login', {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      });
+      showResult('로그인 성공. 대시보드로 이동합니다.', 'ok');
+      setTimeout(() => {
+        window.location.href = '/dashboard';
+      }, 500);
+    } catch(err) {
+      showResult(err.message, 'error');
+    }
+  });
+}
+
+async function initRegister() {
+  const user = await ensureSession();
+  if(user) {
+    window.location.href = '/dashboard';
+    return;
+  }
+
+  const form = document.getElementById('register-form');
+  form?.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    hideResult();
+
+    const formData = new FormData(form);
     const payload = {
       username: String(formData.get('username') || '').trim(),
       email: String(formData.get('email') || '').trim(),
@@ -71,99 +149,44 @@ async function setupIndexPage() {
         method: 'POST',
         body: JSON.stringify(payload),
       });
-
-      showResult(`Registered. Your new game code: ${data.gameCode} (save it now).`, 'ok');
+      showResult(`회원가입 성공. 게임 코드: ${data.gameCode}`, 'ok');
       setTimeout(() => {
         window.location.href = '/dashboard';
-      }, 1200);
-    } catch(err) {
-      showResult(err.message, 'error');
-    }
-  });
-
-  loginForm?.addEventListener('submit', async (event) => {
-    event.preventDefault();
-    hideResult();
-
-    const formData = new FormData(loginForm);
-    const payload = {
-      identifier: String(formData.get('identifier') || '').trim(),
-      password: String(formData.get('password') || ''),
-    };
-
-    try {
-      await api('/api/auth/login', {
-        method: 'POST',
-        body: JSON.stringify(payload),
-      });
-
-      showResult('Login successful.', 'ok');
-      setTimeout(() => {
-        window.location.href = '/dashboard';
-      }, 500);
+      }, 900);
     } catch(err) {
       showResult(err.message, 'error');
     }
   });
 }
 
-function renderUser(user) {
-  const info = document.getElementById('account-info');
-  if(!info) {
-    return;
-  }
-
-  const rows = [
-    ['User ID', user.id],
-    ['Username', user.username],
-    ['Email', user.email],
-    ['Signup Country', user.country_signup],
-    ['Created At', user.created_at],
-    ['Game Code Rotated', user.game_login_code_rotated_at],
-  ];
-
-  info.innerHTML = rows
-    .map(([k, v]) => `<dt>${k}</dt><dd>${v ?? '-'}</dd>`)
-    .join('');
-
-  const inviteCode = document.getElementById('invite-code');
-  const inviteUsage = document.getElementById('invite-usage');
-  if(inviteCode) inviteCode.textContent = user.invite_code || '-';
-  if(inviteUsage) inviteUsage.textContent = `Used ${user.invite_used} / ${user.invite_quota}`;
-}
-
-async function setupDashboardPage() {
+async function initDashboard() {
   const user = await ensureSession();
   if(!user) {
-    window.location.href = '/';
+    window.location.href = '/login';
     return;
   }
 
   renderUser(user);
 
-  const rotateBtn = document.getElementById('rotate-code');
-  const newCodeEl = document.getElementById('new-code');
-  const logoutBtn = document.getElementById('logout');
-
-  rotateBtn?.addEventListener('click', async () => {
+  document.getElementById('rotate-code')?.addEventListener('click', async () => {
     hideResult();
-
     try {
       const data = await api('/api/game-code/rotate', { method: 'POST' });
-      if(newCodeEl) {
-        newCodeEl.classList.remove('hidden');
-        newCodeEl.textContent = `New code: ${data.code}\nIn game: /login ${data.code}`;
+      const codeBox = document.getElementById('new-code');
+      if(codeBox) {
+        codeBox.classList.remove('hidden');
+        codeBox.textContent = `NEW CODE\n${data.code}\n\nIn game: /login ${data.code}`;
       }
-      showResult('Game code rotated. Old code is now invalid.', 'ok');
+      showResult('새 게임 로그인 코드가 발급되었습니다.', 'ok');
     } catch(err) {
       showResult(err.message, 'error');
     }
   });
 
-  logoutBtn?.addEventListener('click', async () => {
+  document.getElementById('logout')?.addEventListener('click', async () => {
     try {
       await api('/api/auth/logout', { method: 'POST' });
-      window.location.href = '/';
+      window.location.href = '/login';
     } catch(err) {
       showResult(err.message, 'error');
     }
@@ -172,9 +195,8 @@ async function setupDashboardPage() {
 
 (async function init() {
   const page = document.body.getAttribute('data-page');
-  if(page === 'dashboard') {
-    await setupDashboardPage();
-  } else {
-    await setupIndexPage();
-  }
+  if(page === 'home') await initHome();
+  if(page === 'login') await initLogin();
+  if(page === 'register') await initRegister();
+  if(page === 'dashboard') await initDashboard();
 })();

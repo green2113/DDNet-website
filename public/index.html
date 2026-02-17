@@ -1,50 +1,53 @@
 <!doctype html>
-<html lang="en">
+<html lang="ko">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>DDNet Required Login</title>
+  <title>DDNet Portal</title>
   <link rel="stylesheet" href="/styles.css" />
 </head>
-<body data-page="index">
-  <main class="container">
-    <section class="hero">
-      <h1>DDNet Account Gateway</h1>
-      <p>Create an account, login, and issue your permanent <code>/login</code> code.</p>
+<body data-page="home">
+  <div class="bg-orb orb-a"></div>
+  <div class="bg-orb orb-b"></div>
+
+  <main class="shell">
+    <header class="topbar">
+      <a class="brand" href="/">DDNet Portal</a>
+      <nav class="top-actions" id="home-auth-links">
+        <a class="btn ghost" href="/login">로그인</a>
+        <a class="btn" href="/register">회원가입</a>
+      </nav>
+      <nav class="top-actions hidden" id="home-user-links">
+        <a class="btn" href="/dashboard">대시보드</a>
+        <button class="btn ghost" id="home-logout" type="button">로그아웃</button>
+      </nav>
+    </header>
+
+    <section class="hero home-hero">
+      <p class="eyebrow">DDNET SERVER ACCESS</p>
+      <h1>로그인한 계정만 입장하는 DDNet 포털</h1>
+      <p class="lead">
+        웹에서 계정을 만들고 게임 로그인 코드를 발급받은 뒤,
+        인게임에서 <code>/login 코드</code>를 입력해 플레이를 해제하세요.
+      </p>
+      <div class="hero-actions" id="home-main-actions">
+        <a class="btn" href="/login">로그인 시작</a>
+        <a class="btn ghost" href="/register">새 계정 만들기</a>
+      </div>
     </section>
 
-    <section class="card-grid">
-      <article class="card">
-        <h2>Register</h2>
-        <p class="muted">Taiwan users can register directly. Non-Taiwan users need an invite code.</p>
-        <form id="register-form" class="form">
-          <label>Username
-            <input name="username" type="text" minlength="3" maxlength="24" required />
-          </label>
-          <label>Email
-            <input name="email" type="email" required />
-          </label>
-          <label>Password
-            <input name="password" type="password" minlength="8" required />
-          </label>
-          <label>Invite Code (optional for TW)
-            <input name="inviteCode" type="text" />
-          </label>
-          <button type="submit">Create account</button>
-        </form>
+    <section class="feature-grid">
+      <article class="panel feature">
+        <h3>1. 웹 로그인</h3>
+        <p>이메일/비밀번호로 로그인하고 계정을 관리합니다.</p>
       </article>
-
-      <article class="card">
-        <h2>Login</h2>
-        <form id="login-form" class="form">
-          <label>Email or Username
-            <input name="identifier" type="text" required />
-          </label>
-          <label>Password
-            <input name="password" type="password" required />
-          </label>
-          <button type="submit">Sign in</button>
-        </form>
+      <article class="panel feature">
+        <h3>2. 게임 코드 발급</h3>
+        <p>대시보드에서 반영구 게임 로그인 코드를 관리합니다.</p>
+      </article>
+      <article class="panel feature">
+        <h3>3. 인게임 인증</h3>
+        <p>서버 접속 후 <code>/login 코드</code> 입력 시 플레이가 해제됩니다.</p>
       </article>
     </section>
 
