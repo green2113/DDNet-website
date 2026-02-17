@@ -1,6 +1,6 @@
 import { Link, useNavigate } from 'react-router-dom';
-import { useState } from 'react';
-import { login } from '../lib/api';
+import { useEffect, useState } from 'react';
+import { getGeo, login } from '../lib/api';
 import { useAuth } from '../components/AuthProvider';
 import { Feedback } from '../components/Layout';
 
@@ -12,6 +12,24 @@ export default function LoginPage() {
   const [submitting, setSubmitting] = useState(false);
   const [feedback, setFeedback] = useState(null);
 
+  useEffect(() => {
+    let canceled = false;
+    const probe = async () => {
+      try {
+        const geo = await getGeo();
+        if(!canceled && geo.vpnBlocked) {
+          navigate('/blocked', { replace: true });
+        }
+      } catch {
+        // keep page usable if geo check fails
+      }
+    };
+    probe();
+    return () => {
+      canceled = true;
+    };
+  }, [navigate]);
+
   const onSubmit = async (event) => {
     event.preventDefault();
     setFeedback(null);
@@ -22,6 +40,10 @@ export default function LoginPage() {
       setFeedback({ type: 'ok', message: '로그인 성공. 대시보드로 이동합니다.' });
       setTimeout(() => navigate('/dashboard'), 450);
     } catch (err) {
+      if(err.status === 403 && err.payload?.code === 'VPN_PROXY_BLOCKED') {
+        navigate('/blocked', { replace: true });
+        return;
+      }
       setFeedback({ type: 'error', message: err.message });
     } finally {
       setSubmitting(false);

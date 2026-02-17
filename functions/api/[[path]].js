@@ -7,6 +7,7 @@ import {
   isValidEmail,
   isValidPassword,
   isValidUsername,
+  isLikelyVpnOrProxy,
   json,
   lower,
   normalizeCode,
@@ -23,9 +24,22 @@ import {
 
 const AUTH_COOKIE = 'ddnet_auth';
 const SESSION_MAX_AGE = 30 * 24 * 60 * 60;
+const TRUE_VALUES = ['1', 'true', 'yes', 'on'];
 
 function cookieSecure(request) {
   return new URL(request.url).protocol === 'https:';
+}
+
+function vpnProxyBlockingEnabled(env) {
+  return TRUE_VALUES.includes(String(env.BLOCK_VPN_PROXY || '').toLowerCase());
+}
+
+function vpnProxyBlockedResponse(action) {
+  return json({
+    ok: false,
+    code: 'VPN_PROXY_BLOCKED',
+    message: `VPN/Proxy connections are blocked for ${action}`,
+  }, 403);
 }
 
 async function publicUserById(env, userId) {
@@ -106,6 +120,13 @@ async function handleRegister(context) {
 	if(!env.SESSION_SECRET || !env.CODE_PEPPER) {
 		return json({ ok: false, message: 'Missing SESSION_SECRET or CODE_PEPPER' }, 500);
 	}
+
+  if(vpnProxyBlockingEnabled(env)) {
+    const verdict = isLikelyVpnOrProxy(request);
+    if(verdict.blocked) {
+      return vpnProxyBlockedResponse('registration');
+    }
+  }
 
 	const body = await parseRequestBody(request);
 	const data = typeof body === 'string' ? {} : (body || {});
@@ -286,6 +307,13 @@ async function handleLogin(context) {
 		return json({ ok: false, message: 'Missing SESSION_SECRET' }, 500);
 	}
 
+  if(vpnProxyBlockingEnabled(env)) {
+    const verdict = isLikelyVpnOrProxy(request);
+    if(verdict.blocked) {
+      return vpnProxyBlockedResponse('login');
+    }
+  }
+
 	const body = await parseRequestBody(request);
 	const data = typeof body === 'string' ? {} : (body || {});
 
@@ -443,7 +471,12 @@ export async function onRequest(context) {
   }
 
   if(request.method === 'GET' && path === '/geo') {
-    return json({ ok: true, country: getCountryCode(request) });
+    const country = getCountryCode(request);
+    let vpnBlocked = false;
+    if(vpnProxyBlockingEnabled(context.env)) {
+      vpnBlocked = isLikelyVpnOrProxy(request).blocked;
+    }
+    return json({ ok: true, country, vpnBlocked });
   }
 
   if(request.method === 'POST' && path === '/auth/register') {

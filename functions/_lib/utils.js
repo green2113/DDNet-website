@@ -266,6 +266,56 @@ export function getClientIp(request) {
   return request.headers.get('CF-Connecting-IP') || '0.0.0.0';
 }
 
+const VPN_PROXY_ASN_KEYWORDS = [
+  'vpn',
+  'proxy',
+  'datacenter',
+  'digitalocean',
+  'linode',
+  'vultr',
+  'ovh',
+  'hetzner',
+  'm247',
+  'choopa',
+  'leaseweb',
+  'psychz',
+  'private layer',
+  'amazon',
+  'aws',
+  'google cloud',
+  'microsoft',
+  'azure',
+  'oracle cloud',
+  'ibm cloud',
+  'alibaba cloud',
+  'tencent cloud',
+];
+
+export function isLikelyVpnOrProxy(request) {
+  const cf = request.cf || {};
+  const bot = cf.botManagement || {};
+
+  if(bot.corporateProxy === true) {
+    return { blocked: true, reason: 'corporate_proxy' };
+  }
+
+  const org = String(cf.asOrganization || '').toLowerCase();
+  if(!org) {
+    return { blocked: false, reason: '' };
+  }
+
+  for(const keyword of VPN_PROXY_ASN_KEYWORDS) {
+    if(org.includes(keyword)) {
+      return {
+        blocked: true,
+        reason: `asn_${String(cf.asn || '')}`,
+      };
+    }
+  }
+
+  return { blocked: false, reason: '' };
+}
+
 export async function parseRequestBody(request) {
   const contentType = (request.headers.get('content-type') || '').toLowerCase();
 

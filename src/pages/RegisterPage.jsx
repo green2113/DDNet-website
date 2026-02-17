@@ -25,6 +25,10 @@ export default function RegisterPage() {
         const data = await getGeo();
         if(!canceled) {
           setCountry(String(data.country || '').toUpperCase());
+          if(data.vpnBlocked) {
+            navigate('/blocked', { replace: true });
+            return;
+          }
         }
       } catch {
         if(!canceled) {
@@ -63,6 +67,10 @@ export default function RegisterPage() {
       setFeedback({ type: 'ok', message: `회원가입 성공. 게임 코드: ${data.gameCode}` });
       setTimeout(() => navigate('/dashboard'), 900);
     } catch (err) {
+      if(err.status === 403 && err.payload?.code === 'VPN_PROXY_BLOCKED') {
+        navigate('/blocked', { replace: true });
+        return;
+      }
       setFeedback({ type: 'error', message: err.message });
     } finally {
       setSubmitting(false);
@@ -76,7 +84,6 @@ export default function RegisterPage() {
         <p className="eyebrow">CREATE ACCOUNT</p>
         <h1>회원가입</h1>
         <p className="muted">대만 사용자는 바로 가입 가능, 해외 사용자는 초대코드가 필요합니다.</p>
-        <p className="country-note">감지된 국가: <strong>{geoLoaded ? (country || 'ZZ') : '확인 중...'}</strong></p>
 
         <form className="form" onSubmit={onSubmit}>
           <label>
@@ -97,12 +104,11 @@ export default function RegisterPage() {
               <input
                 value={form.inviteCode}
                 onChange={(e) => setField('inviteCode', e.target.value)}
-                placeholder="8자리 코드 예: ADMINTW1"
+                placeholder="8자리 코드"
                 minLength={8}
                 maxLength={32}
                 required
               />
-              <span className="input-help">영문/숫자 조합의 8자리 코드</span>
             </label>
           ) : null}
           <button className="btn" type="submit" disabled={submitting}>{submitting ? '생성 중...' : '계정 생성'}</button>

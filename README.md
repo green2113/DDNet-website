@@ -30,6 +30,7 @@ npm run d1:migrate
 - `CODE_PEPPER`
 - `GAME_SERVER_API_KEY`
 - `INVITE_DEFAULT_QUOTA` (example: `1`)
+- `BLOCK_VPN_PROXY` (optional: `1` to block likely VPN/proxy/datacenter signups)
 
 6. Deploy:
 
