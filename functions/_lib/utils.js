@@ -130,7 +130,7 @@ async function pbkdf2(password, salt, iterations) {
 }
 
 export async function hashPassword(password) {
-  const iterations = 210000;
+  const iterations = 100000;
   const salt = crypto.getRandomValues(new Uint8Array(16));
   const derived = await pbkdf2(password, salt, iterations);
   return `pbkdf2$${iterations}$${bytesToBase64Url(salt)}$${bytesToHex(derived)}`;
@@ -144,7 +144,7 @@ export async function verifyPassword(password, stored) {
     }
 
     const iterations = Number(parts[1]);
-    if(!Number.isInteger(iterations) || iterations < 1000) {
+    if(!Number.isInteger(iterations) || iterations < 1000 || iterations > 100000) {
       return false;
     }
 
