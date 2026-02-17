@@ -5,5 +5,5 @@ pages_build_output_dir = "public"
 [[d1_databases]]
 binding = "DB"
 database_name = "ddnet_req_login"
-database_id = "REPLACE_WITH_REAL_D1_DATABASE_ID"
-preview_database_id = "REPLACE_WITH_REAL_D1_DATABASE_ID"
+database_id = "413951e9-8380-4cd0-8a61-3437ef97a093"
+preview_database_id = "413951e9-8380-4cd0-8a61-3437ef97a093"
