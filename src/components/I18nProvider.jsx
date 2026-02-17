@@ -3,11 +3,11 @@ import { createContext, useContext, useMemo, useState } from 'react';
 const STORAGE_KEY = 'ddnet_lang';
 
 const LANGUAGE_OPTIONS = [
-  { code: 'zh-TW', label: '繁體中文', flag: 'tw' },
-  { code: 'zh-CN', label: '简体中文', flag: 'cn' },
-  { code: 'ko', label: '한국어', flag: 'kr' },
-  { code: 'en', label: 'English', flag: 'us' },
-  { code: 'ja', label: '日本語', flag: 'jp' },
+  { code: 'zh-TW', label: '繁體中文', flag: '/flags/tw.svg' },
+  { code: 'zh-CN', label: '简体中文', flag: '/flags/cn.svg' },
+  { code: 'ko', label: '한국어', flag: '/flags/kr.svg' },
+  { code: 'en', label: 'English', flag: '/flags/us.svg' },
+  { code: 'ja', label: '日本語', flag: '/flags/jp.svg' },
 ];
 
 const LOCALE_BY_LANGUAGE = {

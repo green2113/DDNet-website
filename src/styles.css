@@ -132,9 +132,12 @@ body {
   cursor: pointer;
 }
 
-.lang-trigger .fi,
-.lang-option .fi {
+.lang-flag {
+  width: 18px;
+  height: 12px;
   border-radius: 2px;
+  object-fit: cover;
+  flex: 0 0 auto;
 }
 
 .lang-menu {

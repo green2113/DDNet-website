@@ -37,7 +37,7 @@ export function LanguageSelector() {
         aria-expanded={open}
         onClick={() => setOpen((prev) => !prev)}
       >
-        <span className={`fi fi-${selected.flag}`} />
+        <img className="lang-flag" src={selected.flag} alt="" />
         <span>{selected.label}</span>
       </button>
       {open ? (
@@ -52,7 +52,7 @@ export function LanguageSelector() {
                 setOpen(false);
               }}
             >
-              <span className={`fi fi-${item.flag}`} />
+              <img className="lang-flag" src={item.flag} alt="" />
               <span>{item.label}</span>
             </button>
           ))}
