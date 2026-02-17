@@ -96,6 +96,7 @@ export default function DashboardPage() {
   const [showCopyToast, setShowCopyToast] = useState(false);
 
   const currentName = String(user?.username || '');
+  const canUseInvite = String(user?.country_signup || '').toUpperCase() === 'TW';
   const trimmedName = nameForm.trim();
   const canSaveName = editingName && !savingName && trimmedName.length > 0 && trimmedName !== currentName;
 
@@ -300,12 +301,14 @@ export default function DashboardPage() {
           </dl>
         </article>
 
-        <article className="panel">
-          <h3>{t('dashboard.inviteTitle')}</h3>
-          <p className="muted">{t('dashboard.inviteBody')}</p>
-          <pre className="mono">{user?.invite_code || '-'}</pre>
-          <p className="muted">{t('dashboard.inviteUsage', { used: user?.invite_used ?? 0, quota: user?.invite_quota ?? 0 })}</p>
-        </article>
+        {canUseInvite ? (
+          <article className="panel">
+            <h3>{t('dashboard.inviteTitle')}</h3>
+            <p className="muted">{t('dashboard.inviteBody')}</p>
+            <pre className="mono">{user?.invite_code || '-'}</pre>
+            <p className="muted">{t('dashboard.inviteUsage', { used: user?.invite_used ?? 0, quota: user?.invite_quota ?? 0 })}</p>
+          </article>
+        ) : null}
 
         <article className="panel">
           <h3>{t('dashboard.gameCodeTitle')}</h3>

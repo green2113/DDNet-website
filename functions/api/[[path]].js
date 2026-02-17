@@ -191,14 +191,15 @@ async function handleRegister(context) {
 
   const passwordHash = await hashPassword(password);
   const signupIp = getClientIp(request);
-  const inviteQuota = Number(env.INVITE_DEFAULT_QUOTA || 1);
+  const inviteQuotaDefault = Number(env.INVITE_DEFAULT_QUOTA || 1);
   const supportsPlainGameCode = await hasGameCodePlainColumn(env);
 
   let userId = 0;
   let gameCode = '';
 
   for(let attempt = 0; attempt < 5; attempt += 1) {
-    const inviteCode = await allocateInviteCode(env);
+    const inviteCode = isTaiwan ? await allocateInviteCode(env) : null;
+    const inviteQuota = isTaiwan ? inviteQuotaDefault : 0;
     const gameData = await allocateGameCode(env);
 
     let consumedInvite = false;

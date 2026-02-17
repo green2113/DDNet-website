@@ -332,26 +332,27 @@ button.btn {
 
 .info {
   display: grid;
-  grid-template-columns: 140px 1fr;
-  gap: 4px 12px;
+  grid-template-columns: 86px 1fr;
+  gap: 1px 8px;
   margin: 0;
 }
 
 .info dt {
   color: var(--muted);
-  line-height: 1.45;
+  line-height: 1.2;
+  padding-top: 2px;
 }
 
 .info dd {
   margin: 0;
   word-break: break-all;
-  line-height: 1.45;
+  line-height: 1.2;
 }
 
 .name-inline {
   display: flex;
-  align-items: flex-start;
-  gap: 8px;
+  align-items: center;
+  gap: 6px;
   max-width: 100%;
 }
 
@@ -361,7 +362,7 @@ button.btn {
 
 .name-inline-input {
   margin: 0;
-  padding: 9px 10px;
+  padding: 7px 9px;
   flex: 1;
   min-width: 0;
 }
@@ -408,10 +409,10 @@ button.btn {
 }
 
 .name-action-btn {
-  min-width: 30px;
-  width: 30px;
-  height: 30px;
-  margin-top: 1px;
+  min-width: 28px;
+  width: 28px;
+  height: 28px;
+  margin-top: 0;
 }
 
 .copy-toast {

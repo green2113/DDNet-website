@@ -5,7 +5,7 @@ CREATE TABLE IF NOT EXISTS users (
   email TEXT NOT NULL,
   email_lower TEXT NOT NULL UNIQUE,
   password_hash TEXT NOT NULL,
-  invite_code TEXT NOT NULL UNIQUE,
+  invite_code TEXT UNIQUE,
   invite_quota INTEGER NOT NULL DEFAULT 1,
   invite_used INTEGER NOT NULL DEFAULT 0,
   inviter_id INTEGER,
