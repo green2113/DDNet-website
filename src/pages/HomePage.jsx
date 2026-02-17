@@ -43,19 +43,6 @@ export default function HomePage() {
         <p className="lead">
           {t('home.lead')}
         </p>
-        <div className="hero-actions">
-          {user ? (
-            <>
-              <Link className="btn" to="/dashboard">{t('home.openDashboard')}</Link>
-              <Link className="btn ghost" to="/register">{t('home.createAnother')}</Link>
-            </>
-          ) : (
-            <>
-              <Link className="btn" to="/login">{t('home.startLogin')}</Link>
-              <Link className="btn ghost" to="/register">{t('home.createNew')}</Link>
-            </>
-          )}
-        </div>
       </section>
 
       <section className="feature-grid">

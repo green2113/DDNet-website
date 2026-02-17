@@ -111,7 +111,7 @@ async function allocateGameCode(env) {
   const supportsPlainGameCode = await hasGameCodePlainColumn(env);
 
   for(let i = 0; i < 20; i += 1) {
-    const code = randomCode(20);
+    const code = randomCode(10);
     const exists = supportsPlainGameCode
       ? await env.DB.prepare('SELECT id FROM users WHERE game_login_code_hash = ? OR game_login_code_plain = ? LIMIT 1').bind(code, code).first()
       : await env.DB.prepare('SELECT id FROM users WHERE game_login_code_hash = ? LIMIT 1').bind(code).first();

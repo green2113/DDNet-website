@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { getCurrentGameCode, rotateGameCode, updateProfileName } from '../lib/api';
 import { useAuth } from '../components/AuthProvider';
@@ -48,6 +48,30 @@ function CopyIcon() {
   );
 }
 
+function PencilIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+      <path fill="currentColor" d="M3 17.2V21h3.8l11-11.1-3.8-3.8L3 17.2Zm17.7-10.1a1 1 0 0 0 0-1.4l-2.4-2.4a1 1 0 0 0-1.4 0l-1.9 1.9 3.8 3.8 1.9-2Z" />
+    </svg>
+  );
+}
+
+function CheckIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+      <path fill="currentColor" d="m9.1 16.6-4.2-4.2 1.4-1.4 2.8 2.8 8.6-8.6 1.4 1.4-10 10Z" />
+    </svg>
+  );
+}
+
+function ToastCheckIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+      <path fill="currentColor" d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2Zm-1.1 14.6-3.5-3.5 1.4-1.4 2.1 2.1 4.3-4.3 1.4 1.4Z" />
+    </svg>
+  );
+}
+
 export default function DashboardPage() {
   const { user, refresh, logout } = useAuth();
   const { t } = useI18n();
@@ -59,16 +83,26 @@ export default function DashboardPage() {
   const [rotating, setRotating] = useState(false);
   const [showRotateConfirm, setShowRotateConfirm] = useState(false);
   const [nameForm, setNameForm] = useState('');
+  const [editingName, setEditingName] = useState(false);
   const [savingName, setSavingName] = useState(false);
+  const [showCopyToast, setShowCopyToast] = useState(false);
 
-  const rows = useMemo(() => ([
-    [t('dashboard.rowUsername'), user?.username],
-    [t('dashboard.rowEmail'), maskEmail(user?.email)],
-  ]), [t, user]);
+  const currentName = String(user?.username || '');
+  const trimmedName = nameForm.trim();
+  const canSaveName = editingName && !savingName && trimmedName.length > 0 && trimmedName !== currentName;
 
   useEffect(() => {
-    setNameForm(String(user?.username || ''));
-  }, [user?.username]);
+    setNameForm(currentName);
+    setEditingName(false);
+  }, [currentName]);
+
+  useEffect(() => {
+    if(!showCopyToast) {
+      return undefined;
+    }
+    const timer = setTimeout(() => setShowCopyToast(false), 1800);
+    return () => clearTimeout(timer);
+  }, [showCopyToast]);
 
   const executeRotate = async () => {
     setFeedback(null);
@@ -130,10 +164,38 @@ export default function DashboardPage() {
     }
     try {
       await navigator.clipboard.writeText(gameCode);
-      setFeedback({ type: 'ok', message: t('dashboard.copied') });
+      setShowCopyToast(false);
+      requestAnimationFrame(() => setShowCopyToast(true));
     } catch {
       setFeedback({ type: 'error', message: t('dashboard.copyFailed') });
     }
+  };
+
+  const saveName = async () => {
+    if(!canSaveName) {
+      return;
+    }
+    setSavingName(true);
+    setFeedback(null);
+    try {
+      await updateProfileName({ name: trimmedName });
+      await refresh();
+      setEditingName(false);
+      setFeedback({ type: 'ok', message: t('dashboard.nameUpdated') });
+    } catch (err) {
+      setFeedback({ type: 'error', message: err.message });
+    } finally {
+      setSavingName(false);
+    }
+  };
+
+  const onNameAction = () => {
+    if(editingName) {
+      saveName();
+      return;
+    }
+    setNameForm(currentName);
+    setEditingName(true);
   };
 
   const displayCode = loadingCode
@@ -149,27 +211,6 @@ export default function DashboardPage() {
     }
   };
 
-  const onSubmitName = async (event) => {
-    event.preventDefault();
-    const trimmed = nameForm.trim();
-    if(!trimmed) {
-      setFeedback({ type: 'error', message: t('dashboard.nameRequired') });
-      return;
-    }
-
-    setSavingName(true);
-    setFeedback(null);
-    try {
-      await updateProfileName({ name: trimmed });
-      await refresh();
-      setFeedback({ type: 'ok', message: t('dashboard.nameUpdated') });
-    } catch (err) {
-      setFeedback({ type: 'error', message: err.message });
-    } finally {
-      setSavingName(false);
-    }
-  };
-
   return (
     <main className="shell">
       <TopBar
@@ -177,6 +218,13 @@ export default function DashboardPage() {
           <button className="btn" type="button" onClick={onLogout}>{t('common.logout')}</button>
         }
       />
+
+      {showCopyToast ? (
+        <section className="copy-toast" role="status" aria-live="polite">
+          <span className="copy-toast-icon"><ToastCheckIcon /></span>
+          <span>{t('dashboard.copyToast')}</span>
+        </section>
+      ) : null}
 
       <section className="hero">
         <p className="eyebrow">{t('dashboard.eyebrow')}</p>
@@ -188,29 +236,46 @@ export default function DashboardPage() {
         <article className="panel">
           <h3>{t('dashboard.accountTitle')}</h3>
           <dl className="info">
-            {rows.map(([key, value]) => (
-              <Fragment key={key}>
-                <dt>{key}</dt>
-                <dd>{value ?? '-'}</dd>
-              </Fragment>
-            ))}
+            <dt>{t('dashboard.rowUsername')}</dt>
+            <dd>
+              <div className="name-inline">
+                {editingName ? (
+                  <input
+                    className="name-inline-input"
+                    value={nameForm}
+                    onChange={(event) => setNameForm(event.target.value)}
+                    maxLength={32}
+                    autoComplete="nickname"
+                    autoFocus
+                    onKeyDown={(event) => {
+                      if(event.key === 'Escape') {
+                        setNameForm(currentName);
+                        setEditingName(false);
+                      }
+                      if(event.key === 'Enter') {
+                        event.preventDefault();
+                        saveName();
+                      }
+                    }}
+                  />
+                ) : (
+                  <span className="name-inline-value">{currentName || '-'}</span>
+                )}
+                <button
+                  className="btn ghost icon-btn name-action-btn"
+                  type="button"
+                  onClick={onNameAction}
+                  disabled={editingName && !canSaveName}
+                  title={editingName ? t('dashboard.nameApply') : t('dashboard.nameEdit')}
+                >
+                  {editingName ? <CheckIcon /> : <PencilIcon />}
+                </button>
+              </div>
+            </dd>
+
+            <dt>{t('dashboard.rowEmail')}</dt>
+            <dd>{maskEmail(user?.email)}</dd>
           </dl>
-          <form className="form soft-gap" onSubmit={onSubmitName}>
-            <label>
-              {t('dashboard.nameInput')}
-              <input
-                value={nameForm}
-                onChange={(event) => setNameForm(event.target.value)}
-                maxLength={32}
-                required
-                autoComplete="nickname"
-              />
-              <small className="input-help">{t('dashboard.nameHint')}</small>
-            </label>
-            <button className="btn" type="submit" disabled={savingName}>
-              {savingName ? t('dashboard.nameSaving') : t('dashboard.nameSave')}
-            </button>
-          </form>
         </article>
 
         <article className="panel">
@@ -249,7 +314,6 @@ export default function DashboardPage() {
           <button className="btn" type="button" onClick={onRotateClick} disabled={rotating || loadingCode}>
             {rotating ? t('dashboard.rotating') : (gameCode ? t('dashboard.reissueCode') : t('dashboard.issueCode'))}
           </button>
-          {gameCode ? <pre className="mono">{t('dashboard.newCodeInGame')}: /login {gameCode}</pre> : null}
         </article>
       </section>
 
