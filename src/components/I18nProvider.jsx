@@ -120,6 +120,7 @@ const translations = {
       nameRequired: '請輸入名稱。',
       nameEdit: '編輯名稱',
       nameApply: '套用名稱',
+      nameCancel: '取消編輯',
     },
     blocked: {
       eyebrow: 'ACCESS BLOCKED',
@@ -228,6 +229,7 @@ const translations = {
       nameRequired: '请输入名称。',
       nameEdit: '编辑名称',
       nameApply: '应用名称',
+      nameCancel: '取消编辑',
     },
     blocked: {
       eyebrow: 'ACCESS BLOCKED',
@@ -336,6 +338,7 @@ const translations = {
       nameRequired: '이름을 입력해 주세요.',
       nameEdit: '이름 수정',
       nameApply: '이름 적용',
+      nameCancel: '수정 취소',
     },
     blocked: {
       eyebrow: 'ACCESS BLOCKED',
@@ -444,6 +447,7 @@ const translations = {
       nameRequired: 'Please enter a name.',
       nameEdit: 'Edit name',
       nameApply: 'Apply name',
+      nameCancel: 'Cancel edit',
     },
     blocked: {
       eyebrow: 'ACCESS BLOCKED',
@@ -552,6 +556,7 @@ const translations = {
       nameRequired: '名前を入力してください。',
       nameEdit: '名前を編集',
       nameApply: '名前を適用',
+      nameCancel: '編集をキャンセル',
     },
     blocked: {
       eyebrow: 'ACCESS BLOCKED',

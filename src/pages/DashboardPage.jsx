@@ -64,6 +64,14 @@ function CheckIcon() {
   );
 }
 
+function CloseIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+      <path fill="currentColor" d="m18.3 7.1-1.4-1.4L12 10.6 7.1 5.7 5.7 7.1l4.9 4.9-4.9 4.9 1.4 1.4 4.9-4.9 4.9 4.9 1.4-1.4-4.9-4.9 4.9-4.9Z" />
+    </svg>
+  );
+}
+
 function ToastCheckIcon() {
   return (
     <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
@@ -198,6 +206,11 @@ export default function DashboardPage() {
     setEditingName(true);
   };
 
+  const onCancelNameEdit = () => {
+    setNameForm(currentName);
+    setEditingName(false);
+  };
+
   const displayCode = loadingCode
     ? '••••••••••••••••••••'
     : (!gameCode ? '-' : (revealed ? gameCode : '•'.repeat(gameCode.length)));
@@ -249,8 +262,7 @@ export default function DashboardPage() {
                     autoFocus
                     onKeyDown={(event) => {
                       if(event.key === 'Escape') {
-                        setNameForm(currentName);
-                        setEditingName(false);
+                        onCancelNameEdit();
                       }
                       if(event.key === 'Enter') {
                         event.preventDefault();
@@ -270,6 +282,16 @@ export default function DashboardPage() {
                 >
                   {editingName ? <CheckIcon /> : <PencilIcon />}
                 </button>
+                {editingName ? (
+                  <button
+                    className="btn ghost icon-btn name-action-btn"
+                    type="button"
+                    onClick={onCancelNameEdit}
+                    title={t('dashboard.nameCancel')}
+                  >
+                    <CloseIcon />
+                  </button>
+                ) : null}
               </div>
             </dd>
 

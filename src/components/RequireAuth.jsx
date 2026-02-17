@@ -1,11 +1,10 @@
-import { Navigate, useLocation } from 'react-router-dom';
+import { Navigate } from 'react-router-dom';
 import { useAuth } from './AuthProvider';
 import { useI18n } from './I18nProvider';
 
 export function RequireAuth({ children }) {
   const { user, loading } = useAuth();
   const { t } = useI18n();
-  const location = useLocation();
 
   if(loading) {
     return (
@@ -16,7 +15,7 @@ export function RequireAuth({ children }) {
   }
 
   if(!user) {
-    return <Navigate to={`/login?reauth=1&next=${encodeURIComponent(`${location.pathname}${location.search}`)}`} replace />;
+    return <Navigate to="/login" replace />;
   }
 
   return children;

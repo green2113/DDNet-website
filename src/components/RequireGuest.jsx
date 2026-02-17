@@ -1,11 +1,10 @@
-import { Navigate, useLocation } from 'react-router-dom';
+import { Navigate } from 'react-router-dom';
 import { useAuth } from './AuthProvider';
 import { useI18n } from './I18nProvider';
 
 export function RequireGuest({ children }) {
   const { user, loading } = useAuth();
   const { t } = useI18n();
-  const location = useLocation();
 
   if(loading) {
     return (
@@ -15,10 +14,7 @@ export function RequireGuest({ children }) {
     );
   }
 
-  const params = new URLSearchParams(location.search);
-  const isReauthFlow = params.get('reauth') === '1';
-
-  if(user && !isReauthFlow) {
+  if(user) {
     return <Navigate to="/dashboard" replace />;
   }
 

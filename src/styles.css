@@ -339,16 +339,18 @@ button.btn {
 
 .info dt {
   color: var(--muted);
+  line-height: 1.45;
 }
 
 .info dd {
   margin: 0;
   word-break: break-all;
+  line-height: 1.45;
 }
 
 .name-inline {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 8px;
   max-width: 100%;
 }
@@ -406,9 +408,10 @@ button.btn {
 }
 
 .name-action-btn {
-  min-width: 32px;
-  width: 32px;
-  height: 32px;
+  min-width: 30px;
+  width: 30px;
+  height: 30px;
+  margin-top: 1px;
 }
 
 .copy-toast {
