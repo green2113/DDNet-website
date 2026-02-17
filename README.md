@@ -46,10 +46,16 @@ npm run deploy
 npm run d1:migrate:local
 ```
 
-3. Start local pages runtime:
+3. Start Vite frontend:
 
 ```bash
 npm run dev
+```
+
+4. Build output for Pages:
+
+```bash
+npm run build
 ```
 
 ## 3) API contract for DDNet server
@@ -72,7 +78,9 @@ Response examples:
 
 ## 4) Frontend routes
 
-- `/` : register/login page
+- `/` : main menu
+- `/login` : login page
+- `/register` : signup page
 - `/dashboard` : account dashboard (invite code + rotate game login code)
 
 ## 5) DDNet server config example

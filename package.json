@@ -1,16 +1,25 @@
 {
   "name": "ddnet-req-login-pages",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "private": true,
   "description": "DDNet web login + invite API for Cloudflare Pages Functions",
+  "type": "module",
   "scripts": {
-    "build": "echo \"No build step needed for Pages Functions\"",
-    "dev": "wrangler pages dev public",
-    "deploy": "wrangler pages deploy public",
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "deploy": "wrangler pages deploy dist",
     "d1:migrate": "wrangler d1 migrations apply ddnet_req_login",
     "d1:migrate:local": "wrangler d1 migrations apply ddnet_req_login --local"
   },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-router-dom": "^6.28.1"
+  },
   "devDependencies": {
+    "@vitejs/plugin-react": "^4.3.4",
+    "vite": "^5.4.11",
     "wrangler": "^4.20.0"
   },
   "engines": {

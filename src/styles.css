@@ -30,6 +30,10 @@ body {
   overflow-x: hidden;
 }
 
+#root {
+  min-height: 100vh;
+}
+
 .bg-orb {
   position: fixed;
   pointer-events: none;
@@ -139,6 +143,10 @@ h3 {
   backdrop-filter: blur(2px);
 }
 
+.soft-gap {
+  margin-top: 14px;
+}
+
 .feature-grid {
   display: grid;
   gap: 14px;
@@ -202,6 +210,15 @@ input:focus {
   font-weight: 700;
   font-size: 0.94rem;
   cursor: pointer;
+}
+
+button.btn {
+  font-family: inherit;
+}
+
+.btn:disabled {
+  opacity: 0.7;
+  cursor: default;
 }
 
 .btn.ghost {
@@ -290,10 +307,6 @@ input:focus {
   background: rgba(37, 99, 235, 0.18);
 }
 
-.hidden {
-  display: none !important;
-}
-
 @media (max-width: 980px) {
   .feature-grid {
     grid-template-columns: 1fr;
@@ -301,5 +314,9 @@ input:focus {
 
   .info {
     grid-template-columns: 1fr;
+  }
+
+  .topbar {
+    flex-wrap: wrap;
   }
 }
