@@ -1,17 +1,27 @@
 import { Link } from 'react-router-dom';
+import { useI18n } from '../components/I18nProvider';
+import { TopBar } from '../components/Layout';
 
 export default function BlockedPage() {
+  const { t } = useI18n();
+
   return (
-    <main className="auth-shell">
+    <main className="shell">
+      <TopBar
+        right={(
+          <>
+            <Link className="btn ghost" to="/">{t('common.home')}</Link>
+            <Link className="btn" to="/login">{t('common.login')}</Link>
+          </>
+        )}
+      />
       <section className="panel auth-card">
-        <p className="eyebrow">ACCESS BLOCKED</p>
-        <h1>접속이 차단되었습니다</h1>
-        <p className="muted">
-          현재 네트워크가 VPN/프록시로 감지되어 로그인 및 회원가입이 제한됩니다.
-        </p>
+        <p className="eyebrow">{t('blocked.eyebrow')}</p>
+        <h1>{t('blocked.title')}</h1>
+        <p className="muted">{t('blocked.body')}</p>
         <div className="hero-actions">
-          <Link className="btn" to="/">메인으로</Link>
-          <Link className="btn ghost" to="/login">다시 시도</Link>
+          <Link className="btn" to="/">{t('common.home')}</Link>
+          <Link className="btn ghost" to="/login">{t('common.retry')}</Link>
         </div>
       </section>
     </main>

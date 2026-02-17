@@ -72,6 +72,12 @@ body {
   padding-top: 48px;
 }
 
+.auth-lang-row {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 10px;
+}
+
 .topbar {
   display: flex;
   align-items: center;
@@ -90,7 +96,32 @@ body {
 
 .top-actions {
   display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   gap: 10px;
+}
+
+.top-actions-nav {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.lang-select {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.lang-select select {
+  background: rgba(7, 12, 30, 0.78);
+  border: 1px solid var(--line);
+  color: var(--text);
+  border-radius: 10px;
+  padding: 6px 8px;
 }
 
 .hero {

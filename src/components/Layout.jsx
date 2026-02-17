@@ -1,10 +1,29 @@
 import { Link } from 'react-router-dom';
+import { useI18n } from './I18nProvider';
+
+export function LanguageSelector() {
+  const { language, setLanguage, languages, t } = useI18n();
+
+  return (
+    <label className="lang-select">
+      <span>{t('topbar.language')}</span>
+      <select value={language} onChange={(e) => setLanguage(e.target.value)}>
+        {languages.map((item) => (
+          <option key={item.code} value={item.code}>{item.label}</option>
+        ))}
+      </select>
+    </label>
+  );
+}
 
 export function TopBar({ right }) {
   return (
     <header className="topbar">
       <Link className="brand" to="/">DDNet Portal</Link>
-      <nav className="top-actions">{right}</nav>
+      <div className="top-actions">
+        <LanguageSelector />
+        <nav className="top-actions-nav">{right}</nav>
+      </div>
     </header>
   );
 }

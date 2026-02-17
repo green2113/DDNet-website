@@ -2,11 +2,13 @@ import { Link, useNavigate } from 'react-router-dom';
 import { useEffect, useState } from 'react';
 import { getGeo, register } from '../lib/api';
 import { useAuth } from '../components/AuthProvider';
-import { Feedback } from '../components/Layout';
+import { useI18n } from '../components/I18nProvider';
+import { Feedback, LanguageSelector } from '../components/Layout';
 
 export default function RegisterPage() {
   const navigate = useNavigate();
   const { refresh } = useAuth();
+  const { t } = useI18n();
   const [form, setForm] = useState({
     username: '',
     email: '',
@@ -44,7 +46,7 @@ export default function RegisterPage() {
     return () => {
       canceled = true;
     };
-  }, []);
+  }, [navigate]);
 
   const setField = (key, value) => {
     setForm((prev) => ({ ...prev, [key]: value }));
@@ -64,7 +66,7 @@ export default function RegisterPage() {
         inviteCode: form.inviteCode.trim(),
       });
       await refresh();
-      setFeedback({ type: 'ok', message: `회원가입 성공. 게임 코드: ${data.gameCode}` });
+      setFeedback({ type: 'ok', message: t('register.success', { code: data.gameCode }) });
       setTimeout(() => navigate('/dashboard'), 900);
     } catch (err) {
       if(err.status === 403 && err.payload?.code === 'VPN_PROXY_BLOCKED') {
@@ -79,42 +81,45 @@ export default function RegisterPage() {
 
   return (
     <main className="auth-shell">
-      <Link className="mini-link" to="/">← 메인으로</Link>
+      <div className="auth-lang-row">
+        <LanguageSelector />
+      </div>
+      <Link className="mini-link" to="/">{t('common.backHome')}</Link>
       <section className="panel auth-card">
-        <p className="eyebrow">CREATE ACCOUNT</p>
-        <h1>회원가입</h1>
-        <p className="muted">대만 사용자는 바로 가입 가능, 해외 사용자는 초대코드가 필요합니다.</p>
+        <p className="eyebrow">{t('register.eyebrow')}</p>
+        <h1>{t('register.title')}</h1>
+        <p className="muted">{t('register.subtitle')}</p>
 
         <form className="form" onSubmit={onSubmit}>
           <label>
-            아이디
+            {t('register.username')}
             <input value={form.username} onChange={(e) => setField('username', e.target.value)} minLength={3} maxLength={24} required autoComplete="username" />
           </label>
           <label>
-            이메일
+            {t('register.email')}
             <input type="email" value={form.email} onChange={(e) => setField('email', e.target.value)} required autoComplete="email" />
           </label>
           <label>
-            비밀번호
+            {t('register.password')}
             <input type="password" value={form.password} onChange={(e) => setField('password', e.target.value)} minLength={8} required autoComplete="new-password" />
           </label>
           {needsInviteCode ? (
             <label>
-              초대코드 (해외 가입 시 필수)
+              {t('register.invite')}
               <input
                 value={form.inviteCode}
                 onChange={(e) => setField('inviteCode', e.target.value)}
-                placeholder="8자리 코드"
+                placeholder={t('register.invitePlaceholder')}
                 minLength={8}
                 maxLength={32}
                 required
               />
             </label>
           ) : null}
-          <button className="btn" type="submit" disabled={submitting}>{submitting ? '생성 중...' : '계정 생성'}</button>
+          <button className="btn" type="submit" disabled={submitting}>{submitting ? t('common.creating') : t('register.submit')}</button>
         </form>
 
-        <p className="switch-line">이미 계정이 있으신가요? <Link to="/login">로그인</Link></p>
+        <p className="switch-line">{t('common.alreadyHaveAccount')} <Link to="/login">{t('common.login')}</Link></p>
         <Feedback feedback={feedback} />
       </section>
     </main>
