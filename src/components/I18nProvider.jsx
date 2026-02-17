@@ -3,11 +3,11 @@ import { createContext, useContext, useMemo, useState } from 'react';
 const STORAGE_KEY = 'ddnet_lang';
 
 const LANGUAGE_OPTIONS = [
-  { code: 'zh-TW', label: '🇹🇼 繁體中文' },
-  { code: 'zh-CN', label: '🇨🇳 简体中文' },
-  { code: 'ko', label: '🇰🇷 한국어' },
-  { code: 'en', label: '🇺🇸 English' },
-  { code: 'ja', label: '🇯🇵 日本語' },
+  { code: 'zh-TW', label: '繁體中文', flag: 'tw' },
+  { code: 'zh-CN', label: '简体中文', flag: 'cn' },
+  { code: 'ko', label: '한국어', flag: 'kr' },
+  { code: 'en', label: 'English', flag: 'us' },
+  { code: 'ja', label: '日本語', flag: 'jp' },
 ];
 
 const LOCALE_BY_LANGUAGE = {
@@ -558,5 +558,4 @@ export function useI18n() {
   if(!ctx) {
     throw new Error('useI18n must be used inside I18nProvider');
   }
-  return ctx;
-}
+ 

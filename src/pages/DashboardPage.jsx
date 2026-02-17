@@ -5,11 +5,23 @@ import { useAuth } from '../components/AuthProvider';
 import { useI18n } from '../components/I18nProvider';
 import { Feedback, TopBar } from '../components/Layout';
 
-function formatIso(value, locale) {
-  if(!value) return '-';
-  const d = new Date(value);
-  if(Number.isNaN(d.getTime())) return value;
-  return d.toLocaleString(locale, { hour12: false });
+function maskEmail(value) {
+  const email = String(value || '');
+  const at = email.indexOf('@');
+  if(at <= 0) {
+    return '-';
+  }
+
+  const local = email.slice(0, at);
+  const domain = email.slice(at + 1);
+  if(!domain) {
+    return '-';
+  }
+
+  const visibleCount = Math.min(3, local.length);
+  const visible = local.slice(0, visibleCount);
+  const hiddenLength = Math.max(1, local.length - visibleCount);
+  return `${visible}${'*'.repeat(hiddenLength)}@${domain}`;
 }
 
 function EyeIcon() {
@@ -38,7 +50,7 @@ function CopyIcon() {
 
 export default function DashboardPage() {
   const { user, refresh, logout } = useAuth();
-  const { t, locale } = useI18n();
+  const { t } = useI18n();
   const navigate = useNavigate();
   const [feedback, setFeedback] = useState(null);
   const [gameCode, setGameCode] = useState('');
@@ -47,13 +59,9 @@ export default function DashboardPage() {
   const [rotating, setRotating] = useState(false);
 
   const rows = useMemo(() => ([
-    [t('dashboard.rowUserId'), user?.id],
     [t('dashboard.rowUsername'), user?.username],
-    [t('dashboard.rowEmail'), user?.email],
-    [t('dashboard.rowCountry'), user?.country_signup],
-    [t('dashboard.rowCreatedAt'), formatIso(user?.created_at, locale)],
-    [t('dashboard.rowCodeRotated'), formatIso(user?.game_login_code_rotated_at, locale)],
-  ]), [locale, t, user]);
+    [t('dashboard.rowEmail'), maskEmail(user?.email)],
+  ]), [t, user]);
 
   const onRotate = async () => {
     setFeedback(null);

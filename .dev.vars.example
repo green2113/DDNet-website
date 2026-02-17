@@ -1,5 +1,5 @@
 SESSION_SECRET=replace-with-random-long-secret
-CODE_PEPPER=replace-with-random-long-pepper
+CODE_PEPPER=optional-legacy-hash-compat-only
 GAME_SERVER_API_KEY=replace-with-game-server-shared-key
 INVITE_DEFAULT_QUOTA=1
 

@@ -25,12 +25,12 @@ npm run d1:migrate
 ```
 
 If you already deployed before this update, run migrations again so `game_login_code_plain` is added.
-Without this migration, dashboard current-code view will stay empty.
+Without this migration, the service still works, but legacy hashed rows can only show current code after one reissue.
 
 5. Set production variables in Pages project:
 
 - `SESSION_SECRET`
-- `CODE_PEPPER`
+- `CODE_PEPPER` (optional: only for legacy hashed game-code compatibility)
 - `GAME_SERVER_API_KEY`
 - `INVITE_DEFAULT_QUOTA` (example: `1`)
 - `BLOCK_VPN_PROXY` (optional: `1` to block likely VPN/proxy/datacenter signups)

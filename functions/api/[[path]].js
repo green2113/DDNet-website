@@ -108,17 +108,15 @@ async function allocateInviteCode(env) {
 }
 
 async function allocateGameCode(env) {
-  const pepper = env.CODE_PEPPER;
-  if(!pepper) {
-    throw new Error('CODE_PEPPER is not configured');
-  }
+  const supportsPlainGameCode = await hasGameCodePlainColumn(env);
 
   for(let i = 0; i < 20; i += 1) {
     const code = randomCode(20);
-    const hash = await sha256Hex(`${pepper}:${code}`);
-    const exists = await env.DB.prepare('SELECT id FROM users WHERE game_login_code_hash = ? LIMIT 1').bind(hash).first();
+    const exists = supportsPlainGameCode
+      ? await env.DB.prepare('SELECT id FROM users WHERE game_login_code_hash = ? OR game_login_code_plain = ? LIMIT 1').bind(code, code).first()
+      : await env.DB.prepare('SELECT id FROM users WHERE game_login_code_hash = ? LIMIT 1').bind(code).first();
     if(!exists) {
-      return { code, hash };
+      return { code };
     }
   }
 
@@ -127,8 +125,8 @@ async function allocateGameCode(env) {
 
 async function handleRegister(context) {
 	const { request, env } = context;
-	if(!env.SESSION_SECRET || !env.CODE_PEPPER) {
-		return json({ ok: false, message: 'Missing SESSION_SECRET or CODE_PEPPER' }, 500);
+	if(!env.SESSION_SECRET) {
+		return json({ ok: false, message: 'Missing SESSION_SECRET' }, 500);
 	}
 
   if(vpnProxyBlockingEnabled(env)) {
@@ -247,10 +245,10 @@ async function handleRegister(context) {
           inviteQuota,
           inviter ? inviter.id : null,
           country,
-          gameData.hash,
-          gameData.code,
-          now,
-          now,
+            gameData.code,
+            gameData.code,
+            now,
+            now,
         ).run()
         : await env.DB.prepare(`
           INSERT INTO users (
@@ -278,9 +276,9 @@ async function handleRegister(context) {
           inviteQuota,
           inviter ? inviter.id : null,
           country,
-          gameData.hash,
-          now,
-          now,
+            gameData.code,
+            now,
+            now,
         ).run();
 
       if((inserted.meta?.changes || 0) !== 1) {
@@ -435,12 +433,12 @@ async function handleRotateGameCode(context) {
           UPDATE users
           SET game_login_code_hash = ?, game_login_code_plain = ?, game_login_code_rotated_at = ?
           WHERE id = ?
-        `).bind(gameData.hash, gameData.code, nowIso(), userId).run()
+        `).bind(gameData.code, gameData.code, nowIso(), userId).run()
         : await env.DB.prepare(`
           UPDATE users
           SET game_login_code_hash = ?, game_login_code_rotated_at = ?
           WHERE id = ?
-        `).bind(gameData.hash, nowIso(), userId).run();
+        `).bind(gameData.code, nowIso(), userId).run();
 
       if((updated.meta?.changes || 0) !== 1) {
         return json({ ok: false, message: 'Could not rotate game code' }, 500);
@@ -467,27 +465,30 @@ async function handleGetCurrentGameCode(context) {
     return result.error;
   }
 
-  if(!(await hasGameCodePlainColumn(env))) {
-    return json({ ok: true, code: '', hasCode: false });
-  }
+  const supportsPlainGameCode = await hasGameCodePlainColumn(env);
+  const row = supportsPlainGameCode
+    ? await env.DB.prepare(`
+      SELECT game_login_code_plain, game_login_code_hash
+      FROM users
+      WHERE id = ?
+      LIMIT 1
+    `).bind(result.user.id).first()
+    : await env.DB.prepare(`
+      SELECT game_login_code_hash
+      FROM users
+      WHERE id = ?
+      LIMIT 1
+    `).bind(result.user.id).first();
 
-  const row = await env.DB.prepare(`
-    SELECT game_login_code_plain
-    FROM users
-    WHERE id = ?
-    LIMIT 1
-  `).bind(result.user.id).first();
-
-  const code = String(row?.game_login_code_plain || '');
+  const plain = String(row?.game_login_code_plain || '');
+  const fallback = String(row?.game_login_code_hash || '');
+  const isLegacyHash = /^[0-9a-f]{64}$/i.test(fallback);
+  const code = plain || (isLegacyHash ? '' : fallback);
   return json({ ok: true, code, hasCode: code.length > 0 });
 }
 
 async function handleGameVerify(context) {
 	const { request, env } = context;
-	if(!env.CODE_PEPPER) {
-		return json({ ok: false, message: 'Missing CODE_PEPPER' }, 500);
-	}
-
 	const key = request.headers.get('X-Game-Server-Key') || '';
 
   if(!env.GAME_SERVER_API_KEY || !timingSafeEqual(key, env.GAME_SERVER_API_KEY)) {
@@ -509,13 +510,22 @@ async function handleGameVerify(context) {
     return json({ ok: false, message: 'Invalid code format' });
   }
 
-  const hash = await sha256Hex(`${env.CODE_PEPPER}:${code}`);
-  const user = await env.DB.prepare(`
+  let user = await env.DB.prepare(`
     SELECT id, username
     FROM users
     WHERE game_login_code_hash = ?
     LIMIT 1
-  `).bind(hash).first();
+  `).bind(code).first();
+
+  if(!user && env.CODE_PEPPER) {
+    const hash = await sha256Hex(`${env.CODE_PEPPER}:${code}`);
+    user = await env.DB.prepare(`
+      SELECT id, username
+      FROM users
+      WHERE game_login_code_hash = ?
+      LIMIT 1
+    `).bind(hash).first();
+  }
 
   if(!user) {
     return json({ ok: false, message: 'Code not found' });
