@@ -113,19 +113,63 @@ body {
 }
 
 .lang-select {
+  position: relative;
+}
+
+.lang-trigger {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  color: var(--muted);
-  font-size: 0.9rem;
-}
-
-.lang-select select {
+  min-width: 128px;
+  justify-content: flex-start;
   background: rgba(7, 12, 30, 0.78);
   border: 1px solid var(--line);
   color: var(--text);
   border-radius: 10px;
-  padding: 6px 8px;
+  padding: 7px 10px;
+  font-family: inherit;
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+
+.lang-trigger .fi,
+.lang-option .fi {
+  border-radius: 2px;
+}
+
+.lang-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  min-width: 170px;
+  z-index: 20;
+  background: rgba(12, 18, 39, 0.98);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 6px;
+  display: grid;
+  gap: 4px;
+}
+
+.lang-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text);
+  border-radius: 8px;
+  padding: 7px 8px;
+  font-family: inherit;
+  font-size: 0.9rem;
+  cursor: pointer;
+  text-align: left;
+}
+
+.lang-option:hover {
+  background: rgba(79, 124, 255, 0.18);
+  border: 1px solid var(--line);
 }
 
 .hero {

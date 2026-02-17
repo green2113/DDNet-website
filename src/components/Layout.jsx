@@ -1,17 +1,64 @@
+import { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useI18n } from './I18nProvider';
 
 export function LanguageSelector() {
   const { language, setLanguage, languages } = useI18n();
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef(null);
+  const selected = languages.find((item) => item.code === language) || languages[0];
+
+  useEffect(() => {
+    const onDocClick = (event) => {
+      if(rootRef.current && !rootRef.current.contains(event.target)) {
+        setOpen(false);
+      }
+    };
+    const onEscape = (event) => {
+      if(event.key === 'Escape') {
+        setOpen(false);
+      }
+    };
+
+    document.addEventListener('mousedown', onDocClick);
+    document.addEventListener('keydown', onEscape);
+    return () => {
+      document.removeEventListener('mousedown', onDocClick);
+      document.removeEventListener('keydown', onEscape);
+    };
+  }, []);
 
   return (
-    <label className="lang-select">
-      <select aria-label="language-selector" value={language} onChange={(e) => setLanguage(e.target.value)}>
-        {languages.map((item) => (
-          <option key={item.code} value={item.code}>{item.label}</option>
-        ))}
-      </select>
-    </label>
+    <div className="lang-select" ref={rootRef}>
+      <button
+        className="lang-trigger"
+        type="button"
+        aria-label="language-selector"
+        aria-expanded={open}
+        onClick={() => setOpen((prev) => !prev)}
+      >
+        <span className={`fi fi-${selected.flag}`} />
+        <span>{selected.label}</span>
+      </button>
+      {open ? (
+        <div className="lang-menu" role="menu">
+          {languages.map((item) => (
+            <button
+              key={item.code}
+              className="lang-option"
+              type="button"
+              onClick={() => {
+                setLanguage(item.code);
+                setOpen(false);
+              }}
+            >
+              <span className={`fi fi-${item.flag}`} />
+              <span>{item.label}</span>
+            </button>
+          ))}
+        </div>
+      ) : null}
+    </div>
   );
 }
 
