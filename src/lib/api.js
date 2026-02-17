@@ -24,6 +24,10 @@ export async function getMe() {
   return data.user;
 }
 
+export async function getGeo() {
+  return api('/api/geo', { method: 'GET' });
+}
+
 export async function login(payload) {
   return api('/api/auth/login', {
     method: 'POST',

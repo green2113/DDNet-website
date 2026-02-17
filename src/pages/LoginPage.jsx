@@ -7,7 +7,7 @@ import { Feedback } from '../components/Layout';
 export default function LoginPage() {
   const navigate = useNavigate();
   const { user, refresh } = useAuth();
-  const [identifier, setIdentifier] = useState('');
+  const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [feedback, setFeedback] = useState(null);
@@ -17,7 +17,7 @@ export default function LoginPage() {
     setFeedback(null);
     setSubmitting(true);
     try {
-      await login({ identifier: identifier.trim(), password });
+      await login({ email: email.trim(), password });
       await refresh();
       setFeedback({ type: 'ok', message: '로그인 성공. 대시보드로 이동합니다.' });
       setTimeout(() => navigate('/dashboard'), 450);
@@ -34,7 +34,7 @@ export default function LoginPage() {
       <section className="panel auth-card">
         <p className="eyebrow">WELCOME BACK</p>
         <h1>로그인</h1>
-        <p className="muted">등록된 이메일 또는 아이디로 로그인하세요.</p>
+        <p className="muted">등록된 이메일과 비밀번호로 로그인하세요.</p>
 
         {user ? (
           <section className="panel soft-gap">
@@ -47,8 +47,8 @@ export default function LoginPage() {
 
         <form className="form" onSubmit={onSubmit}>
           <label>
-            이메일 또는 아이디
-            <input value={identifier} onChange={(e) => setIdentifier(e.target.value)} required autoComplete="username" />
+            이메일
+            <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required autoComplete="email" />
           </label>
           <label>
             비밀번호

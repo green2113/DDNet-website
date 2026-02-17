@@ -1,6 +1,6 @@
 import { Link, useNavigate } from 'react-router-dom';
-import { useState } from 'react';
-import { register } from '../lib/api';
+import { useEffect, useState } from 'react';
+import { getGeo, register } from '../lib/api';
 import { useAuth } from '../components/AuthProvider';
 import { Feedback } from '../components/Layout';
 
@@ -15,10 +15,38 @@ export default function RegisterPage() {
   });
   const [submitting, setSubmitting] = useState(false);
   const [feedback, setFeedback] = useState(null);
+  const [country, setCountry] = useState('');
+  const [geoLoaded, setGeoLoaded] = useState(false);
+
+  useEffect(() => {
+    let canceled = false;
+    const loadGeo = async () => {
+      try {
+        const data = await getGeo();
+        if(!canceled) {
+          setCountry(String(data.country || '').toUpperCase());
+        }
+      } catch {
+        if(!canceled) {
+          setCountry('');
+        }
+      } finally {
+        if(!canceled) {
+          setGeoLoaded(true);
+        }
+      }
+    };
+    loadGeo();
+    return () => {
+      canceled = true;
+    };
+  }, []);
 
   const setField = (key, value) => {
     setForm((prev) => ({ ...prev, [key]: value }));
   };
+
+  const needsInviteCode = geoLoaded && country !== 'TW';
 
   const onSubmit = async (event) => {
     event.preventDefault();
@@ -48,6 +76,7 @@ export default function RegisterPage() {
         <p className="eyebrow">CREATE ACCOUNT</p>
         <h1>회원가입</h1>
         <p className="muted">대만 사용자는 바로 가입 가능, 해외 사용자는 초대코드가 필요합니다.</p>
+        <p className="country-note">감지된 국가: <strong>{geoLoaded ? (country || 'ZZ') : '확인 중...'}</strong></p>
 
         <form className="form" onSubmit={onSubmit}>
           <label>
@@ -62,10 +91,20 @@ export default function RegisterPage() {
             비밀번호
             <input type="password" value={form.password} onChange={(e) => setField('password', e.target.value)} minLength={8} required autoComplete="new-password" />
           </label>
-          <label>
-            초대코드 (해외 가입 시 필수)
-            <input value={form.inviteCode} onChange={(e) => setField('inviteCode', e.target.value)} placeholder="예: ADMINTW1" />
-          </label>
+          {needsInviteCode ? (
+            <label>
+              초대코드 (해외 가입 시 필수)
+              <input
+                value={form.inviteCode}
+                onChange={(e) => setField('inviteCode', e.target.value)}
+                placeholder="8자리 코드 예: ADMINTW1"
+                minLength={8}
+                maxLength={32}
+                required
+              />
+              <span className="input-help">영문/숫자 조합의 8자리 코드</span>
+            </label>
+          ) : null}
           <button className="btn" type="submit" disabled={submitting}>{submitting ? '생성 중...' : '계정 생성'}</button>
         </form>
 

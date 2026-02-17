@@ -289,19 +289,23 @@ async function handleLogin(context) {
 	const body = await parseRequestBody(request);
 	const data = typeof body === 'string' ? {} : (body || {});
 
-  const identifier = String(data.identifier || '').trim();
+  const email = lower(data.email || data.identifier || '');
   const password = String(data.password || '');
 
-  if(!identifier || !password) {
-    return json({ ok: false, message: 'identifier and password are required' }, 400);
+  if(!email || !password) {
+    return json({ ok: false, message: 'email and password are required' }, 400);
+  }
+
+  if(!isValidEmail(email)) {
+    return json({ ok: false, message: 'Invalid email format' }, 400);
   }
 
   const row = await env.DB.prepare(`
     SELECT id, password_hash
     FROM users
-    WHERE email_lower = ? OR username_lower = ?
+    WHERE email_lower = ?
     LIMIT 1
-  `).bind(lower(identifier), lower(identifier)).first();
+  `).bind(email).first();
 
   if(!row) {
     return json({ ok: false, message: 'Invalid credentials' }, 401);
@@ -436,6 +440,10 @@ export async function onRequest(context) {
 
   if(request.method === 'GET' && path === '/health') {
     return json({ ok: true, now: nowIso() });
+  }
+
+  if(request.method === 'GET' && path === '/geo') {
+    return json({ ok: true, country: getCountryCode(request) });
   }
 
   if(request.method === 'POST' && path === '/auth/register') {

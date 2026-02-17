@@ -232,6 +232,17 @@ button.btn {
   margin: 0;
 }
 
+.country-note {
+  margin: 8px 0 0;
+  color: #bdd0ff;
+  font-size: 0.92rem;
+}
+
+.input-help {
+  color: #9fb4df;
+  font-size: 0.82rem;
+}
+
 .switch-line {
   margin: 14px 0 0;
   color: var(--muted);
