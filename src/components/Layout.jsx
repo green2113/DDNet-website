@@ -2,12 +2,11 @@ import { Link } from 'react-router-dom';
 import { useI18n } from './I18nProvider';
 
 export function LanguageSelector() {
-  const { language, setLanguage, languages, t } = useI18n();
+  const { language, setLanguage, languages } = useI18n();
 
   return (
     <label className="lang-select">
-      <span>{t('topbar.language')}</span>
-      <select value={language} onChange={(e) => setLanguage(e.target.value)}>
+      <select aria-label="language-selector" value={language} onChange={(e) => setLanguage(e.target.value)}>
         {languages.map((item) => (
           <option key={item.code} value={item.code}>{item.label}</option>
         ))}
