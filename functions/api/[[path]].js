@@ -139,13 +139,13 @@ async function handleRegister(context) {
 	const body = await parseRequestBody(request);
 	const data = typeof body === 'string' ? {} : (body || {});
 
-  const username = String(data.username || '').trim();
+  const username = String(data.name || data.username || '').trim();
   const email = lower(data.email || '');
   const password = String(data.password || '');
   const inviteInput = normalizeCode(data.inviteCode || '');
 
   if(!isValidUsername(username)) {
-    return json({ ok: false, message: 'Username must be 3-24 chars (A-Z, a-z, 0-9, _)' }, 400);
+    return json({ ok: false, message: 'Name must be 1-15 UTF-8 bytes and cannot start with /' }, 400);
   }
   if(!isValidEmail(email)) {
     return json({ ok: false, message: 'Invalid email format' }, 400);
@@ -156,7 +156,7 @@ async function handleRegister(context) {
 
   const existingByName = await env.DB.prepare('SELECT id FROM users WHERE username_lower = ? LIMIT 1').bind(lower(username)).first();
   if(existingByName) {
-    return json({ ok: false, message: 'Username already exists' }, 409);
+    return json({ ok: false, message: 'Name already exists' }, 409);
   }
 
   const existingByEmail = await env.DB.prepare('SELECT id FROM users WHERE email_lower = ? LIMIT 1').bind(email).first();
@@ -414,6 +414,50 @@ async function handleMe(context) {
   return json({ ok: true, user: result.user });
 }
 
+async function handleUpdateProfileName(context) {
+  const { request, env } = context;
+  const result = await currentUser(context);
+  if(result.error) {
+    return result.error;
+  }
+
+  const body = await parseRequestBody(request);
+  const data = typeof body === 'string' ? {} : (body || {});
+  const nextName = String(data.name || '').trim();
+
+  if(!isValidUsername(nextName)) {
+    return json({ ok: false, message: 'Name must be 1-15 UTF-8 bytes and cannot start with /' }, 400);
+  }
+
+  if(nextName === String(result.user.username || '')) {
+    return json({ ok: true, user: result.user, message: 'Name updated' });
+  }
+
+  const exists = await env.DB.prepare(`
+    SELECT id
+    FROM users
+    WHERE username_lower = ?
+      AND id != ?
+    LIMIT 1
+  `).bind(lower(nextName), result.user.id).first();
+  if(exists) {
+    return json({ ok: false, message: 'Name already exists' }, 409);
+  }
+
+  const updated = await env.DB.prepare(`
+    UPDATE users
+    SET username = ?, username_lower = ?
+    WHERE id = ?
+  `).bind(nextName, lower(nextName), result.user.id).run();
+
+  if((updated.meta?.changes || 0) !== 1) {
+    return json({ ok: false, message: 'Could not update name' }, 500);
+  }
+
+  const user = await publicUserById(env, result.user.id);
+  return json({ ok: true, user, message: 'Name updated' });
+}
+
 async function handleRotateGameCode(context) {
   const { request, env } = context;
   const result = await currentUser(context);
@@ -534,6 +578,7 @@ async function handleGameVerify(context) {
   return json({
     ok: true,
     accountId: user.id,
+    name: user.username,
     username: user.username,
   });
 }
@@ -576,6 +621,10 @@ export async function onRequest(context) {
 
   if(request.method === 'GET' && path === '/me') {
     return handleMe(context);
+  }
+
+  if(request.method === 'POST' && path === '/profile/name') {
+    return handleUpdateProfileName(context);
   }
 
   if(request.method === 'POST' && path === '/game-code/rotate') {

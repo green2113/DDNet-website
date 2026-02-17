@@ -65,7 +65,7 @@ export function LanguageSelector() {
 export function TopBar({ right }) {
   return (
     <header className="topbar">
-      <Link className="brand" to="/">DDNet Portal</Link>
+      <Link className="brand" to="/">DDNet Server</Link>
       <div className="top-actions">
         <LanguageSelector />
         <nav className="top-actions-nav">{right}</nav>

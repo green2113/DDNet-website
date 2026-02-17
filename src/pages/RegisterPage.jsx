@@ -10,7 +10,7 @@ export default function RegisterPage() {
   const { refresh } = useAuth();
   const { t } = useI18n();
   const [form, setForm] = useState({
-    username: '',
+    name: '',
     email: '',
     password: '',
     inviteCode: '',
@@ -60,7 +60,7 @@ export default function RegisterPage() {
     setSubmitting(true);
     try {
       const data = await register({
-        username: form.username.trim(),
+        name: form.name.trim(),
         email: form.email.trim(),
         password: form.password,
         inviteCode: form.inviteCode.trim(),
@@ -92,8 +92,9 @@ export default function RegisterPage() {
 
         <form className="form" onSubmit={onSubmit}>
           <label>
-            {t('register.username')}
-            <input value={form.username} onChange={(e) => setField('username', e.target.value)} minLength={3} maxLength={24} required autoComplete="username" />
+            {t('register.name')}
+            <input value={form.name} onChange={(e) => setField('name', e.target.value)} maxLength={32} required autoComplete="nickname" />
+            <small className="input-help">{t('register.nameHint')}</small>
           </label>
           <label>
             {t('register.email')}

@@ -53,3 +53,10 @@ export async function rotateGameCode() {
 export async function getCurrentGameCode() {
   return api('/api/game-code/current', { method: 'GET' });
 }
+
+export async function updateProfileName(payload) {
+  return api('/api/profile/name', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}

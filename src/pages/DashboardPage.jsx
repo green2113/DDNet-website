@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { getCurrentGameCode, rotateGameCode } from '../lib/api';
+import { getCurrentGameCode, rotateGameCode, updateProfileName } from '../lib/api';
 import { useAuth } from '../components/AuthProvider';
 import { useI18n } from '../components/I18nProvider';
 import { Feedback, TopBar } from '../components/Layout';
@@ -57,13 +57,20 @@ export default function DashboardPage() {
   const [loadingCode, setLoadingCode] = useState(true);
   const [revealed, setRevealed] = useState(false);
   const [rotating, setRotating] = useState(false);
+  const [showRotateConfirm, setShowRotateConfirm] = useState(false);
+  const [nameForm, setNameForm] = useState('');
+  const [savingName, setSavingName] = useState(false);
 
   const rows = useMemo(() => ([
     [t('dashboard.rowUsername'), user?.username],
     [t('dashboard.rowEmail'), maskEmail(user?.email)],
   ]), [t, user]);
 
-  const onRotate = async () => {
+  useEffect(() => {
+    setNameForm(String(user?.username || ''));
+  }, [user?.username]);
+
+  const executeRotate = async () => {
     setFeedback(null);
     setRotating(true);
     try {
@@ -77,6 +84,19 @@ export default function DashboardPage() {
     } finally {
       setRotating(false);
     }
+  };
+
+  const onRotateClick = () => {
+    if(rotating || loadingCode) {
+      return;
+    }
+
+    if(gameCode) {
+      setShowRotateConfirm(true);
+      return;
+    }
+
+    executeRotate();
   };
 
   useEffect(() => {
@@ -129,6 +149,27 @@ export default function DashboardPage() {
     }
   };
 
+  const onSubmitName = async (event) => {
+    event.preventDefault();
+    const trimmed = nameForm.trim();
+    if(!trimmed) {
+      setFeedback({ type: 'error', message: t('dashboard.nameRequired') });
+      return;
+    }
+
+    setSavingName(true);
+    setFeedback(null);
+    try {
+      await updateProfileName({ name: trimmed });
+      await refresh();
+      setFeedback({ type: 'ok', message: t('dashboard.nameUpdated') });
+    } catch (err) {
+      setFeedback({ type: 'error', message: err.message });
+    } finally {
+      setSavingName(false);
+    }
+  };
+
   return (
     <main className="shell">
       <TopBar
@@ -154,6 +195,22 @@ export default function DashboardPage() {
               </Fragment>
             ))}
           </dl>
+          <form className="form soft-gap" onSubmit={onSubmitName}>
+            <label>
+              {t('dashboard.nameInput')}
+              <input
+                value={nameForm}
+                onChange={(event) => setNameForm(event.target.value)}
+                maxLength={32}
+                required
+                autoComplete="nickname"
+              />
+              <small className="input-help">{t('dashboard.nameHint')}</small>
+            </label>
+            <button className="btn" type="submit" disabled={savingName}>
+              {savingName ? t('dashboard.nameSaving') : t('dashboard.nameSave')}
+            </button>
+          </form>
         </article>
 
         <article className="panel">
@@ -189,9 +246,8 @@ export default function DashboardPage() {
               </button>
             </div>
           </div>
-          {!loadingCode && !gameCode ? <p className="muted">{t('dashboard.noCurrentCode')}</p> : null}
-          <button className="btn" type="button" onClick={onRotate} disabled={rotating}>
-            {rotating ? t('dashboard.rotating') : t('dashboard.rotate')}
+          <button className="btn" type="button" onClick={onRotateClick} disabled={rotating || loadingCode}>
+            {rotating ? t('dashboard.rotating') : (gameCode ? t('dashboard.reissueCode') : t('dashboard.issueCode'))}
           </button>
           {gameCode ? <pre className="mono">{t('dashboard.newCodeInGame')}: /login {gameCode}</pre> : null}
         </article>
@@ -205,6 +261,30 @@ export default function DashboardPage() {
           <li>{t('dashboard.step3')}</li>
         </ol>
       </section>
+
+      {showRotateConfirm ? (
+        <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label={t('dashboard.rotateWarnTitle')}>
+          <section className="modal-card">
+            <h3>{t('dashboard.rotateWarnTitle')}</h3>
+            <p className="muted">{t('dashboard.rotateWarnBody')}</p>
+            <div className="modal-actions">
+              <button className="btn ghost" type="button" onClick={() => setShowRotateConfirm(false)}>
+                {t('common.cancel')}
+              </button>
+              <button
+                className="btn"
+                type="button"
+                onClick={() => {
+                  setShowRotateConfirm(false);
+                  executeRotate();
+                }}
+              >
+                {t('dashboard.rotateWarnConfirm')}
+              </button>
+            </div>
+          </section>
+        </div>
+      ) : null}
 
       <Feedback feedback={feedback} />
     </main>

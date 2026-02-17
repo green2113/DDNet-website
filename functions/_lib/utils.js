@@ -341,7 +341,26 @@ export async function parseRequestBody(request) {
 }
 
 export function isValidUsername(value) {
-  return typeof value === 'string' && /^[A-Za-z0-9_]{3,24}$/.test(value);
+  if(typeof value !== 'string') {
+    return false;
+  }
+
+  const trimmed = value.trim();
+  if(!trimmed) {
+    return false;
+  }
+
+  if(trimmed.startsWith('/')) {
+    return false;
+  }
+
+  if(/[\u0000-\u001f\u007f]/.test(trimmed)) {
+    return false;
+  }
+
+  const bytes = encoder.encode(trimmed).length;
+  // DDNet MAX_NAME_LENGTH is 16 including null terminator => 15 UTF-8 bytes max.
+  return bytes >= 1 && bytes <= 15;
 }
 
 export function isValidEmail(value) {
