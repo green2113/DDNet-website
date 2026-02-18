@@ -229,6 +229,9 @@ export default function DashboardPage() {
       ? t('dashboard.accessBannedPermanent')
       : t('dashboard.accessBannedUntil', { time: banUntilText }))
     : t('dashboard.accessActive');
+  const accessStatusClass = isBanned
+    ? (banPermanent ? 'status-text status-permanent' : 'status-text status-temporary')
+    : 'status-text status-normal';
 
   const onLogout = async () => {
     try {
@@ -313,7 +316,7 @@ export default function DashboardPage() {
             <dt>{t('dashboard.rowEmail')}</dt>
             <dd>{maskEmail(user?.email)}</dd>
             <dt>{t('dashboard.rowAccess')}</dt>
-            <dd>{accessStatusText}</dd>
+            <dd><span className={accessStatusClass}>{accessStatusText}</span></dd>
           </dl>
         </article>
 
