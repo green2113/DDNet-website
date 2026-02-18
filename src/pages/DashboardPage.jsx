@@ -267,6 +267,8 @@ export default function DashboardPage() {
         <article className="panel">
           <h3>{t('dashboard.accountTitle')}</h3>
           <dl className="info">
+            <dt>{t('dashboard.rowUserId')}</dt>
+            <dd>{user?.id ?? '-'}</dd>
             <dt>{t('dashboard.rowUsername')}</dt>
             <dd>
               <div className="name-inline">
