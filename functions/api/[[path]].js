@@ -718,6 +718,8 @@ async function handleGameVerify(context) {
   const hasDummyHash = await hasUsersColumn(env, 'dummy_login_code_hash');
   const hasDummyPlain = hasDummyHash && await hasUsersColumn(env, 'dummy_login_code_plain');
 
+  let matchedDummyCode = false;
+
   let user = await env.DB.prepare(`
     SELECT id, username, ban_is_permanent, ban_until, ban_reason
     FROM users
@@ -739,6 +741,9 @@ async function handleGameVerify(context) {
         WHERE dummy_login_code_hash = ?
         LIMIT 1
       `).bind(code).first();
+    if(user) {
+      matchedDummyCode = true;
+    }
   }
 
   if(!user && env.CODE_PEPPER) {
@@ -756,6 +761,9 @@ async function handleGameVerify(context) {
         WHERE dummy_login_code_hash = ?
         LIMIT 1
       `).bind(hash).first();
+      if(user) {
+        matchedDummyCode = true;
+      }
     }
   }
 
@@ -782,6 +790,7 @@ async function handleGameVerify(context) {
       banUntil: banUntilRaw,
       banReason: String(user.ban_reason || ''),
       remainingSeconds,
+      dummyCode: matchedDummyCode,
     });
   }
 
@@ -790,6 +799,7 @@ async function handleGameVerify(context) {
     accountId: user.id,
     name: user.username,
     username: user.username,
+    dummyCode: matchedDummyCode,
   });
 }
 
