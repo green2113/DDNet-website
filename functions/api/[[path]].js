@@ -62,6 +62,9 @@ async function publicUserById(env, userId) {
       invite_quota,
       invite_used,
       country_signup,
+      ban_is_permanent,
+      ban_until,
+      ban_reason,
       game_login_code_rotated_at,
       created_at
     FROM users
@@ -556,7 +559,7 @@ async function handleGameVerify(context) {
   }
 
   let user = await env.DB.prepare(`
-    SELECT id, username
+    SELECT id, username, ban_is_permanent, ban_until, ban_reason
     FROM users
     WHERE game_login_code_hash = ?
     LIMIT 1
@@ -565,7 +568,7 @@ async function handleGameVerify(context) {
   if(!user && env.CODE_PEPPER) {
     const hash = await sha256Hex(`${env.CODE_PEPPER}:${code}`);
     user = await env.DB.prepare(`
-      SELECT id, username
+      SELECT id, username, ban_is_permanent, ban_until, ban_reason
       FROM users
       WHERE game_login_code_hash = ?
       LIMIT 1
@@ -576,12 +579,98 @@ async function handleGameVerify(context) {
     return json({ ok: false, message: 'Code not found' });
   }
 
+  const now = Date.now();
+  const permanent = Number(user.ban_is_permanent || 0) !== 0;
+  const banUntilRaw = String(user.ban_until || '');
+  const banUntilMs = banUntilRaw ? Date.parse(banUntilRaw) : NaN;
+  const tempActive = Number.isFinite(banUntilMs) && banUntilMs > now;
+  const banned = permanent || tempActive;
+
+  if(banned) {
+    const remainingSeconds = tempActive ? Math.max(0, Math.ceil((banUntilMs - now) / 1000)) : 0;
+    return json({
+      ok: false,
+      code: 'ACCOUNT_BANNED',
+      message: permanent
+        ? 'This account is permanently restricted from gameplay.'
+        : `This account is temporarily restricted from gameplay. Remaining time: ${remainingSeconds} second(s).`,
+      banPermanent: permanent,
+      banUntil: banUntilRaw,
+      banReason: String(user.ban_reason || ''),
+      remainingSeconds,
+    });
+  }
+
   return json({
     ok: true,
     accountId: user.id,
     name: user.username,
     username: user.username,
   });
+}
+
+async function handleGameBan(context) {
+  const { request, env } = context;
+  const key = request.headers.get('X-Game-Server-Key') || '';
+  if(!env.GAME_SERVER_API_KEY || !timingSafeEqual(key, env.GAME_SERVER_API_KEY)) {
+    return json({ ok: false, message: 'Unauthorized game server key' }, 401);
+  }
+
+  const accountId = Number(request.headers.get('X-Game-Account-Id') || 0);
+  const permanentHeader = String(request.headers.get('X-Game-Ban-Permanent') || '').toLowerCase();
+  const minutesHeader = Number(request.headers.get('X-Game-Ban-Minutes') || 0);
+  const reason = String(request.headers.get('X-Game-Ban-Reason') || '').trim();
+
+  if(!Number.isFinite(accountId) || accountId <= 0) {
+    return json({ ok: false, message: 'Invalid account id' }, 400);
+  }
+
+  const permanent = ['1', 'true', 'yes', 'on'].includes(permanentHeader) || minutesHeader <= 0;
+  const minutes = Math.max(1, Math.floor(minutesHeader));
+  const banUntil = permanent ? null : new Date(Date.now() + minutes * 60 * 1000).toISOString();
+
+  const updated = await env.DB.prepare(`
+    UPDATE users
+    SET ban_is_permanent = ?, ban_until = ?, ban_reason = ?
+    WHERE id = ?
+  `).bind(permanent ? 1 : 0, banUntil, reason, accountId).run();
+
+  if((updated.meta?.changes || 0) !== 1) {
+    return json({ ok: false, message: 'Account not found' }, 404);
+  }
+
+  return json({
+    ok: true,
+    accountId,
+    banPermanent: permanent,
+    banUntil,
+    banReason: reason,
+  });
+}
+
+async function handleGameUnban(context) {
+  const { request, env } = context;
+  const key = request.headers.get('X-Game-Server-Key') || '';
+  if(!env.GAME_SERVER_API_KEY || !timingSafeEqual(key, env.GAME_SERVER_API_KEY)) {
+    return json({ ok: false, message: 'Unauthorized game server key' }, 401);
+  }
+
+  const accountId = Number(request.headers.get('X-Game-Account-Id') || 0);
+  if(!Number.isFinite(accountId) || accountId <= 0) {
+    return json({ ok: false, message: 'Invalid account id' }, 400);
+  }
+
+  const updated = await env.DB.prepare(`
+    UPDATE users
+    SET ban_is_permanent = 0, ban_until = NULL, ban_reason = ''
+    WHERE id = ?
+  `).bind(accountId).run();
+
+  if((updated.meta?.changes || 0) !== 1) {
+    return json({ ok: false, message: 'Account not found' }, 404);
+  }
+
+  return json({ ok: true, accountId });
 }
 
 export async function onRequest(context) {
@@ -638,6 +727,14 @@ export async function onRequest(context) {
 
   if(request.method === 'POST' && path === '/game/verify') {
     return handleGameVerify(context);
+  }
+
+  if(request.method === 'POST' && path === '/game/ban') {
+    return handleGameBan(context);
+  }
+
+  if(request.method === 'POST' && path === '/game/unban') {
+    return handleGameUnban(context);
   }
 
   return json({ ok: false, message: 'API route not found' }, 404);

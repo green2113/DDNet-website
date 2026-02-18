@@ -82,7 +82,7 @@ function ToastCheckIcon() {
 
 export default function DashboardPage() {
   const { user, refresh, logout } = useAuth();
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const navigate = useNavigate();
   const [feedback, setFeedback] = useState(null);
   const [gameCode, setGameCode] = useState('');
@@ -216,6 +216,20 @@ export default function DashboardPage() {
     ? '••••••••••••••••••••'
     : (!gameCode ? '-' : (revealed ? gameCode : '•'.repeat(gameCode.length)));
 
+  const banPermanent = Number(user?.ban_is_permanent || 0) !== 0;
+  const banUntilRaw = String(user?.ban_until || '');
+  const banUntilMs = banUntilRaw ? Date.parse(banUntilRaw) : NaN;
+  const banTempActive = Number.isFinite(banUntilMs) && banUntilMs > Date.now();
+  const isBanned = banPermanent || banTempActive;
+  const banUntilText = banTempActive
+    ? new Date(banUntilMs).toLocaleString(locale || 'en-US')
+    : '';
+  const accessStatusText = isBanned
+    ? (banPermanent
+      ? t('dashboard.accessBannedPermanent')
+      : t('dashboard.accessBannedUntil', { time: banUntilText }))
+    : t('dashboard.accessActive');
+
   const onLogout = async () => {
     try {
       await logout();
@@ -298,6 +312,8 @@ export default function DashboardPage() {
 
             <dt>{t('dashboard.rowEmail')}</dt>
             <dd>{maskEmail(user?.email)}</dd>
+            <dt>{t('dashboard.rowAccess')}</dt>
+            <dd>{accessStatusText}</dd>
           </dl>
         </article>
 

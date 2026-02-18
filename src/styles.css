@@ -347,17 +347,20 @@ button.btn {
   margin: 0;
   word-break: break-all;
   line-height: 1.2;
+  display: flex;
+  align-items: flex-start;
 }
 
 .name-inline {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 6px;
   max-width: 100%;
 }
 
 .name-inline-value {
   overflow-wrap: anywhere;
+  line-height: 1.2;
 }
 
 .name-inline-input {
@@ -413,6 +416,7 @@ button.btn {
   width: 28px;
   height: 28px;
   margin-top: 0;
+  align-self: flex-start;
 }
 
 .copy-toast {
