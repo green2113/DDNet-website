@@ -54,6 +54,14 @@ export async function getCurrentGameCode() {
   return api('/api/game-code/current', { method: 'GET' });
 }
 
+export async function rotateDummyGameCode() {
+  return api('/api/game-code/dummy/rotate', { method: 'POST' });
+}
+
+export async function getCurrentDummyGameCode() {
+  return api('/api/game-code/dummy/current', { method: 'GET' });
+}
+
 export async function updateProfileName(payload) {
   return api('/api/profile/name', {
     method: 'POST',

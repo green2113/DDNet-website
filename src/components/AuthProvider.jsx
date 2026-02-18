@@ -7,15 +7,19 @@ export function AuthProvider({ children }) {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
 
-  const refresh = useCallback(async () => {
-    setLoading(true);
+  const refresh = useCallback(async ({ silent = false } = {}) => {
+    if(!silent) {
+      setLoading(true);
+    }
     try {
       const me = await getMe();
       setUser(me);
     } catch {
       setUser(null);
     } finally {
-      setLoading(false);
+      if(!silent) {
+        setLoading(false);
+      }
     }
   }, []);
 

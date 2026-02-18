@@ -140,6 +140,37 @@ async function allocateGameCode(env) {
   throw new Error('Failed to allocate game code');
 }
 
+async function allocateDummyGameCode(env) {
+  const supportsPlainGameCode = await hasGameCodePlainColumn(env);
+  const supportsDummyPlain = await hasUsersColumn(env, 'dummy_login_code_plain');
+
+  for(let i = 0; i < 20; i += 1) {
+    const code = randomCode(10);
+    const exists = supportsPlainGameCode
+      ? await env.DB.prepare(`
+        SELECT id
+        FROM users
+        WHERE game_login_code_hash = ?
+           OR game_login_code_plain = ?
+           OR dummy_login_code_hash = ?
+           ${supportsDummyPlain ? 'OR dummy_login_code_plain = ?' : ''}
+        LIMIT 1
+      `).bind(...(supportsDummyPlain ? [code, code, code, code] : [code, code, code])).first()
+      : await env.DB.prepare(`
+        SELECT id
+        FROM users
+        WHERE game_login_code_hash = ?
+           OR dummy_login_code_hash = ?
+        LIMIT 1
+      `).bind(code, code).first();
+    if(!exists) {
+      return { code };
+    }
+  }
+
+  throw new Error('Failed to allocate dummy code');
+}
+
 async function handleRegister(context) {
 	const { request, env } = context;
 	if(!env.SESSION_SECRET) {
@@ -578,6 +609,89 @@ async function handleGetCurrentGameCode(context) {
   return json({ ok: true, code, hasCode: code.length > 0 });
 }
 
+async function handleRotateDummyGameCode(context) {
+  const { env } = context;
+  const result = await currentUser(context);
+  if(result.error) {
+    return result.error;
+  }
+
+  const hasDummyHash = await hasUsersColumn(env, 'dummy_login_code_hash');
+  if(!hasDummyHash) {
+    return json({ ok: false, message: 'Dummy code columns are missing. Run migrations first.' }, 500);
+  }
+
+  const supportsDummyPlain = await hasUsersColumn(env, 'dummy_login_code_plain');
+  const userId = result.user.id;
+
+  for(let attempt = 0; attempt < 5; attempt += 1) {
+    const dummyData = await allocateDummyGameCode(env);
+
+    try {
+      const updated = supportsDummyPlain
+        ? await env.DB.prepare(`
+          UPDATE users
+          SET dummy_login_code_hash = ?, dummy_login_code_plain = ?, dummy_login_code_rotated_at = ?
+          WHERE id = ?
+        `).bind(dummyData.code, dummyData.code, nowIso(), userId).run()
+        : await env.DB.prepare(`
+          UPDATE users
+          SET dummy_login_code_hash = ?, dummy_login_code_rotated_at = ?
+          WHERE id = ?
+        `).bind(dummyData.code, nowIso(), userId).run();
+
+      if((updated.meta?.changes || 0) !== 1) {
+        return json({ ok: false, message: 'Could not rotate dummy code' }, 500);
+      }
+
+      return json({ ok: true, code: dummyData.code, message: 'Dummy login code rotated' });
+    } catch(err) {
+      const message = String(err && err.message ? err.message : err);
+      if(message.includes('UNIQUE') && attempt < 4) {
+        continue;
+      }
+      console.error('rotate dummy failed', err);
+      return json({ ok: false, message: 'Could not rotate dummy code' }, 500);
+    }
+  }
+
+  return json({ ok: false, message: 'Could not rotate dummy code' }, 500);
+}
+
+async function handleGetCurrentDummyCode(context) {
+  const { env } = context;
+  const result = await currentUser(context);
+  if(result.error) {
+    return result.error;
+  }
+
+  const hasDummyHash = await hasUsersColumn(env, 'dummy_login_code_hash');
+  if(!hasDummyHash) {
+    return json({ ok: false, message: 'Dummy code columns are missing. Run migrations first.' }, 500);
+  }
+
+  const supportsDummyPlain = await hasUsersColumn(env, 'dummy_login_code_plain');
+  const row = supportsDummyPlain
+    ? await env.DB.prepare(`
+      SELECT dummy_login_code_plain, dummy_login_code_hash
+      FROM users
+      WHERE id = ?
+      LIMIT 1
+    `).bind(result.user.id).first()
+    : await env.DB.prepare(`
+      SELECT dummy_login_code_hash
+      FROM users
+      WHERE id = ?
+      LIMIT 1
+    `).bind(result.user.id).first();
+
+  const plain = String(row?.dummy_login_code_plain || '');
+  const fallback = String(row?.dummy_login_code_hash || '');
+  const isLegacyHash = /^[0-9a-f]{64}$/i.test(fallback);
+  const code = plain || (isLegacyHash ? '' : fallback);
+  return json({ ok: true, code, hasCode: code.length > 0 });
+}
+
 async function handleGameVerify(context) {
 	const { request, env } = context;
 	const key = request.headers.get('X-Game-Server-Key') || '';
@@ -601,12 +715,31 @@ async function handleGameVerify(context) {
     return json({ ok: false, message: 'Invalid code format' });
   }
 
+  const hasDummyHash = await hasUsersColumn(env, 'dummy_login_code_hash');
+  const hasDummyPlain = hasDummyHash && await hasUsersColumn(env, 'dummy_login_code_plain');
+
   let user = await env.DB.prepare(`
     SELECT id, username, ban_is_permanent, ban_until, ban_reason
     FROM users
     WHERE game_login_code_hash = ?
     LIMIT 1
   `).bind(code).first();
+
+  if(!user && hasDummyHash) {
+    user = hasDummyPlain
+      ? await env.DB.prepare(`
+        SELECT id, username, ban_is_permanent, ban_until, ban_reason
+        FROM users
+        WHERE dummy_login_code_hash = ? OR dummy_login_code_plain = ?
+        LIMIT 1
+      `).bind(code, code).first()
+      : await env.DB.prepare(`
+        SELECT id, username, ban_is_permanent, ban_until, ban_reason
+        FROM users
+        WHERE dummy_login_code_hash = ?
+        LIMIT 1
+      `).bind(code).first();
+  }
 
   if(!user && env.CODE_PEPPER) {
     const hash = await sha256Hex(`${env.CODE_PEPPER}:${code}`);
@@ -616,6 +749,14 @@ async function handleGameVerify(context) {
       WHERE game_login_code_hash = ?
       LIMIT 1
     `).bind(hash).first();
+    if(!user && hasDummyHash) {
+      user = await env.DB.prepare(`
+        SELECT id, username, ban_is_permanent, ban_until, ban_reason
+        FROM users
+        WHERE dummy_login_code_hash = ?
+        LIMIT 1
+      `).bind(hash).first();
+    }
   }
 
   if(!user) {
@@ -766,6 +907,14 @@ export async function onRequest(context) {
 
   if(request.method === 'GET' && path === '/game-code/current') {
     return handleGetCurrentGameCode(context);
+  }
+
+  if(request.method === 'POST' && path === '/game-code/dummy/rotate') {
+    return handleRotateDummyGameCode(context);
+  }
+
+  if(request.method === 'GET' && path === '/game-code/dummy/current') {
+    return handleGetCurrentDummyCode(context);
   }
 
   if(request.method === 'POST' && path === '/game/verify') {

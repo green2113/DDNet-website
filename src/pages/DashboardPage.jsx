@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { getCurrentGameCode, rotateGameCode, updateProfileName } from '../lib/api';
+import { getCurrentDummyGameCode, getCurrentGameCode, rotateDummyGameCode, rotateGameCode, updateProfileName } from '../lib/api';
 import { useAuth } from '../components/AuthProvider';
 import { useI18n } from '../components/I18nProvider';
 import { Feedback, TopBar } from '../components/Layout';
@@ -86,10 +86,15 @@ export default function DashboardPage() {
   const navigate = useNavigate();
   const [feedback, setFeedback] = useState(null);
   const [gameCode, setGameCode] = useState('');
+  const [dummyCode, setDummyCode] = useState('');
   const [loadingCode, setLoadingCode] = useState(true);
+  const [loadingDummyCode, setLoadingDummyCode] = useState(true);
   const [revealed, setRevealed] = useState(false);
+  const [dummyRevealed, setDummyRevealed] = useState(false);
   const [rotating, setRotating] = useState(false);
+  const [rotatingDummy, setRotatingDummy] = useState(false);
   const [showRotateConfirm, setShowRotateConfirm] = useState(false);
+  const [showDummyRotateConfirm, setShowDummyRotateConfirm] = useState(false);
   const [showNameConfirm, setShowNameConfirm] = useState(false);
   const [nameForm, setNameForm] = useState('');
   const [editingName, setEditingName] = useState(false);
@@ -143,6 +148,22 @@ export default function DashboardPage() {
     }
   };
 
+  const executeDummyRotate = async () => {
+    setFeedback(null);
+    setRotatingDummy(true);
+    try {
+      const result = await rotateDummyGameCode();
+      setDummyCode(result.code || '');
+      setDummyRevealed(true);
+      await refresh();
+      setFeedback({ type: 'ok', message: t('dashboard.dummyRotated') });
+    } catch (err) {
+      setFeedback({ type: 'error', message: err.message });
+    } finally {
+      setRotatingDummy(false);
+    }
+  };
+
   const onRotateClick = () => {
     if(rotating || loadingCode) {
       return;
@@ -156,9 +177,22 @@ export default function DashboardPage() {
     executeRotate();
   };
 
+  const onDummyRotateClick = () => {
+    if(rotatingDummy || loadingDummyCode) {
+      return;
+    }
+
+    if(dummyCode) {
+      setShowDummyRotateConfirm(true);
+      return;
+    }
+
+    executeDummyRotate();
+  };
+
   useEffect(() => {
     let canceled = false;
-    const loadCurrentCode = async () => {
+    const loadCurrentCode = async (reportError = true) => {
       setLoadingCode(true);
       try {
         const data = await getCurrentGameCode();
@@ -166,7 +200,7 @@ export default function DashboardPage() {
           setGameCode(String(data.code || ''));
         }
       } catch (err) {
-        if(!canceled) {
+        if(!canceled && reportError) {
           setFeedback({ type: 'error', message: err.message });
         }
       } finally {
@@ -175,11 +209,67 @@ export default function DashboardPage() {
         }
       }
     };
-    loadCurrentCode();
+    const loadCurrentDummyCode = async (reportError = true) => {
+      setLoadingDummyCode(true);
+      try {
+        const data = await getCurrentDummyGameCode();
+        if(!canceled) {
+          setDummyCode(String(data.code || ''));
+        }
+      } catch (err) {
+        if(!canceled && reportError) {
+          setFeedback({ type: 'error', message: err.message });
+        }
+      } finally {
+        if(!canceled) {
+          setLoadingDummyCode(false);
+        }
+      }
+    };
+    loadCurrentCode(true);
+    loadCurrentDummyCode(true);
     return () => {
       canceled = true;
     };
   }, []);
+
+  useEffect(() => {
+    if(!user?.id) {
+      return undefined;
+    }
+
+    let disposed = false;
+    let inFlight = false;
+    const tick = async () => {
+      if(disposed || inFlight || document.hidden) {
+        return;
+      }
+      inFlight = true;
+      try {
+        await refresh({ silent: true });
+        const [game, dummy] = await Promise.all([
+          getCurrentGameCode().catch(() => null),
+          getCurrentDummyGameCode().catch(() => null),
+        ]);
+        if(!disposed) {
+          if(game) {
+            setGameCode(String(game.code || ''));
+          }
+          if(dummy) {
+            setDummyCode(String(dummy.code || ''));
+          }
+        }
+      } finally {
+        inFlight = false;
+      }
+    };
+
+    const timer = setInterval(tick, 3000);
+    return () => {
+      disposed = true;
+      clearInterval(timer);
+    };
+  }, [user?.id, refresh]);
 
   const onCopyCode = async () => {
     if(!gameCode) {
@@ -234,6 +324,9 @@ export default function DashboardPage() {
   const displayCode = loadingCode
     ? '••••••••••••••••••••'
     : (!gameCode ? '-' : (revealed ? gameCode : '•'.repeat(gameCode.length)));
+  const displayDummyCode = loadingDummyCode
+    ? '••••••••••••••••••••'
+    : (!dummyCode ? '-' : (dummyRevealed ? dummyCode : '•'.repeat(dummyCode.length)));
 
   const banPermanent = Number(user?.ban_is_permanent || 0) !== 0;
   const banUntilRaw = String(user?.ban_until || '');
@@ -387,6 +480,46 @@ export default function DashboardPage() {
             {rotating ? t('dashboard.rotating') : (gameCode ? t('dashboard.reissueCode') : t('dashboard.issueCode'))}
           </button>
         </article>
+
+        <article className="panel">
+          <h3>{t('dashboard.dummyCodeTitle')}</h3>
+          <p className="muted">{t('dashboard.dummyCodeBody')}</p>
+          <div className="code-line">
+            <pre className="mono code-mono">{displayDummyCode}</pre>
+            <div className="code-actions">
+              <button
+                className="btn ghost icon-btn"
+                type="button"
+                onClick={() => setDummyRevealed((prev) => !prev)}
+                disabled={!dummyCode || loadingDummyCode}
+                title={dummyRevealed ? t('dashboard.hideCode') : t('dashboard.showCode')}
+              >
+                {dummyRevealed ? <EyeOffIcon /> : <EyeIcon />}
+              </button>
+              <button
+                className="btn ghost icon-btn"
+                type="button"
+                onClick={async () => {
+                  if(!dummyCode) return;
+                  try {
+                    await navigator.clipboard.writeText(dummyCode);
+                    setShowCopyToast(false);
+                    requestAnimationFrame(() => setShowCopyToast(true));
+                  } catch {
+                    setFeedback({ type: 'error', message: t('dashboard.copyFailed') });
+                  }
+                }}
+                disabled={!dummyCode || loadingDummyCode}
+                title={t('dashboard.copyCode')}
+              >
+                <CopyIcon />
+              </button>
+            </div>
+          </div>
+          <button className="btn" type="button" onClick={onDummyRotateClick} disabled={rotatingDummy || loadingDummyCode}>
+            {rotatingDummy ? t('dashboard.rotating') : (dummyCode ? t('dashboard.dummyReissueCode') : t('dashboard.dummyIssueCode'))}
+          </button>
+        </article>
       </section>
 
       <section className="panel">
@@ -416,6 +549,30 @@ export default function DashboardPage() {
                 }}
               >
                 {t('dashboard.rotateWarnConfirm')}
+              </button>
+            </div>
+          </section>
+        </div>
+      ) : null}
+
+      {showDummyRotateConfirm ? (
+        <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label={t('dashboard.dummyRotateWarnTitle')}>
+          <section className="modal-card">
+            <h3>{t('dashboard.dummyRotateWarnTitle')}</h3>
+            <p className="muted">{t('dashboard.dummyRotateWarnBody')}</p>
+            <div className="modal-actions">
+              <button className="btn ghost" type="button" onClick={() => setShowDummyRotateConfirm(false)}>
+                {t('common.cancel')}
+              </button>
+              <button
+                className="btn"
+                type="button"
+                onClick={() => {
+                  setShowDummyRotateConfirm(false);
+                  executeDummyRotate();
+                }}
+              >
+                {t('dashboard.dummyRotateWarnConfirm')}
               </button>
             </div>
           </section>
