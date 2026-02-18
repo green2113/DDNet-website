@@ -1,4 +1,4 @@
-import { createContext, useContext, useMemo, useState } from 'react';
+import { createContext, useContext, useEffect, useMemo, useState } from 'react';
 
 const STORAGE_KEY = 'ddnet_lang';
 
@@ -16,6 +16,17 @@ const LOCALE_BY_LANGUAGE = {
   ko: 'ko-KR',
   en: 'en-US',
   ja: 'ja-JP',
+};
+
+const LANGUAGE_BY_COUNTRY = {
+  TW: 'zh-TW',
+  HK: 'zh-TW',
+  MO: 'zh-TW',
+  CN: 'zh-CN',
+  SG: 'zh-CN',
+  MY: 'zh-CN',
+  KR: 'ko',
+  JP: 'ja',
 };
 
 const translations = {
@@ -613,20 +624,14 @@ const translations = {
 
 function detectInitialLanguage() {
   if(typeof window === 'undefined') {
-    return 'ko';
+    return 'en';
   }
 
   const saved = window.localStorage.getItem(STORAGE_KEY);
   if(saved && LANGUAGE_OPTIONS.some((x) => x.code === saved)) {
     return saved;
   }
-
-  const browser = String(window.navigator.language || '').toLowerCase();
-  if(browser.startsWith('zh-tw') || browser.startsWith('zh-hk')) return 'zh-TW';
-  if(browser.startsWith('zh')) return 'zh-CN';
-  if(browser.startsWith('ja')) return 'ja';
-  if(browser.startsWith('en')) return 'en';
-  return 'ko';
+  return 'en';
 }
 
 function lookupText(language, key) {
@@ -654,6 +659,39 @@ const I18nContext = createContext(null);
 
 export function I18nProvider({ children }) {
   const [language, setLanguageState] = useState(detectInitialLanguage);
+
+  useEffect(() => {
+    if(typeof window === 'undefined') {
+      return;
+    }
+    const saved = window.localStorage.getItem(STORAGE_KEY);
+    if(saved && LANGUAGE_OPTIONS.some((x) => x.code === saved)) {
+      return;
+    }
+
+    let cancelled = false;
+    const detectByCountry = async () => {
+      try {
+        const response = await fetch('/api/geo', { credentials: 'include' });
+        const data = await response.json().catch(() => ({}));
+        if(cancelled) {
+          return;
+        }
+        const country = String(data?.country || '').toUpperCase();
+        const next = LANGUAGE_BY_COUNTRY[country] || 'en';
+        setLanguageState(next);
+      } catch {
+        if(!cancelled) {
+          setLanguageState('en');
+        }
+      }
+    };
+    detectByCountry();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const setLanguage = (next) => {
     if(!LANGUAGE_OPTIONS.some((x) => x.code === next)) return;
