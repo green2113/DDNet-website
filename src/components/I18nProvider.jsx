@@ -332,7 +332,7 @@ const translations = {
       step1: 'Ravion 서버 접속',
       step2: '채팅창에 /login 발급코드 입력',
       step3: '인증 성공 시 관전 해제 후 플레이 가능',
-      rowUserId: 'User ID',
+      rowUserId: '유저 ID',
       rowUsername: '이름',
       rowEmail: 'Email',
       rowAccess: '상태',
