@@ -353,6 +353,7 @@ export default function DashboardPage() {
             <p className="muted">{t('dashboard.inviteBody')}</p>
             <pre className="mono">{user?.invite_code || '-'}</pre>
             <p className="muted">{t('dashboard.inviteUsage', { used: user?.invite_used ?? 0, quota: user?.invite_quota ?? 0 })}</p>
+            <p className="muted">{t('dashboard.inviteNotice')}</p>
           </article>
         ) : null}
 
