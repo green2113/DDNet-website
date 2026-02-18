@@ -423,6 +423,13 @@ button.btn {
   align-self: center;
 }
 
+.name-cooldown {
+  font-size: 12px;
+  color: #90a1c4;
+  line-height: 1;
+  white-space: nowrap;
+}
+
 .status-text {
   font-weight: 700;
 }

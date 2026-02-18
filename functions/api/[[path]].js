@@ -24,6 +24,8 @@ import {
 
 const AUTH_COOKIE = 'ddnet_auth';
 const SESSION_MAX_AGE = 30 * 24 * 60 * 60;
+const NAME_CHANGE_COOLDOWN_DAYS = 10;
+const NAME_CHANGE_COOLDOWN_MS = NAME_CHANGE_COOLDOWN_DAYS * 24 * 60 * 60 * 1000;
 const TRUE_VALUES = ['1', 'true', 'yes', 'on'];
 
 function cookieSecure(request) {
@@ -52,7 +54,18 @@ async function hasGameCodePlainColumn(env) {
   return !!row;
 }
 
+async function hasUsersColumn(env, columnName) {
+  const row = await env.DB.prepare(`
+    SELECT 1 AS ok
+    FROM pragma_table_info('users')
+    WHERE name = ?
+    LIMIT 1
+  `).bind(columnName).first();
+  return !!row;
+}
+
 async function publicUserById(env, userId) {
+  const hasNameChangeCooldown = await hasUsersColumn(env, 'name_change_available_at');
   return env.DB.prepare(`
     SELECT
       id,
@@ -65,6 +78,7 @@ async function publicUserById(env, userId) {
       ban_is_permanent,
       ban_until,
       ban_reason,
+      ${hasNameChangeCooldown ? 'name_change_available_at' : 'NULL AS name_change_available_at'},
       game_login_code_rotated_at,
       created_at
     FROM users
@@ -448,11 +462,40 @@ async function handleUpdateProfileName(context) {
     return json({ ok: false, message: 'Name already exists' }, 409);
   }
 
+  const cooldownSupported = await hasUsersColumn(env, 'name_change_available_at');
+  if(!cooldownSupported) {
+    return json({
+      ok: false,
+      message: 'Name cooldown column is missing. Run migrations first.',
+    }, 500);
+  }
+
+  const cooldownInfo = await env.DB.prepare(`
+    SELECT name_change_available_at
+    FROM users
+    WHERE id = ?
+    LIMIT 1
+  `).bind(result.user.id).first();
+  const nextAllowedRaw = String(cooldownInfo?.name_change_available_at || '');
+  const nextAllowedMs = nextAllowedRaw ? Date.parse(nextAllowedRaw) : NaN;
+  if(Number.isFinite(nextAllowedMs) && nextAllowedMs > Date.now()) {
+    const remainingDays = Math.max(1, Math.ceil((nextAllowedMs - Date.now()) / (24 * 60 * 60 * 1000)));
+    return json({
+      ok: false,
+      code: 'NAME_CHANGE_COOLDOWN',
+      message: `You can change your name again in ${remainingDays} day(s).`,
+      nextAllowedAt: new Date(nextAllowedMs).toISOString(),
+      remainingDays,
+    }, 429);
+  }
+
+  const nextAllowedAt = new Date(Date.now() + NAME_CHANGE_COOLDOWN_MS).toISOString();
+
   const updated = await env.DB.prepare(`
     UPDATE users
-    SET username = ?, username_lower = ?
+    SET username = ?, username_lower = ?, name_change_available_at = ?
     WHERE id = ?
-  `).bind(nextName, lower(nextName), result.user.id).run();
+  `).bind(nextName, lower(nextName), nextAllowedAt, result.user.id).run();
 
   if((updated.meta?.changes || 0) !== 1) {
     return json({ ok: false, message: 'Could not update name' }, 500);

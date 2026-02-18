@@ -90,6 +90,7 @@ export default function DashboardPage() {
   const [revealed, setRevealed] = useState(false);
   const [rotating, setRotating] = useState(false);
   const [showRotateConfirm, setShowRotateConfirm] = useState(false);
+  const [showNameConfirm, setShowNameConfirm] = useState(false);
   const [nameForm, setNameForm] = useState('');
   const [editingName, setEditingName] = useState(false);
   const [savingName, setSavingName] = useState(false);
@@ -98,12 +99,25 @@ export default function DashboardPage() {
   const currentName = String(user?.username || '');
   const canUseInvite = String(user?.country_signup || '').toUpperCase() === 'TW';
   const trimmedName = nameForm.trim();
+  const nameCooldownUntilRaw = String(user?.name_change_available_at || '');
+  const nameCooldownUntilMs = nameCooldownUntilRaw ? Date.parse(nameCooldownUntilRaw) : NaN;
+  const nameCooldownActive = Number.isFinite(nameCooldownUntilMs) && nameCooldownUntilMs > Date.now();
+  const nameCooldownDaysLeft = nameCooldownActive
+    ? Math.max(1, Math.ceil((nameCooldownUntilMs - Date.now()) / (24 * 60 * 60 * 1000)))
+    : 0;
   const canSaveName = editingName && !savingName && trimmedName.length > 0 && trimmedName !== currentName;
 
   useEffect(() => {
     setNameForm(currentName);
     setEditingName(false);
   }, [currentName]);
+
+  useEffect(() => {
+    if(nameCooldownActive && editingName) {
+      setEditingName(false);
+      setShowNameConfirm(false);
+    }
+  }, [nameCooldownActive, editingName]);
 
   useEffect(() => {
     if(!showCopyToast) {
@@ -200,7 +214,12 @@ export default function DashboardPage() {
 
   const onNameAction = () => {
     if(editingName) {
-      saveName();
+      if(canSaveName) {
+        setShowNameConfirm(true);
+      }
+      return;
+    }
+    if(nameCooldownActive) {
       return;
     }
     setNameForm(currentName);
@@ -286,22 +305,28 @@ export default function DashboardPage() {
                       }
                       if(event.key === 'Enter') {
                         event.preventDefault();
-                        saveName();
+                        if(canSaveName) {
+                          setShowNameConfirm(true);
+                        }
                       }
                     }}
                   />
                 ) : (
                   <span className="name-inline-value">{currentName || '-'}</span>
                 )}
-                <button
-                  className="btn ghost icon-btn name-action-btn"
-                  type="button"
-                  onClick={onNameAction}
-                  disabled={editingName && !canSaveName}
-                  title={editingName ? t('dashboard.nameApply') : t('dashboard.nameEdit')}
-                >
-                  {editingName ? <CheckIcon /> : <PencilIcon />}
-                </button>
+                {nameCooldownActive && !editingName ? (
+                  <span className="name-cooldown">{t('dashboard.nameCooldown', { days: nameCooldownDaysLeft })}</span>
+                ) : (
+                  <button
+                    className="btn ghost icon-btn name-action-btn"
+                    type="button"
+                    onClick={onNameAction}
+                    disabled={editingName && !canSaveName}
+                    title={editingName ? t('dashboard.nameApply') : t('dashboard.nameEdit')}
+                  >
+                    {editingName ? <CheckIcon /> : <PencilIcon />}
+                  </button>
+                )}
                 {editingName ? (
                   <button
                     className="btn ghost icon-btn name-action-btn"
@@ -390,6 +415,30 @@ export default function DashboardPage() {
                 }}
               >
                 {t('dashboard.rotateWarnConfirm')}
+              </button>
+            </div>
+          </section>
+        </div>
+      ) : null}
+
+      {showNameConfirm ? (
+        <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label={t('dashboard.nameWarnTitle')}>
+          <section className="modal-card">
+            <h3>{t('dashboard.nameWarnTitle')}</h3>
+            <p className="muted">{t('dashboard.nameWarnBody')}</p>
+            <div className="modal-actions">
+              <button className="btn ghost" type="button" onClick={() => setShowNameConfirm(false)}>
+                {t('common.cancel')}
+              </button>
+              <button
+                className="btn"
+                type="button"
+                onClick={async () => {
+                  setShowNameConfirm(false);
+                  await saveName();
+                }}
+              >
+                {t('dashboard.nameWarnConfirm')}
               </button>
             </div>
           </section>
