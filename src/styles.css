@@ -513,19 +513,42 @@ button.btn {
 }
 
 .tooltip-bubble {
-  position: absolute;
-  left: 50%;
-  bottom: calc(100% + 8px);
-  transform: translateX(-50%);
+  position: fixed;
   background: rgba(7, 12, 30, 0.98);
   color: #e4ecff;
   border: 1px solid var(--line);
-  border-radius: 10px;
-  padding: 7px 10px;
-  font-size: 12px;
+  border-radius: 12px;
+  padding: 10px 13px;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.25;
   white-space: nowrap;
   z-index: 60;
-  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.35);
+  box-shadow: 0 12px 26px rgba(0, 0, 0, 0.42);
+  pointer-events: none;
+}
+
+.tooltip-floating {
+  transform: translate(-50%, calc(-100% - 10px));
+  opacity: 0;
+  transition: opacity 0.15s ease-out, transform 0.15s ease-out;
+}
+
+.tooltip-floating.is-visible {
+  opacity: 1;
+  transform: translate(-50%, calc(-100% - 12px));
+}
+
+.tooltip-text {
+  display: block;
+}
+
+.tooltip-arrow {
+  position: absolute;
+  left: 50%;
+  top: 100%;
+  transform: translateX(-50%) translateY(-1px);
+  display: block;
 }
 
 .locked-action {
