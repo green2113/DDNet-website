@@ -969,7 +969,7 @@ export default function DashboardPage() {
           <section className="modal-card">
             <h3>{t('dashboard.emailVerifyTitle')}</h3>
             <p className="muted">{t('dashboard.emailVerifyBody')}</p>
-            <p className="muted email-verify-address">{String(user?.email || '')}</p>
+            <p className="muted email-verify-address">{maskEmail(user?.email)}</p>
             <label className="field">
               <div className="verify-code-row">
                 <div className="verify-code-input-wrap">
