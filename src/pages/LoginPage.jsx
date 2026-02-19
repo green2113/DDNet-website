@@ -3,7 +3,7 @@ import { useEffect, useState } from 'react';
 import { getGeo, login } from '../lib/api';
 import { useAuth } from '../components/AuthProvider';
 import { useI18n } from '../components/I18nProvider';
-import { Feedback, LanguageSelector } from '../components/Layout';
+import { LanguageSelector } from '../components/Layout';
 
 export default function LoginPage() {
   const navigate = useNavigate();
@@ -12,7 +12,7 @@ export default function LoginPage() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [submitting, setSubmitting] = useState(false);
-  const [feedback, setFeedback] = useState(null);
+  const [errorText, setErrorText] = useState('');
 
   useEffect(() => {
     let canceled = false;
@@ -34,19 +34,22 @@ export default function LoginPage() {
 
   const onSubmit = async (event) => {
     event.preventDefault();
-    setFeedback(null);
+    setErrorText('');
     setSubmitting(true);
     try {
       await login({ email: email.trim(), password });
       await refresh();
-      setFeedback({ type: 'ok', message: t('login.success') });
       setTimeout(() => navigate('/dashboard'), 450);
     } catch (err) {
       if(err.status === 403 && err.payload?.code === 'VPN_PROXY_BLOCKED') {
         navigate('/blocked', { replace: true });
         return;
       }
-      setFeedback({ type: 'error', message: err.message });
+      if(err.status === 401) {
+        setErrorText(t('login.invalidCredentials'));
+      } else {
+        setErrorText(err.message);
+      }
     } finally {
       setSubmitting(false);
     }
@@ -72,11 +75,11 @@ export default function LoginPage() {
             {t('login.password')}
             <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} required autoComplete="current-password" />
           </label>
+          {errorText ? <p className="form-error-text">{errorText}</p> : null}
           <button className="btn" type="submit" disabled={submitting}>{submitting ? t('common.loggingIn') : t('login.submit')}</button>
         </form>
 
         <p className="switch-line">{t('common.notLoggedInYet')} <Link to="/register">{t('common.register')}</Link></p>
-        <Feedback feedback={feedback} />
       </section>
     </main>
   );

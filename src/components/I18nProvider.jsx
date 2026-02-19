@@ -73,6 +73,7 @@ const translations = {
       submit: '登入',
       success: '登入成功，正在前往儀表板。',
       verifyRequired: '此帳號尚未完成電子郵件驗證，正在前往驗證頁面。',
+      invalidCredentials: '電子郵件或密碼不正確。',
     },
     register: {
       eyebrow: 'CREATE ACCOUNT',
@@ -235,6 +236,7 @@ const translations = {
       submit: '登录',
       success: '登录成功，正在跳转到仪表盘。',
       verifyRequired: '该账号尚未完成邮箱验证，正在跳转到验证页面。',
+      invalidCredentials: '邮箱或密码错误。',
     },
     register: {
       eyebrow: 'CREATE ACCOUNT',
@@ -397,6 +399,7 @@ const translations = {
       submit: '로그인',
       success: '로그인 성공. 대시보드로 이동합니다.',
       verifyRequired: '이 계정은 이메일 인증이 필요합니다. 인증 페이지로 이동합니다.',
+      invalidCredentials: '이메일 또는 비밀번호가 잘못 되었습니다.',
     },
     register: {
       eyebrow: 'CREATE ACCOUNT',
@@ -559,6 +562,7 @@ const translations = {
       submit: 'Login',
       success: 'Login successful. Redirecting to dashboard.',
       verifyRequired: 'This account is not verified yet. Redirecting to email verification.',
+      invalidCredentials: 'Incorrect email or password.',
     },
     register: {
       eyebrow: 'CREATE ACCOUNT',
@@ -721,6 +725,7 @@ const translations = {
       submit: 'ログイン',
       success: 'ログイン成功。ダッシュボードへ移動します。',
       verifyRequired: 'このアカウントはメール認証が必要です。認証ページへ移動します。',
+      invalidCredentials: 'メールアドレスまたはパスワードが正しくありません。',
     },
     register: {
       eyebrow: 'CREATE ACCOUNT',
