@@ -65,6 +65,7 @@ async function sendVerificationEmail(env, email, code) {
   if(!apiKey || !from) {
     throw new Error('Missing RESEND_API_KEY or EMAIL_FROM');
   }
+  const fromWithName = from.includes('<') ? from : `Ravion <${from}>`;
 
   const response = await fetch('https://api.resend.com/emails', {
     method: 'POST',
@@ -73,7 +74,7 @@ async function sendVerificationEmail(env, email, code) {
       'content-type': 'application/json',
     },
     body: JSON.stringify({
-      from,
+      from: fromWithName,
       to: [email],
       subject: '[Ravion] Email Verification Code',
       text: `Your verification code is: ${code}\nThis code expires in 10 minutes.`,
