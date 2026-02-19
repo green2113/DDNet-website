@@ -13,6 +13,8 @@ export default function VerifyEmailPage() {
   const [feedback, setFeedback] = useState(null);
   const [submitting, setSubmitting] = useState(false);
   const [resending, setResending] = useState(false);
+  const [resendCooldownSec, setResendCooldownSec] = useState(0);
+  const [sentToastVisible, setSentToastVisible] = useState(false);
   const [deadlineMs, setDeadlineMs] = useState(0);
   const [remainingMs, setRemainingMs] = useState(0);
   const autoResendTriedRef = useRef(false);
@@ -30,13 +32,12 @@ export default function VerifyEmailPage() {
     }
     autoResendTriedRef.current = true;
 
-    resendEmailVerification()
+    resendEmailVerification({ auto: true })
       .then((data) => {
         const nextDeadline = Date.parse(String(data?.expiresAt || ''));
         if(Number.isFinite(nextDeadline) && nextDeadline > Date.now()) {
           setDeadlineMs(nextDeadline);
         }
-        setFeedback({ type: 'ok', message: t('verify.resendDone') });
       })
       .catch((err) => {
         const nextDeadline = Date.parse(String(err?.payload?.expiresAt || ''));
@@ -59,6 +60,16 @@ export default function VerifyEmailPage() {
     return () => window.clearInterval(timer);
   }, [deadlineMs]);
 
+  useEffect(() => {
+    if(resendCooldownSec <= 0) {
+      return undefined;
+    }
+    const timer = window.setInterval(() => {
+      setResendCooldownSec((prev) => Math.max(0, prev - 1));
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [resendCooldownSec]);
+
   const onVerify = async (event) => {
     event.preventDefault();
     setFeedback(null);
@@ -76,6 +87,9 @@ export default function VerifyEmailPage() {
   };
 
   const onResend = async () => {
+    if(resendCooldownSec > 0) {
+      return;
+    }
     setFeedback(null);
     setResending(true);
     try {
@@ -84,11 +98,16 @@ export default function VerifyEmailPage() {
       if(Number.isFinite(nextDeadline) && nextDeadline > Date.now()) {
         setDeadlineMs(nextDeadline);
       }
-      setFeedback({ type: 'ok', message: t('verify.resendDone') });
+      setResendCooldownSec(60);
+      setSentToastVisible(true);
+      window.setTimeout(() => setSentToastVisible(false), 1500);
     } catch (err) {
       const nextDeadline = Date.parse(String(err?.payload?.expiresAt || ''));
       if(Number.isFinite(nextDeadline) && nextDeadline > Date.now()) {
         setDeadlineMs(nextDeadline);
+      }
+      if(Number.isFinite(Number(err?.payload?.waitSeconds)) && Number(err.payload.waitSeconds) > 0) {
+        setResendCooldownSec(Number(err.payload.waitSeconds));
       }
       setFeedback({ type: 'error', message: err.message });
     } finally {
@@ -103,6 +122,16 @@ export default function VerifyEmailPage() {
 
   return (
     <main className="auth-shell">
+      {sentToastVisible ? (
+        <div className="copy-toast" role="status" aria-live="polite">
+          <span className="copy-toast-icon" aria-hidden>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
+              <path d="M5 12.5L9.5 17L19 7.5" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          </span>
+          <span>{t('verify.sentToast')}</span>
+        </div>
+      ) : null}
       <div className="auth-lang-row">
         <LanguageSelector />
       </div>
@@ -128,8 +157,8 @@ export default function VerifyEmailPage() {
                 />
                 {timerText ? <span className="verify-code-timer">{timerText}</span> : null}
               </div>
-              <button className="btn ghost verify-resend-btn" type="button" onClick={onResend} disabled={resending}>
-                {resending ? t('verify.resending') : t('verify.resend')}
+              <button className="btn ghost verify-resend-btn" type="button" onClick={onResend} disabled={resending || resendCooldownSec > 0}>
+                {resending ? t('verify.resending') : resendCooldownSec > 0 ? `${t('verify.resend')} (${resendCooldownSec}s)` : t('verify.resend')}
               </button>
             </div>
           </label>

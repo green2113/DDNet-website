@@ -46,8 +46,11 @@ export async function logout() {
   return api('/api/auth/logout', { method: 'POST' });
 }
 
-export async function resendEmailVerification() {
-  return api('/api/auth/email/resend', { method: 'POST' });
+export async function resendEmailVerification(payload = {}) {
+  return api('/api/auth/email/resend', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
 }
 
 export async function verifyEmailCode(payload) {

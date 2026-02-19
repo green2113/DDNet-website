@@ -620,13 +620,36 @@ async function handleMe(context) {
 }
 
 async function handleEmailResend(context) {
-  const { env } = context;
+  const { env, request } = context;
   const result = await currentUser(context);
   if(result.error) {
     return result.error;
   }
   if(isEmailVerified(result.user)) {
     return json({ ok: true, message: 'Already verified' });
+  }
+
+  const body = await parseRequestBody(request);
+  const data = typeof body === 'string' ? {} : (body || {});
+  const auto = !!data.auto;
+
+  if(auto) {
+    const status = await env.DB.prepare(`
+      SELECT email_verify_expires_at
+      FROM users
+      WHERE id = ?
+      LIMIT 1
+    `).bind(result.user.id).first();
+    const expiresAtRaw = String(status?.email_verify_expires_at || '');
+    const expiresAtMs = expiresAtRaw ? Date.parse(expiresAtRaw) : NaN;
+    if(Number.isFinite(expiresAtMs) && expiresAtMs > Date.now()) {
+      return json({
+        ok: true,
+        message: 'Verification code is still active',
+        expiresAt: expiresAtRaw,
+        reusedActiveCode: true,
+      });
+    }
   }
 
   const issued = await issueEmailVerificationCode(env, result.user.id, String(result.user.email || ''), { bypassCooldown: false });
