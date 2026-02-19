@@ -684,7 +684,6 @@ export default function DashboardPage() {
             <h3>{t('dashboard.dummyFirstIssueTitle')}</h3>
             <p className="muted">{t('dashboard.dummyFirstIssueBody')}</p>
             <label className="field">
-              {t('dashboard.dummyNameInput')}
               <input
                 value={dummyNameForm}
                 onChange={(event) => setDummyNameForm(event.target.value)}
