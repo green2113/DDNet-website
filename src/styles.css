@@ -362,8 +362,8 @@ button.btn {
 
 .info {
   display: grid;
-  grid-template-columns: minmax(96px, max-content) minmax(0, 1fr);
-  gap: 4px 10px;
+  grid-template-columns: minmax(72px, max-content) minmax(0, 1fr);
+  gap: 4px 6px;
   margin: 0;
 }
 
