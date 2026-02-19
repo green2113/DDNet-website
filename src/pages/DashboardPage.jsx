@@ -143,7 +143,7 @@ export default function DashboardPage() {
   const canSaveName = editingName && !savingName && trimmedName.length > 0 && trimmedName !== currentName;
   const canSaveDummyName = editingDummyName && !dummyNameCooldownActive && !savingDummyName && trimmedDummyName.length > 0 && trimmedDummyName !== currentDummyName;
   const isDummyNameInputActive = editingDummyName || showDummyFirstIssue;
-  const verifyRemainingSeconds = Math.ceil(verifyRemainingMs / 1000);
+  const verifyRemainingSeconds = Math.min(600, Math.max(0, Math.ceil(verifyRemainingMs / 1000)));
   const verifyTimerText = verifyRemainingSeconds > 0
     ? `${String(Math.floor(verifyRemainingSeconds / 60)).padStart(2, '0')}:${String(verifyRemainingSeconds % 60).padStart(2, '0')}`
     : '';
@@ -970,7 +970,7 @@ export default function DashboardPage() {
           <section className="modal-card">
             <h3>{t('dashboard.emailVerifyTitle')}</h3>
             <p className="muted">{t('dashboard.emailVerifyBody')}</p>
-            <p className="muted">{String(user?.email || '')}</p>
+            <p className="muted email-verify-address">{String(user?.email || '')}</p>
             <label className="field">
               <div className="verify-code-row">
                 <div className="verify-code-input-wrap">

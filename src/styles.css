@@ -537,6 +537,10 @@ button.btn {
   white-space: nowrap;
 }
 
+.email-verify-address {
+  margin-bottom: 8px;
+}
+
 @keyframes copy-toast-in {
   from {
     opacity: 0;
