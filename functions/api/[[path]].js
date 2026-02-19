@@ -148,12 +148,14 @@ async function hasUsersColumn(env, columnName) {
 async function publicUserById(env, userId) {
   const hasNameChangeCooldown = await hasUsersColumn(env, 'name_change_available_at');
   const hasDummyName = await hasUsersColumn(env, 'dummy_name');
+  const hasDummyNameChangeCooldown = await hasUsersColumn(env, 'dummy_name_change_available_at');
   const hasEmailVerified = await hasUsersColumn(env, 'email_verified');
   return env.DB.prepare(`
     SELECT
       id,
       username,
       ${hasDummyName ? 'dummy_name' : 'NULL AS dummy_name'},
+      ${hasDummyNameChangeCooldown ? 'dummy_name_change_available_at' : 'NULL AS dummy_name_change_available_at'},
       email,
       ${hasEmailVerified ? 'email_verified' : '1 AS email_verified'},
       invite_code,
@@ -839,9 +841,6 @@ async function handleGetCurrentGameCode(context) {
   if(result.error) {
     return result.error;
   }
-  if(!isEmailVerified(result.user)) {
-    return emailVerificationRequiredResponse();
-  }
 
   const supportsPlainGameCode = await hasGameCodePlainColumn(env);
   const row = supportsPlainGameCode
@@ -920,17 +919,18 @@ async function handleRotateDummyGameCode(context) {
     try {
       let updated;
       if(!hasExistingDummyCode && requestedDummyName && hasDummyName && hasDummyNameLower) {
+        const nextAllowedAt = new Date(Date.now() + NAME_CHANGE_COOLDOWN_MS).toISOString();
         updated = supportsDummyPlain
           ? await env.DB.prepare(`
             UPDATE users
-            SET dummy_login_code_hash = ?, dummy_login_code_plain = ?, dummy_login_code_rotated_at = ?, dummy_name = ?, dummy_name_lower = ?
+            SET dummy_login_code_hash = ?, dummy_login_code_plain = ?, dummy_login_code_rotated_at = ?, dummy_name = ?, dummy_name_lower = ?, dummy_name_change_available_at = ?
             WHERE id = ?
-          `).bind(dummyData.code, dummyData.code, nowIso(), requestedDummyName, lower(requestedDummyName), userId).run()
+          `).bind(dummyData.code, dummyData.code, nowIso(), requestedDummyName, lower(requestedDummyName), nextAllowedAt, userId).run()
           : await env.DB.prepare(`
             UPDATE users
-            SET dummy_login_code_hash = ?, dummy_login_code_rotated_at = ?, dummy_name = ?, dummy_name_lower = ?
+            SET dummy_login_code_hash = ?, dummy_login_code_rotated_at = ?, dummy_name = ?, dummy_name_lower = ?, dummy_name_change_available_at = ?
             WHERE id = ?
-          `).bind(dummyData.code, nowIso(), requestedDummyName, lower(requestedDummyName), userId).run();
+          `).bind(dummyData.code, nowIso(), requestedDummyName, lower(requestedDummyName), nextAllowedAt, userId).run();
       } else {
         updated = supportsDummyPlain
           ? await env.DB.prepare(`
@@ -968,9 +968,6 @@ async function handleGetCurrentDummyCode(context) {
   const result = await currentUser(context);
   if(result.error) {
     return result.error;
-  }
-  if(!isEmailVerified(result.user)) {
-    return emailVerificationRequiredResponse();
   }
 
   const hasDummyHash = await hasUsersColumn(env, 'dummy_login_code_hash');
@@ -1013,7 +1010,8 @@ async function handleUpdateDummyName(context) {
 
   const hasDummyName = await hasUsersColumn(env, 'dummy_name');
   const hasDummyNameLower = await hasUsersColumn(env, 'dummy_name_lower');
-  if(!hasDummyName || !hasDummyNameLower) {
+  const hasDummyNameChangeCooldown = await hasUsersColumn(env, 'dummy_name_change_available_at');
+  if(!hasDummyName || !hasDummyNameLower || !hasDummyNameChangeCooldown) {
     return json({ ok: false, message: 'Dummy name columns are missing. Run migrations first.' }, 500);
   }
   const hasDummyHash = await hasUsersColumn(env, 'dummy_login_code_hash');
@@ -1034,13 +1032,13 @@ async function handleUpdateDummyName(context) {
   const supportsDummyPlain = await hasUsersColumn(env, 'dummy_login_code_plain');
   const row = supportsDummyPlain
     ? await env.DB.prepare(`
-      SELECT dummy_login_code_plain, dummy_login_code_hash
+      SELECT dummy_login_code_plain, dummy_login_code_hash, dummy_name_change_available_at
       FROM users
       WHERE id = ?
       LIMIT 1
     `).bind(result.user.id).first()
     : await env.DB.prepare(`
-      SELECT dummy_login_code_hash
+      SELECT dummy_login_code_hash, dummy_name_change_available_at
       FROM users
       WHERE id = ?
       LIMIT 1
@@ -1053,11 +1051,26 @@ async function handleUpdateDummyName(context) {
     return json({ ok: false, code: 'DUMMY_CODE_REQUIRED', message: 'Issue a dummy code first.' }, 400);
   }
 
+  const nextAllowedRaw = String(row?.dummy_name_change_available_at || '');
+  const nextAllowedMs = nextAllowedRaw ? Date.parse(nextAllowedRaw) : NaN;
+  if(Number.isFinite(nextAllowedMs) && nextAllowedMs > Date.now()) {
+    const remainingDays = Math.max(1, Math.floor((nextAllowedMs - Date.now()) / (24 * 60 * 60 * 1000)));
+    return json({
+      ok: false,
+      code: 'DUMMY_NAME_CHANGE_COOLDOWN',
+      message: `You can change your dummy name again in ${remainingDays} day(s).`,
+      nextAllowedAt: new Date(nextAllowedMs).toISOString(),
+      remainingDays,
+    }, 429);
+  }
+
+  const nextAllowedAt = new Date(Date.now() + NAME_CHANGE_COOLDOWN_MS).toISOString();
+
   const updated = await env.DB.prepare(`
     UPDATE users
-    SET dummy_name = ?, dummy_name_lower = ?
+    SET dummy_name = ?, dummy_name_lower = ?, dummy_name_change_available_at = ?
     WHERE id = ?
-  `).bind(nextName, lower(nextName), result.user.id).run();
+  `).bind(nextName, lower(nextName), nextAllowedAt, result.user.id).run();
   if((updated.meta?.changes || 0) !== 1) {
     return json({ ok: false, message: 'Could not update dummy name' }, 500);
   }

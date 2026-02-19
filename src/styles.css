@@ -500,6 +500,38 @@ button.btn {
   line-height: 1;
 }
 
+.tooltip-wrap {
+  position: relative;
+  display: inline-flex;
+}
+
+.tooltip-bubble {
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 8px);
+  transform: translateX(-50%);
+  background: rgba(7, 12, 30, 0.98);
+  color: #e4ecff;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 7px 10px;
+  font-size: 12px;
+  white-space: nowrap;
+  z-index: 60;
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.35);
+}
+
+.locked-action {
+  opacity: 0.55;
+  cursor: not-allowed !important;
+}
+
+.email-verify-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
 @keyframes copy-toast-in {
   from {
     opacity: 0;

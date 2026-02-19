@@ -15,9 +15,6 @@ export function RequireGuest({ children }) {
   }
 
   if(user) {
-    if(Number(user.email_verified || 0) !== 1) {
-      return <Navigate to="/verify-email" replace />;
-    }
     return <Navigate to="/dashboard" replace />;
   }
 

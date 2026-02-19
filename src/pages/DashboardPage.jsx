@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { getCurrentDummyGameCode, getCurrentGameCode, rotateDummyGameCode, rotateGameCode, updateDummyProfileName, updateProfileName } from '../lib/api';
+import { getCurrentDummyGameCode, getCurrentGameCode, resendEmailVerification, rotateDummyGameCode, rotateGameCode, updateDummyProfileName, updateProfileName, verifyEmailCode } from '../lib/api';
 import { useAuth } from '../components/AuthProvider';
 import { useI18n } from '../components/I18nProvider';
 import { Feedback, TopBar } from '../components/Layout';
+import Tooltip from '../components/Tooltip';
 
 function maskEmail(value) {
   const email = String(value || '');
@@ -80,6 +81,14 @@ function ToastCheckIcon() {
   );
 }
 
+function LockIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+      <path fill="currentColor" d="M17 8h-1V6a4 4 0 0 0-8 0v2H7a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-9a2 2 0 0 0-2-2Zm-7-2a2 2 0 1 1 4 0v2h-4V6Z" />
+    </svg>
+  );
+}
+
 export default function DashboardPage() {
   const { user, refresh, logout } = useAuth();
   const { t, locale } = useI18n();
@@ -104,9 +113,18 @@ export default function DashboardPage() {
   const [savingName, setSavingName] = useState(false);
   const [savingDummyName, setSavingDummyName] = useState(false);
   const [showCopyToast, setShowCopyToast] = useState(false);
+  const [showEmailVerifyModal, setShowEmailVerifyModal] = useState(false);
+  const [verifyCodeInput, setVerifyCodeInput] = useState('');
+  const [verifySubmitting, setVerifySubmitting] = useState(false);
+  const [verifyResending, setVerifyResending] = useState(false);
+  const [verifyDeadlineMs, setVerifyDeadlineMs] = useState(0);
+  const [verifyRemainingMs, setVerifyRemainingMs] = useState(0);
+  const [verifyResendCooldownSec, setVerifyResendCooldownSec] = useState(0);
+  const [showVerifySentToast, setShowVerifySentToast] = useState(false);
 
   const currentName = String(user?.username || '');
   const currentDummyName = String(user?.dummy_name || '');
+  const emailVerified = Number(user?.email_verified || 0) === 1;
   const canUseInvite = String(user?.country_signup || '').toUpperCase() === 'TW';
   const trimmedName = nameForm.trim();
   const trimmedDummyName = dummyNameForm.trim();
@@ -116,8 +134,19 @@ export default function DashboardPage() {
   const nameCooldownDaysLeft = nameCooldownActive
     ? Math.max(1, Math.floor((nameCooldownUntilMs - Date.now()) / (24 * 60 * 60 * 1000)))
     : 0;
+  const dummyNameCooldownUntilRaw = String(user?.dummy_name_change_available_at || '');
+  const dummyNameCooldownUntilMs = dummyNameCooldownUntilRaw ? Date.parse(dummyNameCooldownUntilRaw) : NaN;
+  const dummyNameCooldownActive = Number.isFinite(dummyNameCooldownUntilMs) && dummyNameCooldownUntilMs > Date.now();
+  const dummyNameCooldownDaysLeft = dummyNameCooldownActive
+    ? Math.max(1, Math.floor((dummyNameCooldownUntilMs - Date.now()) / (24 * 60 * 60 * 1000)))
+    : 0;
   const canSaveName = editingName && !savingName && trimmedName.length > 0 && trimmedName !== currentName;
-  const canSaveDummyName = editingDummyName && !savingDummyName && trimmedDummyName.length > 0 && trimmedDummyName !== currentDummyName;
+  const canSaveDummyName = editingDummyName && !dummyNameCooldownActive && !savingDummyName && trimmedDummyName.length > 0 && trimmedDummyName !== currentDummyName;
+  const isDummyNameInputActive = editingDummyName || showDummyFirstIssue;
+  const verifyRemainingSeconds = Math.ceil(verifyRemainingMs / 1000);
+  const verifyTimerText = verifyRemainingSeconds > 0
+    ? `${String(Math.floor(verifyRemainingSeconds / 60)).padStart(2, '0')}:${String(verifyRemainingSeconds % 60).padStart(2, '0')}`
+    : '';
 
   useEffect(() => {
     setNameForm(currentName);
@@ -137,12 +166,76 @@ export default function DashboardPage() {
   }, [nameCooldownActive, editingName]);
 
   useEffect(() => {
+    if(dummyNameCooldownActive && editingDummyName) {
+      setEditingDummyName(false);
+    }
+  }, [dummyNameCooldownActive, editingDummyName]);
+
+  useEffect(() => {
     if(!showCopyToast) {
       return undefined;
     }
     const timer = setTimeout(() => setShowCopyToast(false), 1800);
     return () => clearTimeout(timer);
   }, [showCopyToast]);
+
+  useEffect(() => {
+    if(!showVerifySentToast) {
+      return undefined;
+    }
+    const timer = setTimeout(() => setShowVerifySentToast(false), 1800);
+    return () => clearTimeout(timer);
+  }, [showVerifySentToast]);
+
+  useEffect(() => {
+    if(!showEmailVerifyModal) {
+      return undefined;
+    }
+    let disposed = false;
+    const autoSend = async () => {
+      try {
+        const data = await resendEmailVerification({ auto: true });
+        if(disposed) return;
+        const nextDeadline = Date.parse(String(data?.expiresAt || ''));
+        if(Number.isFinite(nextDeadline) && nextDeadline > Date.now()) {
+          setVerifyDeadlineMs(nextDeadline);
+        }
+      } catch (err) {
+        if(disposed) return;
+        const nextDeadline = Date.parse(String(err?.payload?.expiresAt || ''));
+        if(Number.isFinite(nextDeadline) && nextDeadline > Date.now()) {
+          setVerifyDeadlineMs(nextDeadline);
+        }
+      }
+    };
+    autoSend();
+    return () => {
+      disposed = true;
+    };
+  }, [showEmailVerifyModal]);
+
+  useEffect(() => {
+    if(!showEmailVerifyModal || !verifyDeadlineMs || verifyDeadlineMs <= Date.now()) {
+      setVerifyRemainingMs(0);
+      return undefined;
+    }
+    const update = () => {
+      setVerifyRemainingMs(Math.max(0, verifyDeadlineMs - Date.now()));
+    };
+    update();
+    const timer = window.setInterval(update, 1000);
+    return () => window.clearInterval(timer);
+  }, [showEmailVerifyModal, verifyDeadlineMs]);
+
+  useEffect(() => {
+    if(!showEmailVerifyModal || verifyResendCooldownSec <= 0) {
+      return undefined;
+    }
+    const timer = window.setInterval(() => {
+      setVerifyResendCooldownSec((prev) => Math.max(0, prev - 1));
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [showEmailVerifyModal, verifyResendCooldownSec]);
 
   const executeRotate = async () => {
     setFeedback(null);
@@ -177,6 +270,9 @@ export default function DashboardPage() {
   };
 
   const onRotateClick = () => {
+    if(!emailVerified) {
+      return;
+    }
     if(rotating || loadingCode) {
       return;
     }
@@ -190,6 +286,9 @@ export default function DashboardPage() {
   };
 
   const onDummyRotateClick = () => {
+    if(!emailVerified) {
+      return;
+    }
     if(rotatingDummy || loadingDummyCode) {
       return;
     }
@@ -204,6 +303,11 @@ export default function DashboardPage() {
   };
 
   useEffect(() => {
+    if(!emailVerified) {
+      setLoadingCode(false);
+      setLoadingDummyCode(false);
+      return undefined;
+    }
     let canceled = false;
     const loadCurrentCode = async (reportError = true) => {
       setLoadingCode(true);
@@ -228,7 +332,7 @@ export default function DashboardPage() {
         const data = await getCurrentDummyGameCode();
         if(!canceled) {
           setDummyCode(String(data.code || ''));
-          if(!editingDummyName && typeof data.dummyName === 'string') {
+          if(!isDummyNameInputActive && typeof data.dummyName === 'string') {
             setDummyNameForm(data.dummyName);
           }
         }
@@ -247,10 +351,10 @@ export default function DashboardPage() {
     return () => {
       canceled = true;
     };
-  }, []);
+  }, [emailVerified, isDummyNameInputActive]);
 
   useEffect(() => {
-    if(!user?.id) {
+    if(!user?.id || !emailVerified) {
       return undefined;
     }
 
@@ -273,7 +377,7 @@ export default function DashboardPage() {
           }
           if(dummy) {
             setDummyCode(String(dummy.code || ''));
-            if(!editingDummyName && typeof dummy.dummyName === 'string') {
+            if(!isDummyNameInputActive && typeof dummy.dummyName === 'string') {
               setDummyNameForm(dummy.dummyName);
             }
           }
@@ -288,7 +392,7 @@ export default function DashboardPage() {
       disposed = true;
       clearInterval(timer);
     };
-  }, [user?.id, refresh, editingDummyName]);
+  }, [user?.id, refresh, isDummyNameInputActive, emailVerified]);
 
   const onCopyCode = async () => {
     if(!gameCode) {
@@ -322,6 +426,9 @@ export default function DashboardPage() {
   };
 
   const onNameAction = () => {
+    if(!emailVerified) {
+      return;
+    }
     if(editingName) {
       if(canSaveName) {
         setShowNameConfirm(true);
@@ -341,10 +448,16 @@ export default function DashboardPage() {
   };
 
   const onDummyNameAction = () => {
+    if(!emailVerified) {
+      return;
+    }
     if(editingDummyName) {
       if(canSaveDummyName) {
         saveDummyName();
       }
+      return;
+    }
+    if(dummyNameCooldownActive) {
       return;
     }
     setDummyNameForm(currentDummyName);
@@ -371,6 +484,61 @@ export default function DashboardPage() {
       setFeedback({ type: 'error', message: err.message });
     } finally {
       setSavingDummyName(false);
+    }
+  };
+
+  const openEmailVerifyModal = () => {
+    setVerifyCodeInput('');
+    setVerifyResendCooldownSec(0);
+    setVerifyDeadlineMs(0);
+    setVerifyRemainingMs(0);
+    setShowEmailVerifyModal(true);
+  };
+
+  const onVerifyResend = async () => {
+    if(verifyResendCooldownSec > 0 || verifyResending) {
+      return;
+    }
+    setVerifyResending(true);
+    setFeedback(null);
+    try {
+      const data = await resendEmailVerification();
+      const nextDeadline = Date.parse(String(data?.expiresAt || ''));
+      if(Number.isFinite(nextDeadline) && nextDeadline > Date.now()) {
+        setVerifyDeadlineMs(nextDeadline);
+      }
+      setVerifyResendCooldownSec(60);
+      setShowVerifySentToast(false);
+      requestAnimationFrame(() => setShowVerifySentToast(true));
+    } catch (err) {
+      const nextDeadline = Date.parse(String(err?.payload?.expiresAt || ''));
+      if(Number.isFinite(nextDeadline) && nextDeadline > Date.now()) {
+        setVerifyDeadlineMs(nextDeadline);
+      }
+      if(Number.isFinite(Number(err?.payload?.waitSeconds)) && Number(err.payload.waitSeconds) > 0) {
+        setVerifyResendCooldownSec(Number(err.payload.waitSeconds));
+      }
+      setFeedback({ type: 'error', message: err.message });
+    } finally {
+      setVerifyResending(false);
+    }
+  };
+
+  const onVerifyEmail = async () => {
+    if(verifySubmitting || verifyCodeInput.length !== 6) {
+      return;
+    }
+    setVerifySubmitting(true);
+    setFeedback(null);
+    try {
+      await verifyEmailCode({ code: verifyCodeInput });
+      await refresh();
+      setShowEmailVerifyModal(false);
+      setFeedback({ type: 'ok', message: t('dashboard.emailVerifiedNow') });
+    } catch (err) {
+      setFeedback({ type: 'error', message: err.message });
+    } finally {
+      setVerifySubmitting(false);
     }
   };
 
@@ -421,6 +589,12 @@ export default function DashboardPage() {
           <span>{t('dashboard.copyToast')}</span>
         </section>
       ) : null}
+      {showVerifySentToast ? (
+        <section className="copy-toast" role="status" aria-live="polite">
+          <span className="copy-toast-icon"><ToastCheckIcon /></span>
+          <span>{t('dashboard.emailVerifySentToast')}</span>
+        </section>
+      ) : null}
 
       <section className="hero">
         <p className="eyebrow">{t('dashboard.eyebrow')}</p>
@@ -460,7 +634,18 @@ export default function DashboardPage() {
                 ) : (
                   <span className="name-inline-value">{currentName || '-'}</span>
                 )}
-                {nameCooldownActive && !editingName ? (
+                {!emailVerified && !editingName ? (
+                  <Tooltip label={t('dashboard.verifyRequiredTooltip')}>
+                    <button
+                      className="btn ghost icon-btn name-action-btn locked-action"
+                      type="button"
+                      aria-disabled="true"
+                      title={t('dashboard.verifyRequiredTooltip')}
+                    >
+                      <LockIcon />
+                    </button>
+                  </Tooltip>
+                ) : nameCooldownActive && !editingName ? (
                   <span className="name-cooldown">{t('dashboard.nameCooldown', { days: nameCooldownDaysLeft })}</span>
                 ) : (
                   <button
@@ -487,7 +672,16 @@ export default function DashboardPage() {
             </dd>
 
             <dt>{t('dashboard.rowEmail')}</dt>
-            <dd>{maskEmail(user?.email)}</dd>
+            <dd>
+              <div className="email-verify-row">
+                <span>{maskEmail(user?.email)}</span>
+                {emailVerified ? (
+                  <span className="status-text status-normal">{t('dashboard.emailVerified')}</span>
+                ) : (
+                  <button className="btn ghost" type="button" onClick={openEmailVerifyModal}>{t('dashboard.emailVerifyAction')}</button>
+                )}
+              </div>
+            </dd>
             <dt>{t('dashboard.rowAccess')}</dt>
             <dd><span className={accessStatusClass}>{accessStatusText}</span></dd>
           </dl>
@@ -529,9 +723,17 @@ export default function DashboardPage() {
               </button>
             </div>
           </div>
-          <button className="btn" type="button" onClick={onRotateClick} disabled={rotating || loadingCode}>
-            {rotating ? t('dashboard.rotating') : (gameCode ? t('dashboard.reissueCode') : t('dashboard.issueCode'))}
-          </button>
+          {!emailVerified ? (
+            <Tooltip label={t('dashboard.verifyRequiredTooltip')}>
+              <button className="btn locked-action" type="button" aria-disabled="true">
+                {gameCode ? t('dashboard.reissueCode') : t('dashboard.issueCode')}
+              </button>
+            </Tooltip>
+          ) : (
+            <button className="btn" type="button" onClick={onRotateClick} disabled={rotating || loadingCode}>
+              {rotating ? t('dashboard.rotating') : (gameCode ? t('dashboard.reissueCode') : t('dashboard.issueCode'))}
+            </button>
+          )}
         </article>
 
         <article className="panel">
@@ -562,15 +764,30 @@ export default function DashboardPage() {
               ) : (
                 <span className="name-inline-value">{currentDummyName || '-'}</span>
               )}
-              <button
-                className="btn ghost icon-btn name-action-btn"
-                type="button"
-                onClick={onDummyNameAction}
-                disabled={editingDummyName && !canSaveDummyName}
-                title={editingDummyName ? t('dashboard.nameApply') : t('dashboard.dummyNameEdit')}
-              >
-                {editingDummyName ? <CheckIcon /> : <PencilIcon />}
-              </button>
+              {!emailVerified && !editingDummyName ? (
+                <Tooltip label={t('dashboard.verifyRequiredTooltip')}>
+                  <button
+                    className="btn ghost icon-btn name-action-btn locked-action"
+                    type="button"
+                    aria-disabled="true"
+                    title={t('dashboard.verifyRequiredTooltip')}
+                  >
+                    <LockIcon />
+                  </button>
+                </Tooltip>
+              ) : dummyNameCooldownActive && !editingDummyName ? (
+                <span className="name-cooldown">{t('dashboard.nameCooldown', { days: dummyNameCooldownDaysLeft })}</span>
+              ) : (
+                <button
+                  className="btn ghost icon-btn name-action-btn"
+                  type="button"
+                  onClick={onDummyNameAction}
+                  disabled={editingDummyName && !canSaveDummyName}
+                  title={editingDummyName ? t('dashboard.nameApply') : t('dashboard.dummyNameEdit')}
+                >
+                  {editingDummyName ? <CheckIcon /> : <PencilIcon />}
+                </button>
+              )}
               {editingDummyName ? (
                 <button
                   className="btn ghost icon-btn name-action-btn"
@@ -615,9 +832,17 @@ export default function DashboardPage() {
               </button>
             </div>
           </div>
-          <button className="btn" type="button" onClick={onDummyRotateClick} disabled={rotatingDummy || loadingDummyCode}>
-            {rotatingDummy ? t('dashboard.rotating') : (dummyCode ? t('dashboard.dummyReissueCode') : t('dashboard.dummyIssueCode'))}
-          </button>
+          {!emailVerified ? (
+            <Tooltip label={t('dashboard.verifyRequiredTooltip')}>
+              <button className="btn locked-action" type="button" aria-disabled="true">
+                {dummyCode ? t('dashboard.dummyReissueCode') : t('dashboard.dummyIssueCode')}
+              </button>
+            </Tooltip>
+          ) : (
+            <button className="btn" type="button" onClick={onDummyRotateClick} disabled={rotatingDummy || loadingDummyCode}>
+              {rotatingDummy ? t('dashboard.rotating') : (dummyCode ? t('dashboard.dummyReissueCode') : t('dashboard.dummyIssueCode'))}
+            </button>
+          )}
         </article>
       </section>
 
@@ -734,6 +959,52 @@ export default function DashboardPage() {
                 }}
               >
                 {t('dashboard.nameWarnConfirm')}
+              </button>
+            </div>
+          </section>
+        </div>
+      ) : null}
+
+      {showEmailVerifyModal ? (
+        <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label={t('dashboard.emailVerifyTitle')}>
+          <section className="modal-card">
+            <h3>{t('dashboard.emailVerifyTitle')}</h3>
+            <p className="muted">{t('dashboard.emailVerifyBody')}</p>
+            <p className="muted">{String(user?.email || '')}</p>
+            <label className="field">
+              <div className="verify-code-row">
+                <div className="verify-code-input-wrap">
+                  <input
+                    value={verifyCodeInput}
+                    onChange={(event) => setVerifyCodeInput(event.target.value.replace(/\D/g, '').slice(0, 6))}
+                    inputMode="numeric"
+                    autoComplete="one-time-code"
+                    placeholder={t('dashboard.emailVerifyCodePlaceholder')}
+                    autoFocus
+                    required
+                  />
+                  {verifyTimerText ? <span className="verify-code-timer">{verifyTimerText}</span> : null}
+                </div>
+                <button
+                  className="btn ghost verify-resend-btn"
+                  type="button"
+                  onClick={onVerifyResend}
+                  disabled={verifyResending || verifyResendCooldownSec > 0}
+                >
+                  {verifyResending
+                    ? t('dashboard.emailVerifyResending')
+                    : verifyResendCooldownSec > 0
+                      ? `${t('dashboard.emailVerifyResend')} (${verifyResendCooldownSec}s)`
+                      : t('dashboard.emailVerifyResend')}
+                </button>
+              </div>
+            </label>
+            <div className="modal-actions">
+              <button className="btn ghost" type="button" onClick={() => setShowEmailVerifyModal(false)}>
+                {t('common.cancel')}
+              </button>
+              <button className="btn" type="button" onClick={onVerifyEmail} disabled={verifySubmitting || verifyCodeInput.length !== 6}>
+                {verifySubmitting ? t('dashboard.emailVerifyVerifying') : t('dashboard.emailVerifySubmit')}
               </button>
             </div>
           </section>

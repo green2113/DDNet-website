@@ -28,7 +28,7 @@ export default function HomePage() {
               <button
                 className="btn"
                 type="button"
-                onClick={() => navigate(Number(user.email_verified || 0) === 1 ? '/dashboard' : '/verify-email')}
+                onClick={() => navigate('/dashboard')}
               >
                 {t('common.dashboard')}
               </button>
