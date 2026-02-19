@@ -114,7 +114,7 @@ export default function DashboardPage() {
   const nameCooldownUntilMs = nameCooldownUntilRaw ? Date.parse(nameCooldownUntilRaw) : NaN;
   const nameCooldownActive = Number.isFinite(nameCooldownUntilMs) && nameCooldownUntilMs > Date.now();
   const nameCooldownDaysLeft = nameCooldownActive
-    ? Math.max(1, Math.ceil((nameCooldownUntilMs - Date.now()) / (24 * 60 * 60 * 1000)))
+    ? Math.max(1, Math.floor((nameCooldownUntilMs - Date.now()) / (24 * 60 * 60 * 1000)))
     : 0;
   const canSaveName = editingName && !savingName && trimmedName.length > 0 && trimmedName !== currentName;
   const canSaveDummyName = editingDummyName && !savingDummyName && trimmedDummyName.length > 0 && trimmedDummyName !== currentDummyName;

@@ -760,7 +760,7 @@ async function handleUpdateProfileName(context) {
   const nextAllowedRaw = String(cooldownInfo?.name_change_available_at || '');
   const nextAllowedMs = nextAllowedRaw ? Date.parse(nextAllowedRaw) : NaN;
   if(Number.isFinite(nextAllowedMs) && nextAllowedMs > Date.now()) {
-    const remainingDays = Math.max(1, Math.ceil((nextAllowedMs - Date.now()) / (24 * 60 * 60 * 1000)));
+    const remainingDays = Math.max(1, Math.floor((nextAllowedMs - Date.now()) / (24 * 60 * 60 * 1000)));
     return json({
       ok: false,
       code: 'NAME_CHANGE_COOLDOWN',
