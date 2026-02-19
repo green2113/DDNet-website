@@ -2,5 +2,7 @@ SESSION_SECRET=replace-with-random-long-secret
 CODE_PEPPER=optional-legacy-hash-compat-only
 GAME_SERVER_API_KEY=replace-with-game-server-shared-key
 INVITE_DEFAULT_QUOTA=1
+RESEND_API_KEY=replace-with-resend-api-key
+EMAIL_FROM=no-reply@example.com
 
 BLOCK_VPN_PROXY=0

@@ -66,8 +66,13 @@ export default function RegisterPage() {
         inviteCode: form.inviteCode.trim(),
       });
       await refresh();
-      setFeedback({ type: 'ok', message: t('register.success', { code: data.gameCode }) });
-      setTimeout(() => navigate('/dashboard'), 900);
+      if(data.emailVerificationRequired) {
+        setFeedback({ type: 'ok', message: t('register.verifyRequired') });
+        setTimeout(() => navigate('/verify-email'), 500);
+      } else {
+        setFeedback({ type: 'ok', message: t('register.success', { code: data.gameCode }) });
+        setTimeout(() => navigate('/dashboard'), 900);
+      }
     } catch (err) {
       if(err.status === 403 && err.payload?.code === 'VPN_PROXY_BLOCKED') {
         navigate('/blocked', { replace: true });

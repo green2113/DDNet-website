@@ -46,6 +46,17 @@ export async function logout() {
   return api('/api/auth/logout', { method: 'POST' });
 }
 
+export async function resendEmailVerification() {
+  return api('/api/auth/email/resend', { method: 'POST' });
+}
+
+export async function verifyEmailCode(payload) {
+  return api('/api/auth/email/verify', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
 export async function rotateGameCode() {
   return api('/api/game-code/rotate', { method: 'POST' });
 }

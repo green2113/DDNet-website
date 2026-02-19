@@ -34,6 +34,8 @@ Without this migration, the service still works, but legacy hashed rows can only
 - `GAME_SERVER_API_KEY`
 - `INVITE_DEFAULT_QUOTA` (example: `1`)
 - `BLOCK_VPN_PROXY` (optional: `1` to block likely VPN/proxy/datacenter signups)
+- `RESEND_API_KEY` (for sending verification emails)
+- `EMAIL_FROM` (verified sender, e.g. `no-reply@your-domain.com`)
 
 6. Deploy:
 
@@ -85,6 +87,7 @@ Response examples:
 - `/` : main menu
 - `/login` : login page
 - `/register` : signup page
+- `/verify-email` : email verification page (required before dashboard)
 - `/dashboard` : account dashboard (invite code + rotate game login code)
 
 ## 5) DDNet server config example

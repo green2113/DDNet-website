@@ -2,11 +2,13 @@ import { Navigate, Route, Routes } from 'react-router-dom';
 import { BackgroundOrbs } from './components/Layout';
 import { RequireAuth } from './components/RequireAuth';
 import { RequireGuest } from './components/RequireGuest';
+import { RequireVerified } from './components/RequireVerified';
 import HomePage from './pages/HomePage';
 import LoginPage from './pages/LoginPage';
 import RegisterPage from './pages/RegisterPage';
 import DashboardPage from './pages/DashboardPage';
 import BlockedPage from './pages/BlockedPage';
+import VerifyEmailPage from './pages/VerifyEmailPage';
 
 export default function App() {
   return (
@@ -32,11 +34,19 @@ export default function App() {
         />
         <Route path="/blocked" element={<BlockedPage />} />
         <Route
-          path="/dashboard"
+          path="/verify-email"
           element={
             <RequireAuth>
-              <DashboardPage />
+              <VerifyEmailPage />
             </RequireAuth>
+          }
+        />
+        <Route
+          path="/dashboard"
+          element={
+            <RequireVerified>
+              <DashboardPage />
+            </RequireVerified>
           }
         />
         <Route path="*" element={<Navigate to="/" replace />} />

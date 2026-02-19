@@ -25,7 +25,13 @@ export default function HomePage() {
         right={
           user ? (
             <>
-              <button className="btn" type="button" onClick={() => navigate('/dashboard')}>{t('common.dashboard')}</button>
+              <button
+                className="btn"
+                type="button"
+                onClick={() => navigate(Number(user.email_verified || 0) === 1 ? '/dashboard' : '/verify-email')}
+              >
+                {t('common.dashboard')}
+              </button>
               <button className="btn ghost" type="button" onClick={handleLogout}>{t('common.logout')}</button>
             </>
           ) : (

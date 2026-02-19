@@ -26,6 +26,8 @@ const AUTH_COOKIE = 'ddnet_auth';
 const SESSION_MAX_AGE = 30 * 24 * 60 * 60;
 const NAME_CHANGE_COOLDOWN_DAYS = 10;
 const NAME_CHANGE_COOLDOWN_MS = NAME_CHANGE_COOLDOWN_DAYS * 24 * 60 * 60 * 1000;
+const EMAIL_VERIFY_CODE_TTL_MS = 10 * 60 * 1000;
+const EMAIL_VERIFY_RESEND_COOLDOWN_MS = 60 * 1000;
 const TRUE_VALUES = ['1', 'true', 'yes', 'on'];
 
 function cookieSecure(request) {
@@ -42,6 +44,83 @@ function vpnProxyBlockedResponse(action) {
     code: 'VPN_PROXY_BLOCKED',
     message: `VPN/Proxy connections are blocked for ${action}`,
   }, 403);
+}
+
+function randomDigits(length) {
+  const bytes = crypto.getRandomValues(new Uint8Array(length));
+  let out = '';
+  for(let i = 0; i < bytes.length; i += 1) {
+    out += String(bytes[i] % 10);
+  }
+  return out;
+}
+
+async function emailCodeHash(env, userId, code) {
+  return sha256Hex(`${env.SESSION_SECRET || ''}:${userId}:${code}`);
+}
+
+async function sendVerificationEmail(env, email, code) {
+  const apiKey = String(env.RESEND_API_KEY || '').trim();
+  const from = String(env.EMAIL_FROM || '').trim();
+  if(!apiKey || !from) {
+    throw new Error('Missing RESEND_API_KEY or EMAIL_FROM');
+  }
+
+  const response = await fetch('https://api.resend.com/emails', {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${apiKey}`,
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({
+      from,
+      to: [email],
+      subject: '[Ravion] Email Verification Code',
+      text: `Your verification code is: ${code}\nThis code expires in 10 minutes.`,
+      html: `<p>Your verification code is: <strong style="font-size:20px">${code}</strong></p><p>This code expires in 10 minutes.</p>`,
+    }),
+  });
+
+  if(!response.ok) {
+    const body = await response.text().catch(() => '');
+    throw new Error(`Email provider failed (${response.status}): ${body}`);
+  }
+}
+
+async function issueEmailVerificationCode(env, userId, email, { bypassCooldown = false } = {}) {
+  const row = await env.DB.prepare(`
+    SELECT email_verified, email_verify_sent_at
+    FROM users
+    WHERE id = ?
+    LIMIT 1
+  `).bind(userId).first();
+  if(!row) {
+    throw new Error('Account not found');
+  }
+  if(Number(row.email_verified || 0) === 1) {
+    return { alreadyVerified: true };
+  }
+
+  const sentAtRaw = String(row.email_verify_sent_at || '');
+  const sentAtMs = sentAtRaw ? Date.parse(sentAtRaw) : NaN;
+  if(!bypassCooldown && Number.isFinite(sentAtMs) && (Date.now() - sentAtMs) < EMAIL_VERIFY_RESEND_COOLDOWN_MS) {
+    const waitSeconds = Math.max(1, Math.ceil((EMAIL_VERIFY_RESEND_COOLDOWN_MS - (Date.now() - sentAtMs)) / 1000));
+    return { cooldown: true, waitSeconds };
+  }
+
+  const code = randomDigits(6);
+  await sendVerificationEmail(env, email, code);
+
+  const codeHash = await emailCodeHash(env, userId, code);
+  const now = nowIso();
+  const expiresAt = new Date(Date.now() + EMAIL_VERIFY_CODE_TTL_MS).toISOString();
+  await env.DB.prepare(`
+    UPDATE users
+    SET email_verify_code_hash = ?, email_verify_expires_at = ?, email_verify_sent_at = ?
+    WHERE id = ?
+  `).bind(codeHash, expiresAt, now, userId).run();
+
+  return { ok: true, expiresAt };
 }
 
 async function hasGameCodePlainColumn(env) {
@@ -67,12 +146,14 @@ async function hasUsersColumn(env, columnName) {
 async function publicUserById(env, userId) {
   const hasNameChangeCooldown = await hasUsersColumn(env, 'name_change_available_at');
   const hasDummyName = await hasUsersColumn(env, 'dummy_name');
+  const hasEmailVerified = await hasUsersColumn(env, 'email_verified');
   return env.DB.prepare(`
     SELECT
       id,
       username,
       ${hasDummyName ? 'dummy_name' : 'NULL AS dummy_name'},
       email,
+      ${hasEmailVerified ? 'email_verified' : '1 AS email_verified'},
       invite_code,
       invite_quota,
       invite_used,
@@ -134,6 +215,18 @@ async function currentUser(context) {
   }
 
   return { user };
+}
+
+function isEmailVerified(user) {
+  return Number(user?.email_verified || 0) === 1;
+}
+
+function emailVerificationRequiredResponse() {
+  return json({
+    ok: false,
+    code: 'EMAIL_NOT_VERIFIED',
+    message: 'Email verification is required',
+  }, 403);
 }
 
 async function allocateInviteCode(env) {
@@ -263,6 +356,14 @@ async function handleRegister(context) {
   const signupIp = getClientIp(request);
   const inviteQuotaDefault = Number(env.INVITE_DEFAULT_QUOTA || 1);
   const supportsPlainGameCode = await hasGameCodePlainColumn(env);
+  const hasEmailVerifyColumns = await hasUsersColumn(env, 'email_verified')
+    && await hasUsersColumn(env, 'email_verify_code_hash')
+    && await hasUsersColumn(env, 'email_verify_expires_at')
+    && await hasUsersColumn(env, 'email_verify_sent_at')
+    && await hasUsersColumn(env, 'email_verified_at');
+  if(!hasEmailVerifyColumns) {
+    return json({ ok: false, message: 'Email verification columns are missing. Run migrations first.' }, 500);
+  }
 
   let userId = 0;
   let gameCode = '';
@@ -296,6 +397,11 @@ async function handleRegister(context) {
             email,
             email_lower,
             password_hash,
+            email_verified,
+            email_verify_code_hash,
+            email_verify_expires_at,
+            email_verify_sent_at,
+            email_verified_at,
             invite_code,
             invite_quota,
             invite_used,
@@ -305,7 +411,7 @@ async function handleRegister(context) {
             game_login_code_plain,
             game_login_code_rotated_at,
             created_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)
+          ) VALUES (?, ?, ?, ?, ?, 0, NULL, NULL, NULL, NULL, ?, ?, 0, ?, ?, ?, ?, ?, ?)
         `).bind(
           username,
           lower(username),
@@ -328,6 +434,11 @@ async function handleRegister(context) {
             email,
             email_lower,
             password_hash,
+            email_verified,
+            email_verify_code_hash,
+            email_verify_expires_at,
+            email_verify_sent_at,
+            email_verified_at,
             invite_code,
             invite_quota,
             invite_used,
@@ -336,7 +447,7 @@ async function handleRegister(context) {
             game_login_code_hash,
             game_login_code_rotated_at,
             created_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)
+          ) VALUES (?, ?, ?, ?, ?, 0, NULL, NULL, NULL, NULL, ?, ?, 0, ?, ?, ?, ?, ?)
         `).bind(
           username,
           lower(username),
@@ -399,13 +510,22 @@ async function handleRegister(context) {
   });
 
   const user = await publicUserById(env, userId);
+  let emailSent = false;
+  try {
+    const issueResult = await issueEmailVerificationCode(env, userId, email, { bypassCooldown: true });
+    emailSent = !!issueResult?.ok;
+  } catch(err) {
+    console.error('email verify send failed', err);
+  }
 
   return json(
     {
       ok: true,
-      message: 'Registered',
+      message: 'Registered. Please verify your email.',
       user,
       gameCode,
+      emailVerificationRequired: true,
+      emailSent,
     },
     200,
     {
@@ -442,7 +562,7 @@ async function handleLogin(context) {
   }
 
   const row = await env.DB.prepare(`
-    SELECT id, password_hash
+    SELECT id, email, password_hash, email_verified
     FROM users
     WHERE email_lower = ?
     LIMIT 1
@@ -463,8 +583,20 @@ async function handleLogin(context) {
     secure: cookieSecure(request),
   });
 
+  if(Number(row.email_verified || 0) !== 1) {
+    try {
+      await issueEmailVerificationCode(env, row.id, String(row.email || ''), { bypassCooldown: false });
+    } catch(err) {
+      console.error('email verify send failed on login', err);
+    }
+  }
+
   const user = await publicUserById(env, row.id);
-  return json({ ok: true, user }, 200, { 'set-cookie': setCookie });
+  return json({
+    ok: true,
+    user,
+    emailVerificationRequired: !isEmailVerified(user),
+  }, 200, { 'set-cookie': setCookie });
 }
 
 async function handleLogout(context) {
@@ -485,11 +617,88 @@ async function handleMe(context) {
   return json({ ok: true, user: result.user });
 }
 
+async function handleEmailResend(context) {
+  const { env } = context;
+  const result = await currentUser(context);
+  if(result.error) {
+    return result.error;
+  }
+  if(isEmailVerified(result.user)) {
+    return json({ ok: true, message: 'Already verified' });
+  }
+
+  const issued = await issueEmailVerificationCode(env, result.user.id, String(result.user.email || ''), { bypassCooldown: false });
+  if(issued.cooldown) {
+    return json({
+      ok: false,
+      code: 'VERIFY_CODE_COOLDOWN',
+      message: `Please wait ${issued.waitSeconds} second(s) before requesting another code.`,
+      waitSeconds: issued.waitSeconds,
+    }, 429);
+  }
+  return json({ ok: true, message: 'Verification code sent' });
+}
+
+async function handleEmailVerify(context) {
+  const { request, env } = context;
+  const result = await currentUser(context);
+  if(result.error) {
+    return result.error;
+  }
+  if(isEmailVerified(result.user)) {
+    return json({ ok: true, user: result.user, message: 'Already verified' });
+  }
+
+  const body = await parseRequestBody(request);
+  const data = typeof body === 'string' ? {} : (body || {});
+  const code = String(data.code || '').trim();
+  if(!/^\d{6}$/.test(code)) {
+    return json({ ok: false, message: 'Verification code must be 6 digits' }, 400);
+  }
+
+  const row = await env.DB.prepare(`
+    SELECT email_verify_code_hash, email_verify_expires_at
+    FROM users
+    WHERE id = ?
+    LIMIT 1
+  `).bind(result.user.id).first();
+  const hash = String(row?.email_verify_code_hash || '');
+  const expiresAtRaw = String(row?.email_verify_expires_at || '');
+  if(!hash || !expiresAtRaw) {
+    return json({ ok: false, message: 'No active verification code. Please resend.' }, 400);
+  }
+
+  const expiresAtMs = Date.parse(expiresAtRaw);
+  if(!Number.isFinite(expiresAtMs) || expiresAtMs <= Date.now()) {
+    return json({ ok: false, message: 'Verification code expired. Please resend.' }, 400);
+  }
+
+  const expected = await emailCodeHash(env, result.user.id, code);
+  if(!timingSafeEqual(expected, hash)) {
+    return json({ ok: false, message: 'Invalid verification code' }, 400);
+  }
+
+  await env.DB.prepare(`
+    UPDATE users
+    SET email_verified = 1,
+        email_verified_at = ?,
+        email_verify_code_hash = NULL,
+        email_verify_expires_at = NULL
+    WHERE id = ?
+  `).bind(nowIso(), result.user.id).run();
+
+  const user = await publicUserById(env, result.user.id);
+  return json({ ok: true, user, message: 'Email verified' });
+}
+
 async function handleUpdateProfileName(context) {
   const { request, env } = context;
   const result = await currentUser(context);
   if(result.error) {
     return result.error;
+  }
+  if(!isEmailVerified(result.user)) {
+    return emailVerificationRequiredResponse();
   }
 
   const body = await parseRequestBody(request);
@@ -557,6 +766,9 @@ async function handleRotateGameCode(context) {
   if(result.error) {
     return result.error;
   }
+  if(!isEmailVerified(result.user)) {
+    return emailVerificationRequiredResponse();
+  }
 
   const userId = result.user.id;
   const supportsPlainGameCode = await hasGameCodePlainColumn(env);
@@ -601,6 +813,9 @@ async function handleGetCurrentGameCode(context) {
   if(result.error) {
     return result.error;
   }
+  if(!isEmailVerified(result.user)) {
+    return emailVerificationRequiredResponse();
+  }
 
   const supportsPlainGameCode = await hasGameCodePlainColumn(env);
   const row = supportsPlainGameCode
@@ -629,6 +844,9 @@ async function handleRotateDummyGameCode(context) {
   const result = await currentUser(context);
   if(result.error) {
     return result.error;
+  }
+  if(!isEmailVerified(result.user)) {
+    return emailVerificationRequiredResponse();
   }
 
   const hasDummyHash = await hasUsersColumn(env, 'dummy_login_code_hash');
@@ -725,6 +943,9 @@ async function handleGetCurrentDummyCode(context) {
   if(result.error) {
     return result.error;
   }
+  if(!isEmailVerified(result.user)) {
+    return emailVerificationRequiredResponse();
+  }
 
   const hasDummyHash = await hasUsersColumn(env, 'dummy_login_code_hash');
   if(!hasDummyHash) {
@@ -759,6 +980,9 @@ async function handleUpdateDummyName(context) {
   const result = await currentUser(context);
   if(result.error) {
     return result.error;
+  }
+  if(!isEmailVerified(result.user)) {
+    return emailVerificationRequiredResponse();
   }
 
   const hasDummyName = await hasUsersColumn(env, 'dummy_name');
@@ -844,7 +1068,7 @@ async function handleGameVerify(context) {
   let matchedDummyCode = false;
 
   let user = await env.DB.prepare(`
-    SELECT id, username, dummy_name, ban_is_permanent, ban_until, ban_reason
+    SELECT id, username, dummy_name, email_verified, ban_is_permanent, ban_until, ban_reason
     FROM users
     WHERE game_login_code_hash = ?
     LIMIT 1
@@ -853,13 +1077,13 @@ async function handleGameVerify(context) {
   if(!user && hasDummyHash) {
     user = hasDummyPlain
       ? await env.DB.prepare(`
-        SELECT id, username, dummy_name, ban_is_permanent, ban_until, ban_reason
+        SELECT id, username, dummy_name, email_verified, ban_is_permanent, ban_until, ban_reason
         FROM users
         WHERE dummy_login_code_hash = ? OR dummy_login_code_plain = ?
         LIMIT 1
       `).bind(code, code).first()
       : await env.DB.prepare(`
-        SELECT id, username, dummy_name, ban_is_permanent, ban_until, ban_reason
+        SELECT id, username, dummy_name, email_verified, ban_is_permanent, ban_until, ban_reason
         FROM users
         WHERE dummy_login_code_hash = ?
         LIMIT 1
@@ -872,14 +1096,14 @@ async function handleGameVerify(context) {
   if(!user && env.CODE_PEPPER) {
     const hash = await sha256Hex(`${env.CODE_PEPPER}:${code}`);
     user = await env.DB.prepare(`
-      SELECT id, username, dummy_name, ban_is_permanent, ban_until, ban_reason
+      SELECT id, username, dummy_name, email_verified, ban_is_permanent, ban_until, ban_reason
       FROM users
       WHERE game_login_code_hash = ?
       LIMIT 1
     `).bind(hash).first();
     if(!user && hasDummyHash) {
       user = await env.DB.prepare(`
-        SELECT id, username, dummy_name, ban_is_permanent, ban_until, ban_reason
+        SELECT id, username, dummy_name, email_verified, ban_is_permanent, ban_until, ban_reason
         FROM users
         WHERE dummy_login_code_hash = ?
         LIMIT 1
@@ -892,6 +1116,9 @@ async function handleGameVerify(context) {
 
   if(!user) {
     return json({ ok: false, message: 'Code not found' });
+  }
+  if(Number(user.email_verified || 0) !== 1) {
+    return json({ ok: false, code: 'ACCOUNT_UNVERIFIED', message: 'Account email is not verified.' });
   }
 
   const now = Date.now();
@@ -1024,6 +1251,12 @@ export async function onRequest(context) {
 
   if(request.method === 'POST' && path === '/auth/logout') {
     return handleLogout(context);
+  }
+  if(request.method === 'POST' && path === '/auth/email/resend') {
+    return handleEmailResend(context);
+  }
+  if(request.method === 'POST' && path === '/auth/email/verify') {
+    return handleEmailVerify(context);
   }
 
   if(request.method === 'GET' && path === '/me') {

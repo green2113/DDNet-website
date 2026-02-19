@@ -37,10 +37,15 @@ export default function LoginPage() {
     setFeedback(null);
     setSubmitting(true);
     try {
-      await login({ email: email.trim(), password });
+      const response = await login({ email: email.trim(), password });
       await refresh();
-      setFeedback({ type: 'ok', message: t('login.success') });
-      setTimeout(() => navigate('/dashboard'), 450);
+      if(response.emailVerificationRequired) {
+        setFeedback({ type: 'ok', message: t('login.verifyRequired') });
+        setTimeout(() => navigate('/verify-email'), 300);
+      } else {
+        setFeedback({ type: 'ok', message: t('login.success') });
+        setTimeout(() => navigate('/dashboard'), 450);
+      }
     } catch (err) {
       if(err.status === 403 && err.payload?.code === 'VPN_PROXY_BLOCKED') {
         navigate('/blocked', { replace: true });
