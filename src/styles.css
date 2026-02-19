@@ -518,8 +518,8 @@ button.btn {
   color: #e4ecff;
   border: 1px solid var(--line);
   border-radius: 12px;
-  padding: 10px 13px;
-  font-size: 14px;
+  padding: 9px 12px;
+  font-size: 13px;
   font-weight: 600;
   line-height: 1.25;
   white-space: nowrap;
@@ -547,7 +547,7 @@ button.btn {
   position: absolute;
   left: 50%;
   top: 100%;
-  transform: translateX(-50%) translateY(-1px);
+  transform: translateX(-50%) translateY(-1px) rotate(180deg);
   display: block;
 }
 
