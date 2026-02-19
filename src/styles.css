@@ -532,6 +532,11 @@ button.btn {
   gap: 8px;
 }
 
+.email-verify-row .status-text,
+.email-verify-row .btn {
+  white-space: nowrap;
+}
+
 @keyframes copy-toast-in {
   from {
     opacity: 0;

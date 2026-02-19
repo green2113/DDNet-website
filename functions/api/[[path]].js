@@ -514,14 +514,6 @@ async function handleRegister(context) {
   });
 
   const user = await publicUserById(env, userId);
-  let emailSent = false;
-  try {
-    const issueResult = await issueEmailVerificationCode(env, userId, email, { bypassCooldown: true });
-    emailSent = !!issueResult?.ok;
-  } catch(err) {
-    console.error('email verify send failed', err);
-  }
-
   return json(
     {
       ok: true,
@@ -529,7 +521,6 @@ async function handleRegister(context) {
       user,
       gameCode,
       emailVerificationRequired: true,
-      emailSent,
     },
     200,
     {
@@ -586,14 +577,6 @@ async function handleLogin(context) {
     maxAge: SESSION_MAX_AGE,
     secure: cookieSecure(request),
   });
-
-  if(Number(row.email_verified || 0) !== 1) {
-    try {
-      await issueEmailVerificationCode(env, row.id, String(row.email || ''), { bypassCooldown: false });
-    } catch(err) {
-      console.error('email verify send failed on login', err);
-    }
-  }
 
   const user = await publicUserById(env, row.id);
   return json({
