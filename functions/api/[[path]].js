@@ -77,7 +77,7 @@ async function sendVerificationEmail(env, email, code) {
       to: [email],
       subject: '[Ravion] Email Verification Code',
       text: `Your verification code is: ${code}\nThis code expires in 10 minutes.`,
-      html: `<p>Your verification code is: <strong style="font-size:20px">${code}</strong></p><p>This code expires in 10 minutes.</p>`,
+      html: `<p>Your verification code is: <strong>${code}</strong></p><p>This code expires in 10 minutes.</p>`,
     }),
   });
 
@@ -89,7 +89,7 @@ async function sendVerificationEmail(env, email, code) {
 
 async function issueEmailVerificationCode(env, userId, email, { bypassCooldown = false } = {}) {
   const row = await env.DB.prepare(`
-    SELECT email_verified, email_verify_sent_at
+    SELECT email_verified, email_verify_sent_at, email_verify_expires_at
     FROM users
     WHERE id = ?
     LIMIT 1
@@ -103,9 +103,10 @@ async function issueEmailVerificationCode(env, userId, email, { bypassCooldown =
 
   const sentAtRaw = String(row.email_verify_sent_at || '');
   const sentAtMs = sentAtRaw ? Date.parse(sentAtRaw) : NaN;
+  const existingExpiresAt = String(row.email_verify_expires_at || '');
   if(!bypassCooldown && Number.isFinite(sentAtMs) && (Date.now() - sentAtMs) < EMAIL_VERIFY_RESEND_COOLDOWN_MS) {
     const waitSeconds = Math.max(1, Math.ceil((EMAIL_VERIFY_RESEND_COOLDOWN_MS - (Date.now() - sentAtMs)) / 1000));
-    return { cooldown: true, waitSeconds };
+    return { cooldown: true, waitSeconds, expiresAt: existingExpiresAt };
   }
 
   const code = randomDigits(6);
@@ -634,9 +635,10 @@ async function handleEmailResend(context) {
       code: 'VERIFY_CODE_COOLDOWN',
       message: `Please wait ${issued.waitSeconds} second(s) before requesting another code.`,
       waitSeconds: issued.waitSeconds,
+      expiresAt: issued.expiresAt || null,
     }, 429);
   }
-  return json({ ok: true, message: 'Verification code sent' });
+  return json({ ok: true, message: 'Verification code sent', expiresAt: issued.expiresAt || null });
 }
 
 async function handleEmailVerify(context) {

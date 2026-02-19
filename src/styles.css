@@ -276,6 +276,36 @@ input:focus {
   box-shadow: 0 0 0 3px rgba(79, 124, 255, 0.22);
 }
 
+.verify-code-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.verify-code-input-wrap {
+  position: relative;
+}
+
+.verify-code-input-wrap input {
+  padding-right: 66px;
+}
+
+.verify-code-timer {
+  position: absolute;
+  right: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: #a8b8dd;
+  font-size: 0.82rem;
+  font-weight: 600;
+  pointer-events: none;
+}
+
+.verify-resend-btn {
+  white-space: nowrap;
+}
+
 .btn {
   display: inline-flex;
   align-items: center;
