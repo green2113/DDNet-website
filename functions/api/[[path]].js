@@ -66,10 +66,12 @@ async function hasUsersColumn(env, columnName) {
 
 async function publicUserById(env, userId) {
   const hasNameChangeCooldown = await hasUsersColumn(env, 'name_change_available_at');
+  const hasDummyName = await hasUsersColumn(env, 'dummy_name');
   return env.DB.prepare(`
     SELECT
       id,
       username,
+      ${hasDummyName ? 'dummy_name' : 'NULL AS dummy_name'},
       email,
       invite_code,
       invite_quota,
@@ -85,6 +87,27 @@ async function publicUserById(env, userId) {
     WHERE id = ?
     LIMIT 1
   `).bind(userId).first();
+}
+
+async function isNameTaken(env, name, excludeUserId = null) {
+  const normalized = lower(name || '');
+  if(!normalized) {
+    return false;
+  }
+  const hasDummyNameLower = await hasUsersColumn(env, 'dummy_name_lower');
+  const byUsername = excludeUserId === null
+    ? await env.DB.prepare('SELECT id FROM users WHERE username_lower = ? LIMIT 1').bind(normalized).first()
+    : await env.DB.prepare('SELECT id FROM users WHERE username_lower = ? AND id != ? LIMIT 1').bind(normalized, excludeUserId).first();
+  if(byUsername) {
+    return true;
+  }
+  if(!hasDummyNameLower) {
+    return false;
+  }
+  const byDummy = excludeUserId === null
+    ? await env.DB.prepare(`SELECT id FROM users WHERE dummy_name_lower = ? LIMIT 1`).bind(normalized).first()
+    : await env.DB.prepare(`SELECT id FROM users WHERE dummy_name_lower = ? AND id != ? LIMIT 1`).bind(normalized, excludeUserId).first();
+  return !!byDummy;
 }
 
 async function currentUser(context) {
@@ -202,8 +225,7 @@ async function handleRegister(context) {
     return json({ ok: false, message: 'Password must be 8-128 chars' }, 400);
   }
 
-  const existingByName = await env.DB.prepare('SELECT id FROM users WHERE username_lower = ? LIMIT 1').bind(lower(username)).first();
-  if(existingByName) {
+  if(await isNameTaken(env, username)) {
     return json({ ok: false, message: 'Name already exists' }, 409);
   }
 
@@ -482,14 +504,7 @@ async function handleUpdateProfileName(context) {
     return json({ ok: true, user: result.user, message: 'Name updated' });
   }
 
-  const exists = await env.DB.prepare(`
-    SELECT id
-    FROM users
-    WHERE username_lower = ?
-      AND id != ?
-    LIMIT 1
-  `).bind(lower(nextName), result.user.id).first();
-  if(exists) {
+  if(await isNameTaken(env, nextName, result.user.id)) {
     return json({ ok: false, message: 'Name already exists' }, 409);
   }
 
@@ -610,7 +625,7 @@ async function handleGetCurrentGameCode(context) {
 }
 
 async function handleRotateDummyGameCode(context) {
-  const { env } = context;
+  const { request, env } = context;
   const result = await currentUser(context);
   if(result.error) {
     return result.error;
@@ -622,23 +637,69 @@ async function handleRotateDummyGameCode(context) {
   }
 
   const supportsDummyPlain = await hasUsersColumn(env, 'dummy_login_code_plain');
+  const hasDummyName = await hasUsersColumn(env, 'dummy_name');
+  const hasDummyNameLower = await hasUsersColumn(env, 'dummy_name_lower');
   const userId = result.user.id;
+  const body = await parseRequestBody(request);
+  const data = typeof body === 'string' ? {} : (body || {});
+  const requestedDummyName = String(data.name || data.dummyName || '').trim();
+
+  const existingDummyRow = supportsDummyPlain
+    ? await env.DB.prepare(`
+      SELECT dummy_login_code_plain, dummy_login_code_hash
+      FROM users
+      WHERE id = ?
+      LIMIT 1
+    `).bind(userId).first()
+    : await env.DB.prepare(`
+      SELECT dummy_login_code_hash
+      FROM users
+      WHERE id = ?
+      LIMIT 1
+    `).bind(userId).first();
+  const existingDummyPlain = String(existingDummyRow?.dummy_login_code_plain || '');
+  const existingDummyHash = String(existingDummyRow?.dummy_login_code_hash || '');
+  const hasExistingDummyCode = existingDummyPlain.length > 0 || (existingDummyHash.length > 0 && !/^[0-9a-f]{64}$/i.test(existingDummyHash));
+
+  if(!hasExistingDummyCode) {
+    if(!isValidUsername(requestedDummyName)) {
+      return json({ ok: false, code: 'DUMMY_NAME_REQUIRED', message: 'Dummy name must be 1-15 UTF-8 bytes and cannot start with /' }, 400);
+    }
+    if(await isNameTaken(env, requestedDummyName, userId)) {
+      return json({ ok: false, message: 'Name already exists' }, 409);
+    }
+  }
 
   for(let attempt = 0; attempt < 5; attempt += 1) {
     const dummyData = await allocateDummyGameCode(env);
 
     try {
-      const updated = supportsDummyPlain
-        ? await env.DB.prepare(`
-          UPDATE users
-          SET dummy_login_code_hash = ?, dummy_login_code_plain = ?, dummy_login_code_rotated_at = ?
-          WHERE id = ?
-        `).bind(dummyData.code, dummyData.code, nowIso(), userId).run()
-        : await env.DB.prepare(`
-          UPDATE users
-          SET dummy_login_code_hash = ?, dummy_login_code_rotated_at = ?
-          WHERE id = ?
-        `).bind(dummyData.code, nowIso(), userId).run();
+      let updated;
+      if(!hasExistingDummyCode && requestedDummyName && hasDummyName && hasDummyNameLower) {
+        updated = supportsDummyPlain
+          ? await env.DB.prepare(`
+            UPDATE users
+            SET dummy_login_code_hash = ?, dummy_login_code_plain = ?, dummy_login_code_rotated_at = ?, dummy_name = ?, dummy_name_lower = ?
+            WHERE id = ?
+          `).bind(dummyData.code, dummyData.code, nowIso(), requestedDummyName, lower(requestedDummyName), userId).run()
+          : await env.DB.prepare(`
+            UPDATE users
+            SET dummy_login_code_hash = ?, dummy_login_code_rotated_at = ?, dummy_name = ?, dummy_name_lower = ?
+            WHERE id = ?
+          `).bind(dummyData.code, nowIso(), requestedDummyName, lower(requestedDummyName), userId).run();
+      } else {
+        updated = supportsDummyPlain
+          ? await env.DB.prepare(`
+            UPDATE users
+            SET dummy_login_code_hash = ?, dummy_login_code_plain = ?, dummy_login_code_rotated_at = ?
+            WHERE id = ?
+          `).bind(dummyData.code, dummyData.code, nowIso(), userId).run()
+          : await env.DB.prepare(`
+            UPDATE users
+            SET dummy_login_code_hash = ?, dummy_login_code_rotated_at = ?
+            WHERE id = ?
+          `).bind(dummyData.code, nowIso(), userId).run();
+      }
 
       if((updated.meta?.changes || 0) !== 1) {
         return json({ ok: false, message: 'Could not rotate dummy code' }, 500);
@@ -671,6 +732,56 @@ async function handleGetCurrentDummyCode(context) {
   }
 
   const supportsDummyPlain = await hasUsersColumn(env, 'dummy_login_code_plain');
+  const hasDummyName = await hasUsersColumn(env, 'dummy_name');
+  const row = supportsDummyPlain
+    ? await env.DB.prepare(`
+      SELECT dummy_login_code_plain, dummy_login_code_hash, ${hasDummyName ? 'dummy_name' : 'NULL AS dummy_name'}
+      FROM users
+      WHERE id = ?
+      LIMIT 1
+    `).bind(result.user.id).first()
+    : await env.DB.prepare(`
+      SELECT dummy_login_code_hash, ${hasDummyName ? 'dummy_name' : 'NULL AS dummy_name'}
+      FROM users
+      WHERE id = ?
+      LIMIT 1
+    `).bind(result.user.id).first();
+
+  const plain = String(row?.dummy_login_code_plain || '');
+  const fallback = String(row?.dummy_login_code_hash || '');
+  const isLegacyHash = /^[0-9a-f]{64}$/i.test(fallback);
+  const code = plain || (isLegacyHash ? '' : fallback);
+  return json({ ok: true, code, hasCode: code.length > 0, dummyName: String(row?.dummy_name || '') });
+}
+
+async function handleUpdateDummyName(context) {
+  const { request, env } = context;
+  const result = await currentUser(context);
+  if(result.error) {
+    return result.error;
+  }
+
+  const hasDummyName = await hasUsersColumn(env, 'dummy_name');
+  const hasDummyNameLower = await hasUsersColumn(env, 'dummy_name_lower');
+  if(!hasDummyName || !hasDummyNameLower) {
+    return json({ ok: false, message: 'Dummy name columns are missing. Run migrations first.' }, 500);
+  }
+  const hasDummyHash = await hasUsersColumn(env, 'dummy_login_code_hash');
+  if(!hasDummyHash) {
+    return json({ ok: false, message: 'Dummy code columns are missing. Run migrations first.' }, 500);
+  }
+
+  const body = await parseRequestBody(request);
+  const data = typeof body === 'string' ? {} : (body || {});
+  const nextName = String(data.name || data.dummyName || '').trim();
+  if(!isValidUsername(nextName)) {
+    return json({ ok: false, message: 'Dummy name must be 1-15 UTF-8 bytes and cannot start with /' }, 400);
+  }
+  if(await isNameTaken(env, nextName, result.user.id)) {
+    return json({ ok: false, message: 'Name already exists' }, 409);
+  }
+
+  const supportsDummyPlain = await hasUsersColumn(env, 'dummy_login_code_plain');
   const row = supportsDummyPlain
     ? await env.DB.prepare(`
       SELECT dummy_login_code_plain, dummy_login_code_hash
@@ -684,12 +795,24 @@ async function handleGetCurrentDummyCode(context) {
       WHERE id = ?
       LIMIT 1
     `).bind(result.user.id).first();
-
   const plain = String(row?.dummy_login_code_plain || '');
   const fallback = String(row?.dummy_login_code_hash || '');
   const isLegacyHash = /^[0-9a-f]{64}$/i.test(fallback);
-  const code = plain || (isLegacyHash ? '' : fallback);
-  return json({ ok: true, code, hasCode: code.length > 0 });
+  const hasCode = plain.length > 0 || (fallback.length > 0 && !isLegacyHash);
+  if(!hasCode) {
+    return json({ ok: false, code: 'DUMMY_CODE_REQUIRED', message: 'Issue a dummy code first.' }, 400);
+  }
+
+  const updated = await env.DB.prepare(`
+    UPDATE users
+    SET dummy_name = ?, dummy_name_lower = ?
+    WHERE id = ?
+  `).bind(nextName, lower(nextName), result.user.id).run();
+  if((updated.meta?.changes || 0) !== 1) {
+    return json({ ok: false, message: 'Could not update dummy name' }, 500);
+  }
+  const user = await publicUserById(env, result.user.id);
+  return json({ ok: true, user, message: 'Dummy name updated' });
 }
 
 async function handleGameVerify(context) {
@@ -721,7 +844,7 @@ async function handleGameVerify(context) {
   let matchedDummyCode = false;
 
   let user = await env.DB.prepare(`
-    SELECT id, username, ban_is_permanent, ban_until, ban_reason
+    SELECT id, username, dummy_name, ban_is_permanent, ban_until, ban_reason
     FROM users
     WHERE game_login_code_hash = ?
     LIMIT 1
@@ -730,13 +853,13 @@ async function handleGameVerify(context) {
   if(!user && hasDummyHash) {
     user = hasDummyPlain
       ? await env.DB.prepare(`
-        SELECT id, username, ban_is_permanent, ban_until, ban_reason
+        SELECT id, username, dummy_name, ban_is_permanent, ban_until, ban_reason
         FROM users
         WHERE dummy_login_code_hash = ? OR dummy_login_code_plain = ?
         LIMIT 1
       `).bind(code, code).first()
       : await env.DB.prepare(`
-        SELECT id, username, ban_is_permanent, ban_until, ban_reason
+        SELECT id, username, dummy_name, ban_is_permanent, ban_until, ban_reason
         FROM users
         WHERE dummy_login_code_hash = ?
         LIMIT 1
@@ -749,14 +872,14 @@ async function handleGameVerify(context) {
   if(!user && env.CODE_PEPPER) {
     const hash = await sha256Hex(`${env.CODE_PEPPER}:${code}`);
     user = await env.DB.prepare(`
-      SELECT id, username, ban_is_permanent, ban_until, ban_reason
+      SELECT id, username, dummy_name, ban_is_permanent, ban_until, ban_reason
       FROM users
       WHERE game_login_code_hash = ?
       LIMIT 1
     `).bind(hash).first();
     if(!user && hasDummyHash) {
       user = await env.DB.prepare(`
-        SELECT id, username, ban_is_permanent, ban_until, ban_reason
+        SELECT id, username, dummy_name, ban_is_permanent, ban_until, ban_reason
         FROM users
         WHERE dummy_login_code_hash = ?
         LIMIT 1
@@ -797,8 +920,8 @@ async function handleGameVerify(context) {
   return json({
     ok: true,
     accountId: user.id,
-    name: user.username,
-    username: user.username,
+    name: matchedDummyCode && String(user.dummy_name || '').trim() ? String(user.dummy_name).trim() : user.username,
+    username: matchedDummyCode && String(user.dummy_name || '').trim() ? String(user.dummy_name).trim() : user.username,
     dummyCode: matchedDummyCode,
   });
 }
@@ -909,6 +1032,9 @@ export async function onRequest(context) {
 
   if(request.method === 'POST' && path === '/profile/name') {
     return handleUpdateProfileName(context);
+  }
+  if(request.method === 'POST' && path === '/profile/dummy-name') {
+    return handleUpdateDummyName(context);
   }
 
   if(request.method === 'POST' && path === '/game-code/rotate') {

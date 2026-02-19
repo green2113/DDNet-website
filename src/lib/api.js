@@ -54,8 +54,11 @@ export async function getCurrentGameCode() {
   return api('/api/game-code/current', { method: 'GET' });
 }
 
-export async function rotateDummyGameCode() {
-  return api('/api/game-code/dummy/rotate', { method: 'POST' });
+export async function rotateDummyGameCode(payload = {}) {
+  return api('/api/game-code/dummy/rotate', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
 }
 
 export async function getCurrentDummyGameCode() {
@@ -64,6 +67,13 @@ export async function getCurrentDummyGameCode() {
 
 export async function updateProfileName(payload) {
   return api('/api/profile/name', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function updateDummyProfileName(payload) {
+  return api('/api/profile/dummy-name', {
     method: 'POST',
     body: JSON.stringify(payload),
   });

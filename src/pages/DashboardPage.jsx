@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { getCurrentDummyGameCode, getCurrentGameCode, rotateDummyGameCode, rotateGameCode, updateProfileName } from '../lib/api';
+import { getCurrentDummyGameCode, getCurrentGameCode, rotateDummyGameCode, rotateGameCode, updateDummyProfileName, updateProfileName } from '../lib/api';
 import { useAuth } from '../components/AuthProvider';
 import { useI18n } from '../components/I18nProvider';
 import { Feedback, TopBar } from '../components/Layout';
@@ -95,15 +95,21 @@ export default function DashboardPage() {
   const [rotatingDummy, setRotatingDummy] = useState(false);
   const [showRotateConfirm, setShowRotateConfirm] = useState(false);
   const [showDummyRotateConfirm, setShowDummyRotateConfirm] = useState(false);
+  const [showDummyFirstIssue, setShowDummyFirstIssue] = useState(false);
   const [showNameConfirm, setShowNameConfirm] = useState(false);
   const [nameForm, setNameForm] = useState('');
+  const [dummyNameForm, setDummyNameForm] = useState('');
   const [editingName, setEditingName] = useState(false);
+  const [editingDummyName, setEditingDummyName] = useState(false);
   const [savingName, setSavingName] = useState(false);
+  const [savingDummyName, setSavingDummyName] = useState(false);
   const [showCopyToast, setShowCopyToast] = useState(false);
 
   const currentName = String(user?.username || '');
+  const currentDummyName = String(user?.dummy_name || '');
   const canUseInvite = String(user?.country_signup || '').toUpperCase() === 'TW';
   const trimmedName = nameForm.trim();
+  const trimmedDummyName = dummyNameForm.trim();
   const nameCooldownUntilRaw = String(user?.name_change_available_at || '');
   const nameCooldownUntilMs = nameCooldownUntilRaw ? Date.parse(nameCooldownUntilRaw) : NaN;
   const nameCooldownActive = Number.isFinite(nameCooldownUntilMs) && nameCooldownUntilMs > Date.now();
@@ -111,11 +117,17 @@ export default function DashboardPage() {
     ? Math.max(1, Math.ceil((nameCooldownUntilMs - Date.now()) / (24 * 60 * 60 * 1000)))
     : 0;
   const canSaveName = editingName && !savingName && trimmedName.length > 0 && trimmedName !== currentName;
+  const canSaveDummyName = editingDummyName && !savingDummyName && trimmedDummyName.length > 0 && trimmedDummyName !== currentDummyName;
 
   useEffect(() => {
     setNameForm(currentName);
     setEditingName(false);
   }, [currentName]);
+
+  useEffect(() => {
+    setDummyNameForm(currentDummyName);
+    setEditingDummyName(false);
+  }, [currentDummyName]);
 
   useEffect(() => {
     if(nameCooldownActive && editingName) {
@@ -148,11 +160,11 @@ export default function DashboardPage() {
     }
   };
 
-  const executeDummyRotate = async () => {
+  const executeDummyRotate = async (firstDummyName = '') => {
     setFeedback(null);
     setRotatingDummy(true);
     try {
-      const result = await rotateDummyGameCode();
+      const result = await rotateDummyGameCode(firstDummyName ? { name: firstDummyName } : {});
       setDummyCode(result.code || '');
       setDummyRevealed(true);
       await refresh();
@@ -187,7 +199,8 @@ export default function DashboardPage() {
       return;
     }
 
-    executeDummyRotate();
+    setDummyNameForm(currentDummyName || '');
+    setShowDummyFirstIssue(true);
   };
 
   useEffect(() => {
@@ -215,6 +228,9 @@ export default function DashboardPage() {
         const data = await getCurrentDummyGameCode();
         if(!canceled) {
           setDummyCode(String(data.code || ''));
+          if(!editingDummyName && typeof data.dummyName === 'string') {
+            setDummyNameForm(data.dummyName);
+          }
         }
       } catch (err) {
         if(!canceled && reportError) {
@@ -257,6 +273,9 @@ export default function DashboardPage() {
           }
           if(dummy) {
             setDummyCode(String(dummy.code || ''));
+            if(!editingDummyName && typeof dummy.dummyName === 'string') {
+              setDummyNameForm(dummy.dummyName);
+            }
           }
         }
       } finally {
@@ -269,7 +288,7 @@ export default function DashboardPage() {
       disposed = true;
       clearInterval(timer);
     };
-  }, [user?.id, refresh]);
+  }, [user?.id, refresh, editingDummyName]);
 
   const onCopyCode = async () => {
     if(!gameCode) {
@@ -319,6 +338,40 @@ export default function DashboardPage() {
   const onCancelNameEdit = () => {
     setNameForm(currentName);
     setEditingName(false);
+  };
+
+  const onDummyNameAction = () => {
+    if(editingDummyName) {
+      if(canSaveDummyName) {
+        saveDummyName();
+      }
+      return;
+    }
+    setDummyNameForm(currentDummyName);
+    setEditingDummyName(true);
+  };
+
+  const onCancelDummyNameEdit = () => {
+    setDummyNameForm(currentDummyName);
+    setEditingDummyName(false);
+  };
+
+  const saveDummyName = async () => {
+    if(!canSaveDummyName) {
+      return;
+    }
+    setSavingDummyName(true);
+    setFeedback(null);
+    try {
+      await updateDummyProfileName({ name: trimmedDummyName });
+      await refresh();
+      setEditingDummyName(false);
+      setFeedback({ type: 'ok', message: t('dashboard.dummyNameUpdated') });
+    } catch (err) {
+      setFeedback({ type: 'error', message: err.message });
+    } finally {
+      setSavingDummyName(false);
+    }
   };
 
   const displayCode = loadingCode
@@ -484,6 +537,52 @@ export default function DashboardPage() {
         <article className="panel">
           <h3>{t('dashboard.dummyCodeTitle')}</h3>
           <p className="muted">{t('dashboard.dummyCodeBody')}</p>
+          {dummyCode ? (
+            <div className="name-inline" style={{ marginBottom: 12 }}>
+              {editingDummyName ? (
+                <input
+                  className="name-inline-input"
+                  value={dummyNameForm}
+                  onChange={(event) => setDummyNameForm(event.target.value)}
+                  maxLength={32}
+                  autoComplete="nickname"
+                  autoFocus
+                  onKeyDown={(event) => {
+                    if(event.key === 'Escape') {
+                      onCancelDummyNameEdit();
+                    }
+                    if(event.key === 'Enter') {
+                      event.preventDefault();
+                      if(canSaveDummyName) {
+                        saveDummyName();
+                      }
+                    }
+                  }}
+                />
+              ) : (
+                <span className="name-inline-value">{currentDummyName || '-'}</span>
+              )}
+              <button
+                className="btn ghost icon-btn name-action-btn"
+                type="button"
+                onClick={onDummyNameAction}
+                disabled={editingDummyName && !canSaveDummyName}
+                title={editingDummyName ? t('dashboard.nameApply') : t('dashboard.dummyNameEdit')}
+              >
+                {editingDummyName ? <CheckIcon /> : <PencilIcon />}
+              </button>
+              {editingDummyName ? (
+                <button
+                  className="btn ghost icon-btn name-action-btn"
+                  type="button"
+                  onClick={onCancelDummyNameEdit}
+                  title={t('dashboard.nameCancel')}
+                >
+                  <CloseIcon />
+                </button>
+              ) : null}
+            </div>
+          ) : null}
           <div className="code-line">
             <pre className="mono code-mono">{displayDummyCode}</pre>
             <div className="code-actions">
@@ -573,6 +672,45 @@ export default function DashboardPage() {
                 }}
               >
                 {t('dashboard.dummyRotateWarnConfirm')}
+              </button>
+            </div>
+          </section>
+        </div>
+      ) : null}
+
+      {showDummyFirstIssue ? (
+        <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label={t('dashboard.dummyFirstIssueTitle')}>
+          <section className="modal-card">
+            <h3>{t('dashboard.dummyFirstIssueTitle')}</h3>
+            <p className="muted">{t('dashboard.dummyFirstIssueBody')}</p>
+            <label className="field">
+              {t('dashboard.dummyNameInput')}
+              <input
+                value={dummyNameForm}
+                onChange={(event) => setDummyNameForm(event.target.value)}
+                maxLength={32}
+                autoComplete="nickname"
+                autoFocus
+              />
+            </label>
+            <div className="modal-actions">
+              <button className="btn ghost" type="button" onClick={() => setShowDummyFirstIssue(false)}>
+                {t('common.cancel')}
+              </button>
+              <button
+                className="btn"
+                type="button"
+                onClick={async () => {
+                  const initialName = dummyNameForm.trim();
+                  if(!initialName) {
+                    setFeedback({ type: 'error', message: t('dashboard.dummyNameRequired') });
+                    return;
+                  }
+                  setShowDummyFirstIssue(false);
+                  await executeDummyRotate(initialName);
+                }}
+              >
+                {t('dashboard.dummyFirstIssueConfirm')}
               </button>
             </div>
           </section>
