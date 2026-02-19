@@ -698,24 +698,26 @@ export default function DashboardPage() {
           <div className="code-line">
             <pre className="mono code-mono">{displayCode}</pre>
             <div className="code-actions">
-              <button
-                className="btn ghost icon-btn"
-                type="button"
-                onClick={() => setRevealed((prev) => !prev)}
-                disabled={!gameCode || loadingCode}
-                title={revealed ? t('dashboard.hideCode') : t('dashboard.showCode')}
-              >
-                {revealed ? <EyeOffIcon /> : <EyeIcon />}
-              </button>
-              <button
-                className="btn ghost icon-btn"
-                type="button"
-                onClick={onCopyCode}
-                disabled={!gameCode || loadingCode}
-                title={t('dashboard.copyCode')}
-              >
-                <CopyIcon />
-              </button>
+              <Tooltip label={revealed ? t('dashboard.hideCode') : t('dashboard.showCode')}>
+                <button
+                  className="btn ghost icon-btn"
+                  type="button"
+                  onClick={() => setRevealed((prev) => !prev)}
+                  disabled={!gameCode || loadingCode}
+                >
+                  {revealed ? <EyeOffIcon /> : <EyeIcon />}
+                </button>
+              </Tooltip>
+              <Tooltip label={t('dashboard.copyCode')}>
+                <button
+                  className="btn ghost icon-btn"
+                  type="button"
+                  onClick={onCopyCode}
+                  disabled={!gameCode || loadingCode}
+                >
+                  <CopyIcon />
+                </button>
+              </Tooltip>
             </div>
           </div>
           {!emailVerified ? (
@@ -798,33 +800,35 @@ export default function DashboardPage() {
           <div className="code-line">
             <pre className="mono code-mono">{displayDummyCode}</pre>
             <div className="code-actions">
-              <button
-                className="btn ghost icon-btn"
-                type="button"
-                onClick={() => setDummyRevealed((prev) => !prev)}
-                disabled={!dummyCode || loadingDummyCode}
-                title={dummyRevealed ? t('dashboard.hideCode') : t('dashboard.showCode')}
-              >
-                {dummyRevealed ? <EyeOffIcon /> : <EyeIcon />}
-              </button>
-              <button
-                className="btn ghost icon-btn"
-                type="button"
-                onClick={async () => {
-                  if(!dummyCode) return;
-                  try {
-                    await navigator.clipboard.writeText(dummyCode);
-                    setShowCopyToast(false);
-                    requestAnimationFrame(() => setShowCopyToast(true));
-                  } catch {
-                    setFeedback({ type: 'error', message: t('dashboard.copyFailed') });
-                  }
-                }}
-                disabled={!dummyCode || loadingDummyCode}
-                title={t('dashboard.copyCode')}
-              >
-                <CopyIcon />
-              </button>
+              <Tooltip label={dummyRevealed ? t('dashboard.hideCode') : t('dashboard.showCode')}>
+                <button
+                  className="btn ghost icon-btn"
+                  type="button"
+                  onClick={() => setDummyRevealed((prev) => !prev)}
+                  disabled={!dummyCode || loadingDummyCode}
+                >
+                  {dummyRevealed ? <EyeOffIcon /> : <EyeIcon />}
+                </button>
+              </Tooltip>
+              <Tooltip label={t('dashboard.copyCode')}>
+                <button
+                  className="btn ghost icon-btn"
+                  type="button"
+                  onClick={async () => {
+                    if(!dummyCode) return;
+                    try {
+                      await navigator.clipboard.writeText(dummyCode);
+                      setShowCopyToast(false);
+                      requestAnimationFrame(() => setShowCopyToast(true));
+                    } catch {
+                      setFeedback({ type: 'error', message: t('dashboard.copyFailed') });
+                    }
+                  }}
+                  disabled={!dummyCode || loadingDummyCode}
+                >
+                  <CopyIcon />
+                </button>
+              </Tooltip>
             </div>
           </div>
           {!emailVerified ? (
