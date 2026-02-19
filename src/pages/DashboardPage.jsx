@@ -303,11 +303,6 @@ export default function DashboardPage() {
   };
 
   useEffect(() => {
-    if(!emailVerified) {
-      setLoadingCode(false);
-      setLoadingDummyCode(false);
-      return undefined;
-    }
     let canceled = false;
     const loadCurrentCode = async (reportError = true) => {
       setLoadingCode(true);
@@ -351,10 +346,10 @@ export default function DashboardPage() {
     return () => {
       canceled = true;
     };
-  }, [emailVerified, isDummyNameInputActive]);
+  }, [isDummyNameInputActive]);
 
   useEffect(() => {
-    if(!user?.id || !emailVerified) {
+    if(!user?.id) {
       return undefined;
     }
 
@@ -392,7 +387,7 @@ export default function DashboardPage() {
       disposed = true;
       clearInterval(timer);
     };
-  }, [user?.id, refresh, isDummyNameInputActive, emailVerified]);
+  }, [user?.id, refresh, isDummyNameInputActive]);
 
   const onCopyCode = async () => {
     if(!gameCode) {
