@@ -370,12 +370,12 @@ async function handleRegister(context) {
   }
 
   let userId = 0;
-  let gameCode = '';
 
   for(let attempt = 0; attempt < 5; attempt += 1) {
     const inviteCode = isDirectSignupCountry ? await allocateInviteCode(env) : null;
     const inviteQuota = isDirectSignupCountry ? inviteQuotaDefault : 0;
-    const gameData = await allocateGameCode(env);
+    // Keep a non-usable unique placeholder until user explicitly issues a code on dashboard.
+    const pendingGameCodeHash = await sha256Hex(`pending:${randomCode(24)}:${nowIso()}`);
 
     let consumedInvite = false;
     try {
@@ -426,9 +426,9 @@ async function handleRegister(context) {
           inviteQuota,
           inviter ? inviter.id : null,
           country,
-            gameData.code,
-            gameData.code,
-            now,
+            pendingGameCodeHash,
+            '',
+            '',
             now,
         ).run()
         : await env.DB.prepare(`
@@ -462,8 +462,8 @@ async function handleRegister(context) {
           inviteQuota,
           inviter ? inviter.id : null,
           country,
-            gameData.code,
-            now,
+            pendingGameCodeHash,
+            '',
             now,
         ).run();
 
@@ -472,7 +472,6 @@ async function handleRegister(context) {
       }
 
       userId = Number(inserted.meta?.last_row_id || 0);
-      gameCode = gameData.code;
 
       if(inviter && userId > 0) {
         await env.DB.prepare(`
@@ -503,7 +502,7 @@ async function handleRegister(context) {
     }
   }
 
-  if(!userId || !gameCode) {
+  if(!userId) {
     return json({ ok: false, message: 'Registration failed, retry later' }, 500);
   }
 
@@ -519,7 +518,6 @@ async function handleRegister(context) {
       ok: true,
       message: 'Registered. Please verify your email.',
       user,
-      gameCode,
       emailVerificationRequired: true,
     },
     200,
