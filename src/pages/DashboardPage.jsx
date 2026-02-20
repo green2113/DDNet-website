@@ -630,28 +630,49 @@ export default function DashboardPage() {
                 ) : (
                   <span className="name-inline-value">{currentName || '-'}</span>
                 )}
-                {!emailVerified && !editingName ? (
-                  <Tooltip label={t('dashboard.verifyRequiredTooltip')}>
+                {!editingName ? (
+                  !emailVerified ? (
+                    <Tooltip label={t('dashboard.verifyRequiredTooltip')}>
+                      <button
+                        className="btn ghost icon-btn name-action-btn locked-action"
+                        type="button"
+                        aria-disabled="true"
+                        title={t('dashboard.verifyRequiredTooltip')}
+                      >
+                        <LockIcon />
+                      </button>
+                    </Tooltip>
+                  ) : nameCooldownActive ? (
+                    <Tooltip label={t('dashboard.nameCooldown', { days: nameCooldownDaysLeft })}>
+                      <button
+                        className="btn ghost icon-btn name-action-btn locked-action"
+                        type="button"
+                        onClick={onNameAction}
+                        aria-disabled="true"
+                        title={t('dashboard.nameCooldown', { days: nameCooldownDaysLeft })}
+                      >
+                        <PencilIcon />
+                      </button>
+                    </Tooltip>
+                  ) : (
                     <button
-                      className="btn ghost icon-btn name-action-btn locked-action"
+                      className="btn ghost icon-btn name-action-btn"
                       type="button"
-                      aria-disabled="true"
-                      title={t('dashboard.verifyRequiredTooltip')}
+                      onClick={onNameAction}
+                      title={t('dashboard.nameEdit')}
                     >
-                      <LockIcon />
+                      <PencilIcon />
                     </button>
-                  </Tooltip>
-                ) : nameCooldownActive && !editingName ? (
-                  <span className="name-cooldown">{t('dashboard.nameCooldown', { days: nameCooldownDaysLeft })}</span>
+                  )
                 ) : (
                   <button
                     className="btn ghost icon-btn name-action-btn"
                     type="button"
                     onClick={onNameAction}
-                    disabled={editingName && !canSaveName}
-                    title={editingName ? t('dashboard.nameApply') : t('dashboard.nameEdit')}
+                    disabled={!canSaveName}
+                    title={t('dashboard.nameApply')}
                   >
-                    {editingName ? <CheckIcon /> : <PencilIcon />}
+                    <CheckIcon />
                   </button>
                 )}
                 {editingName ? (
@@ -669,7 +690,88 @@ export default function DashboardPage() {
             {(dummyCode || currentDummyName) ? (
               <>
                 <dt>{t('dashboard.rowDummyName')}</dt>
-                <dd><span>{currentDummyName || '-'}</span></dd>
+                <dd>
+                  <div className="name-inline">
+                    {editingDummyName ? (
+                      <input
+                        className="name-inline-input"
+                        value={dummyNameForm}
+                        onChange={(event) => setDummyNameForm(event.target.value)}
+                        maxLength={32}
+                        autoComplete="nickname"
+                        autoFocus
+                        onKeyDown={(event) => {
+                          if(event.key === 'Escape') {
+                            onCancelDummyNameEdit();
+                          }
+                          if(event.key === 'Enter') {
+                            event.preventDefault();
+                            if(canSaveDummyName) {
+                              saveDummyName();
+                            }
+                          }
+                        }}
+                      />
+                    ) : (
+                      <span className="name-inline-value">{currentDummyName || '-'}</span>
+                    )}
+                    {!editingDummyName ? (
+                      !emailVerified ? (
+                        <Tooltip label={t('dashboard.verifyRequiredTooltip')}>
+                          <button
+                            className="btn ghost icon-btn name-action-btn locked-action"
+                            type="button"
+                            aria-disabled="true"
+                            title={t('dashboard.verifyRequiredTooltip')}
+                          >
+                            <LockIcon />
+                          </button>
+                        </Tooltip>
+                      ) : dummyNameCooldownActive ? (
+                        <Tooltip label={t('dashboard.nameCooldown', { days: dummyNameCooldownDaysLeft })}>
+                          <button
+                            className="btn ghost icon-btn name-action-btn locked-action"
+                            type="button"
+                            onClick={onDummyNameAction}
+                            aria-disabled="true"
+                            title={t('dashboard.nameCooldown', { days: dummyNameCooldownDaysLeft })}
+                          >
+                            <PencilIcon />
+                          </button>
+                        </Tooltip>
+                      ) : (
+                        <button
+                          className="btn ghost icon-btn name-action-btn"
+                          type="button"
+                          onClick={onDummyNameAction}
+                          title={t('dashboard.dummyNameEdit')}
+                        >
+                          <PencilIcon />
+                        </button>
+                      )
+                    ) : (
+                      <button
+                        className="btn ghost icon-btn name-action-btn"
+                        type="button"
+                        onClick={onDummyNameAction}
+                        disabled={!canSaveDummyName}
+                        title={t('dashboard.nameApply')}
+                      >
+                        <CheckIcon />
+                      </button>
+                    )}
+                    {editingDummyName ? (
+                      <button
+                        className="btn ghost icon-btn name-action-btn"
+                        type="button"
+                        onClick={onCancelDummyNameEdit}
+                        title={t('dashboard.nameCancel')}
+                      >
+                        <CloseIcon />
+                      </button>
+                    ) : null}
+                  </div>
+                </dd>
               </>
             ) : null}
 
@@ -743,67 +845,6 @@ export default function DashboardPage() {
         <article className="panel">
           <h3>{t('dashboard.dummyCodeTitle')}</h3>
           <p className="muted">{t('dashboard.dummyCodeBody')}</p>
-          {dummyCode ? (
-            <div className="name-inline" style={{ marginBottom: 12 }}>
-              {editingDummyName ? (
-                <input
-                  className="name-inline-input"
-                  value={dummyNameForm}
-                  onChange={(event) => setDummyNameForm(event.target.value)}
-                  maxLength={32}
-                  autoComplete="nickname"
-                  autoFocus
-                  onKeyDown={(event) => {
-                    if(event.key === 'Escape') {
-                      onCancelDummyNameEdit();
-                    }
-                    if(event.key === 'Enter') {
-                      event.preventDefault();
-                      if(canSaveDummyName) {
-                        saveDummyName();
-                      }
-                    }
-                  }}
-                />
-              ) : (
-                <span className="name-inline-value">{currentDummyName || '-'}</span>
-              )}
-              {!emailVerified && !editingDummyName ? (
-                <Tooltip label={t('dashboard.verifyRequiredTooltip')}>
-                  <button
-                    className="btn ghost icon-btn name-action-btn locked-action"
-                    type="button"
-                    aria-disabled="true"
-                    title={t('dashboard.verifyRequiredTooltip')}
-                  >
-                    <LockIcon />
-                  </button>
-                </Tooltip>
-              ) : dummyNameCooldownActive && !editingDummyName ? (
-                <span className="name-cooldown">{t('dashboard.nameCooldown', { days: dummyNameCooldownDaysLeft })}</span>
-              ) : (
-                <button
-                  className="btn ghost icon-btn name-action-btn"
-                  type="button"
-                  onClick={onDummyNameAction}
-                  disabled={editingDummyName && !canSaveDummyName}
-                  title={editingDummyName ? t('dashboard.nameApply') : t('dashboard.dummyNameEdit')}
-                >
-                  {editingDummyName ? <CheckIcon /> : <PencilIcon />}
-                </button>
-              )}
-              {editingDummyName ? (
-                <button
-                  className="btn ghost icon-btn name-action-btn"
-                  type="button"
-                  onClick={onCancelDummyNameEdit}
-                  title={t('dashboard.nameCancel')}
-                >
-                  <CloseIcon />
-                </button>
-              ) : null}
-            </div>
-          ) : null}
           <div className="code-line">
             <pre className="mono code-mono">{displayDummyCode}</pre>
             <div className="code-actions">
