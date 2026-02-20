@@ -125,7 +125,8 @@ export default function DashboardPage() {
   const currentName = String(user?.username || '');
   const currentDummyName = String(user?.dummy_name || '');
   const emailVerified = Number(user?.email_verified || 0) === 1;
-  const canUseInvite = String(user?.country_signup || '').toUpperCase() === 'TW';
+  const signupCountry = String(user?.country_signup || '').toUpperCase();
+  const canUseInvite = signupCountry === 'TW' || signupCountry === 'KR';
   const trimmedName = nameForm.trim();
   const trimmedDummyName = dummyNameForm.trim();
   const nameCooldownUntilRaw = String(user?.name_change_available_at || '');
@@ -665,6 +666,12 @@ export default function DashboardPage() {
                 ) : null}
               </div>
             </dd>
+            {(dummyCode || currentDummyName) ? (
+              <>
+                <dt>{t('dashboard.rowDummyName')}</dt>
+                <dd><span>{currentDummyName || '-'}</span></dd>
+              </>
+            ) : null}
 
             <dt>{t('dashboard.rowEmail')}</dt>
             <dd>

@@ -52,7 +52,7 @@ export default function RegisterPage() {
     setForm((prev) => ({ ...prev, [key]: value }));
   };
 
-  const needsInviteCode = geoLoaded && country !== 'TW';
+  const needsInviteCode = geoLoaded && country !== 'TW' && country !== 'KR';
 
   const onSubmit = async (event) => {
     event.preventDefault();

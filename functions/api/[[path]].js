@@ -61,7 +61,7 @@ async function emailCodeHash(env, userId, code) {
 
 async function sendVerificationEmail(env, email, code) {
   const apiKey = String(env.RESEND_API_KEY || '').trim();
-  const from = String(env.EMAIL_FROM || '').trim();
+  const from = String(env.EMAIL_FROM || 'noreply@playravion.com').trim();
   if(!apiKey || !from) {
     throw new Error('Missing RESEND_API_KEY or EMAIL_FROM');
   }
@@ -332,12 +332,12 @@ async function handleRegister(context) {
   }
 
   const country = getCountryCode(request);
-  const isTaiwan = country === 'TW';
+  const isDirectSignupCountry = country === 'TW' || country === 'KR';
 
-  if(!isTaiwan && !inviteInput) {
+  if(!isDirectSignupCountry && !inviteInput) {
     return json({
       ok: false,
-      message: 'Registration is limited to Taiwan unless you provide a valid invite code',
+      message: 'Registration is open directly for Taiwan and Korea. Other countries require a valid invite code.',
       country,
     }, 403);
   }
@@ -373,8 +373,8 @@ async function handleRegister(context) {
   let gameCode = '';
 
   for(let attempt = 0; attempt < 5; attempt += 1) {
-    const inviteCode = isTaiwan ? await allocateInviteCode(env) : null;
-    const inviteQuota = isTaiwan ? inviteQuotaDefault : 0;
+    const inviteCode = isDirectSignupCountry ? await allocateInviteCode(env) : null;
+    const inviteQuota = isDirectSignupCountry ? inviteQuotaDefault : 0;
     const gameData = await allocateGameCode(env);
 
     let consumedInvite = false;
@@ -902,7 +902,8 @@ async function handleRotateDummyGameCode(context) {
     try {
       let updated;
       if(!hasExistingDummyCode && requestedDummyName && hasDummyName && hasDummyNameLower) {
-        const nextAllowedAt = new Date(Date.now() + NAME_CHANGE_COOLDOWN_MS).toISOString();
+        // First-time dummy name setup should not consume name-change cooldown.
+        const nextAllowedAt = null;
         updated = supportsDummyPlain
           ? await env.DB.prepare(`
             UPDATE users
