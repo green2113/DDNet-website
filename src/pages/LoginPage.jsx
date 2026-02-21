@@ -160,44 +160,20 @@ export default function LoginPage() {
       <Link className="mini-link" to="/">{t('common.backHome')}</Link>
       <section className="panel auth-card">
         <p className="eyebrow">{t('login.eyebrow')}</p>
-        <h1>{t('login.title')}</h1>
-        <p className="muted">{t('login.subtitle')}</p>
-
-        <form className="form" onSubmit={onSubmit}>
-          <label>
-            {t('login.email')}
-            <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required autoComplete="email" />
-          </label>
-          <label>
-            {t('login.password')}
-            <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} required autoComplete="current-password" />
-          </label>
-          {errorText ? <p className="form-error-text">{errorText}</p> : null}
-          <button className="btn" type="submit" disabled={submitting}>{submitting ? t('common.loggingIn') : t('login.submit')}</button>
-        </form>
-
-        <p className="switch-line">{t('common.notLoggedInYet')} <Link to="/register">{t('common.register')}</Link></p>
-        <p className="switch-line">
-          {t('login.lostAccount')}
-          {' · '}
-          <button
-            className="link-button"
-            type="button"
-            onClick={() => {
-              const next = !showPasswordReset;
-              setShowPasswordReset(next);
-              if(next) {
-                setResetEmail((prev) => prev || email.trim());
-              }
-            }}
-          >
-            {t('login.lostPassword')}
-          </button>
-        </p>
-
         {showPasswordReset ? (
-          <form className="form password-reset-box" onSubmit={onResetPassword}>
+          <>
+            <h1>{t('login.lostPassword')}</h1>
             <p className="muted">{t('login.resetSubtitle')}</p>
+            <p className="switch-line">
+              <button
+                className="link-button"
+                type="button"
+                onClick={() => setShowPasswordReset(false)}
+              >
+                {t('common.login')}
+              </button>
+            </p>
+          <form className="form password-reset-box" onSubmit={onResetPassword}>
             <label>
               {t('login.resetEmail')}
               <input type="email" value={resetEmail} onChange={(e) => setResetEmail(e.target.value)} required autoComplete="email" />
@@ -237,7 +213,42 @@ export default function LoginPage() {
               </p>
             ) : null}
           </form>
-        ) : null}
+          </>
+        ) : (
+          <>
+            <h1>{t('login.title')}</h1>
+            <p className="muted">{t('login.subtitle')}</p>
+
+            <form className="form" onSubmit={onSubmit}>
+              <label>
+                {t('login.email')}
+                <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required autoComplete="email" />
+              </label>
+              <label>
+                {t('login.password')}
+                <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} required autoComplete="current-password" />
+              </label>
+              {errorText ? <p className="form-error-text">{errorText}</p> : null}
+              <button className="btn" type="submit" disabled={submitting}>{submitting ? t('common.loggingIn') : t('login.submit')}</button>
+            </form>
+
+            <p className="switch-line">{t('common.notLoggedInYet')} <Link to="/register">{t('common.register')}</Link></p>
+            <p className="switch-line">
+              {t('login.lostAccount')}
+              {' · '}
+              <button
+                className="link-button"
+                type="button"
+                onClick={() => {
+                  setShowPasswordReset(true);
+                  setResetEmail((prev) => prev || email.trim());
+                }}
+              >
+                {t('login.lostPassword')}
+              </button>
+            </p>
+          </>
+        )}
       </section>
     </main>
   );
