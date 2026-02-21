@@ -178,8 +178,7 @@ export default function LoginPage() {
 
         <p className="switch-line">{t('common.notLoggedInYet')} <Link to="/register">{t('common.register')}</Link></p>
         <p className="switch-line">
-          {t('login.lostAccount')}{' '}
-          <a href="https://discord.gg/NNtuG9es32" target="_blank" rel="noreferrer">{t('login.contactSupport')}</a>
+          {t('login.lostAccount')}
           {' · '}
           <button
             className="link-button"
