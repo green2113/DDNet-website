@@ -890,6 +890,66 @@ async function handlePasswordResetConfirm(context) {
   return json({ ok: true, message: 'Password has been reset' });
 }
 
+async function handlePasswordResetCheck(context) {
+  const { request, env } = context;
+  const body = await parseRequestBody(request);
+  const data = typeof body === 'string' ? {} : (body || {});
+  const email = lower(data.email || '');
+  const code = String(data.code || '').trim();
+
+  if(!email || !isValidEmail(email)) {
+    return json({ ok: false, message: 'Invalid email format' }, 400);
+  }
+  if(!/^\d{6}$/.test(code)) {
+    return json({ ok: false, message: 'Verification code must be 6 digits' }, 400);
+  }
+
+  const user = await env.DB.prepare(`
+    SELECT id, email_verified
+    FROM users
+    WHERE email_lower = ?
+    LIMIT 1
+  `).bind(email).first();
+  if(!user) {
+    return json({ ok: false, message: 'Invalid email or reset code' }, 400);
+  }
+  if(Number(user.email_verified || 0) !== 1) {
+    return json({
+      ok: false,
+      code: 'PASSWORD_RESET_EMAIL_NOT_VERIFIED',
+      message: 'This email is not verified, so password reset is unavailable.',
+      supportUrl: 'https://discord.gg/NNtuG9es32',
+    }, 403);
+  }
+
+  await ensurePasswordResetTable(env);
+  const row = await env.DB.prepare(`
+    SELECT code_hash, expires_at
+    FROM password_resets
+    WHERE user_id = ? AND used_at IS NULL
+    ORDER BY id DESC
+    LIMIT 1
+  `).bind(user.id).first();
+
+  const hash = String(row?.code_hash || '');
+  const expiresAtRaw = String(row?.expires_at || '');
+  if(!hash || !expiresAtRaw) {
+    return json({ ok: false, message: 'No active reset code. Please request a new one.' }, 400);
+  }
+
+  const expiresAtMs = Date.parse(expiresAtRaw);
+  if(!Number.isFinite(expiresAtMs) || expiresAtMs <= Date.now()) {
+    return json({ ok: false, message: 'Reset code expired. Please request a new one.' }, 400);
+  }
+
+  const expected = await passwordResetCodeHash(env, user.id, code);
+  if(!timingSafeEqual(expected, hash)) {
+    return json({ ok: false, message: 'Invalid email or reset code' }, 400);
+  }
+
+  return json({ ok: true, message: 'Reset code verified' });
+}
+
 async function handleUpdateProfileName(context) {
   const { request, env } = context;
   const result = await currentUser(context);
@@ -1471,6 +1531,9 @@ export async function onRequest(context) {
   }
   if(request.method === 'POST' && path === '/auth/password/request') {
     return handlePasswordResetRequest(context);
+  }
+  if(request.method === 'POST' && path === '/auth/password/check') {
+    return handlePasswordResetCheck(context);
   }
   if(request.method === 'POST' && path === '/auth/password/reset') {
     return handlePasswordResetConfirm(context);
