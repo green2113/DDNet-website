@@ -1,6 +1,6 @@
 import { Link, useNavigate } from 'react-router-dom';
 import { useEffect, useState } from 'react';
-import { getGeo, login, requestPasswordResetCode, resetPasswordWithCode } from '../lib/api';
+import { checkPasswordResetCode, getGeo, login, requestPasswordResetCode, resetPasswordWithCode } from '../lib/api';
 import { useAuth } from '../components/AuthProvider';
 import { useI18n } from '../components/I18nProvider';
 import { LanguageSelector } from '../components/Layout';
@@ -16,9 +16,11 @@ export default function LoginPage() {
   const [showPasswordReset, setShowPasswordReset] = useState(false);
   const [resetEmail, setResetEmail] = useState('');
   const [resetCode, setResetCode] = useState('');
+  const [resetStep, setResetStep] = useState('verify-code');
   const [resetPassword, setResetPassword] = useState('');
-  const [resetCodeRequested, setResetCodeRequested] = useState(false);
+  const [resetPasswordConfirm, setResetPasswordConfirm] = useState('');
   const [requestingCode, setRequestingCode] = useState(false);
+  const [checkingResetCode, setCheckingResetCode] = useState(false);
   const [resettingPassword, setResettingPassword] = useState(false);
   const [resetInfoText, setResetInfoText] = useState('');
   const [resetErrorText, setResetErrorText] = useState('');
@@ -101,7 +103,6 @@ export default function LoginPage() {
     setRequestingCode(true);
     try {
       const data = await requestPasswordResetCode({ email: resetEmail.trim() });
-      setResetCodeRequested(true);
       setResetCooldownSec(60);
       const nextDeadline = data?.expiresAt ? Date.parse(data.expiresAt) : NaN;
       setResetDeadlineMs(Number.isFinite(nextDeadline) ? nextDeadline : 0);
@@ -125,10 +126,37 @@ export default function LoginPage() {
     }
   };
 
+  const onCheckResetCode = async (event) => {
+    event.preventDefault();
+    setResetInfoText('');
+    setResetErrorText('');
+    setCheckingResetCode(true);
+    try {
+      await checkPasswordResetCode({
+        email: resetEmail.trim(),
+        code: resetCode.trim(),
+      });
+      setResetStep('set-password');
+      setResetInfoText(t('login.resetCodeVerified'));
+    } catch (err) {
+      if(err.status === 403 && err.payload?.code === 'PASSWORD_RESET_EMAIL_NOT_VERIFIED') {
+        setResetErrorText(`${t('login.resetUnverifiedLine1')}\n${t('login.resetUnverifiedLine2')}`);
+      } else {
+        setResetErrorText(err.message || t('login.resetConfirmFailed'));
+      }
+    } finally {
+      setCheckingResetCode(false);
+    }
+  };
+
   const onResetPassword = async (event) => {
     event.preventDefault();
     setResetInfoText('');
     setResetErrorText('');
+    if(resetPassword !== resetPasswordConfirm) {
+      setResetErrorText(t('login.resetPasswordMismatch'));
+      return;
+    }
     setResettingPassword(true);
     try {
       await resetPasswordWithCode({
@@ -139,7 +167,8 @@ export default function LoginPage() {
       setResetInfoText(t('login.resetSuccess'));
       setResetCode('');
       setResetPassword('');
-      setResetCodeRequested(false);
+      setResetPasswordConfirm('');
+      setResetStep('verify-code');
       setResetDeadlineMs(0);
     } catch (err) {
       if(err.status === 403 && err.payload?.code === 'PASSWORD_RESET_EMAIL_NOT_VERIFIED') {
@@ -163,43 +192,46 @@ export default function LoginPage() {
         {showPasswordReset ? (
           <>
             <h1>{t('login.lostPassword')}</h1>
-            <p className="muted">{t('login.resetSubtitle')}</p>
-            <p className="switch-line">
-              <button
-                className="link-button"
-                type="button"
-                onClick={() => setShowPasswordReset(false)}
-              >
-                {t('common.login')}
-              </button>
-            </p>
-          <form className="form password-reset-box" onSubmit={onResetPassword}>
-            <label>
-              {t('login.resetEmail')}
-              <input type="email" value={resetEmail} onChange={(e) => setResetEmail(e.target.value)} required autoComplete="email" />
-            </label>
-            <div className="reset-actions-row">
+          <form
+            className="form password-reset-box"
+            onSubmit={resetStep === 'verify-code' ? onCheckResetCode : onResetPassword}
+          >
+            <div className="email-send-row">
+              <label>
+                {t('login.resetEmail')}
+                <input type="email" value={resetEmail} onChange={(e) => setResetEmail(e.target.value)} required autoComplete="email" />
+              </label>
               <button className="btn ghost" type="button" onClick={onRequestResetCode} disabled={requestingCode || resetCooldownSec > 0}>
                 {requestingCode ? t('login.resetSending') : t('login.resetSendCode')}
               </button>
-              {resetCooldownSec > 0 ? <span className="muted">{t('login.resetCooldown', { seconds: resetCooldownSec })}</span> : null}
             </div>
+            {resetCooldownSec > 0 ? <p className="muted">{t('login.resetCooldown', { seconds: resetCooldownSec })}</p> : null}
             {resetTimerText ? <p className="muted">{t('login.resetExpiresIn', { time: resetTimerText })}</p> : null}
-            {resetCodeRequested ? (
+            {resetStep === 'verify-code' ? (
               <>
                 <label>
                   {t('login.resetCode')}
                   <input type="text" value={resetCode} onChange={(e) => setResetCode(e.target.value)} inputMode="numeric" maxLength={6} required />
                 </label>
+                <button className="btn block" type="submit" disabled={checkingResetCode}>
+                  {checkingResetCode ? t('login.resetVerifyingCode') : t('login.resetVerifyCode')}
+                </button>
+              </>
+            ) : (
+              <>
                 <label>
                   {t('login.resetNewPassword')}
                   <input type="password" value={resetPassword} onChange={(e) => setResetPassword(e.target.value)} minLength={8} required autoComplete="new-password" />
                 </label>
-                <button className="btn" type="submit" disabled={resettingPassword}>
+                <label>
+                  {t('login.resetPasswordConfirm')}
+                  <input type="password" value={resetPasswordConfirm} onChange={(e) => setResetPasswordConfirm(e.target.value)} minLength={8} required autoComplete="new-password" />
+                </label>
+                <button className="btn block" type="submit" disabled={resettingPassword}>
                   {resettingPassword ? t('login.resetting') : t('login.resetSubmit')}
                 </button>
               </>
-            ) : null}
+            )}
             {resetInfoText ? <p className="form-ok-text">{resetInfoText}</p> : null}
             {resetErrorText ? (
               <p className="form-error-text preserve-lines">
@@ -242,6 +274,12 @@ export default function LoginPage() {
                 onClick={() => {
                   setShowPasswordReset(true);
                   setResetEmail((prev) => prev || email.trim());
+                  setResetStep('verify-code');
+                  setResetCode('');
+                  setResetPassword('');
+                  setResetPasswordConfirm('');
+                  setResetInfoText('');
+                  setResetErrorText('');
                 }}
               >
                 {t('login.lostPassword')}

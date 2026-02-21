@@ -376,8 +376,17 @@ button.btn {
 
 .password-reset-box {
   margin-top: 12px;
-  padding-top: 12px;
-  border-top: 1px solid var(--line);
+}
+
+.email-send-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: end;
+}
+
+.email-send-row label {
+  margin: 0;
 }
 
 .reset-actions-row {
@@ -385,6 +394,11 @@ button.btn {
   align-items: center;
   gap: 10px;
   flex-wrap: wrap;
+}
+
+.btn.block {
+  width: 100%;
+  justify-content: center;
 }
 
 .form-ok-text {

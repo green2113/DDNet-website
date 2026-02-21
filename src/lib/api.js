@@ -67,6 +67,13 @@ export async function requestPasswordResetCode(payload) {
   });
 }
 
+export async function checkPasswordResetCode(payload) {
+  return api('/api/auth/password/check', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
 export async function resetPasswordWithCode(payload) {
   return api('/api/auth/password/reset', {
     method: 'POST',
