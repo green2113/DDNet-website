@@ -362,6 +362,41 @@ button.btn {
   font-weight: 600;
 }
 
+.link-button {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: #b8c9ff;
+  font: inherit;
+  font-weight: 600;
+  padding: 0;
+  margin: 0;
+  cursor: pointer;
+}
+
+.password-reset-box {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.reset-actions-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.form-ok-text {
+  margin: 0;
+  color: #7ee4b3;
+  font-size: 0.95rem;
+}
+
+.preserve-lines {
+  white-space: pre-line;
+}
+
 .mini-link {
   display: inline-block;
   margin-bottom: 12px;

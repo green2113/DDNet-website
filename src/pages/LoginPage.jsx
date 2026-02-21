@@ -1,6 +1,6 @@
 import { Link, useNavigate } from 'react-router-dom';
 import { useEffect, useState } from 'react';
-import { getGeo, login } from '../lib/api';
+import { getGeo, login, requestPasswordResetCode, resetPasswordWithCode } from '../lib/api';
 import { useAuth } from '../components/AuthProvider';
 import { useI18n } from '../components/I18nProvider';
 import { LanguageSelector } from '../components/Layout';
@@ -13,6 +13,17 @@ export default function LoginPage() {
   const [password, setPassword] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [errorText, setErrorText] = useState('');
+  const [showPasswordReset, setShowPasswordReset] = useState(false);
+  const [resetEmail, setResetEmail] = useState('');
+  const [resetCode, setResetCode] = useState('');
+  const [resetPassword, setResetPassword] = useState('');
+  const [resetCodeRequested, setResetCodeRequested] = useState(false);
+  const [requestingCode, setRequestingCode] = useState(false);
+  const [resettingPassword, setResettingPassword] = useState(false);
+  const [resetInfoText, setResetInfoText] = useState('');
+  const [resetErrorText, setResetErrorText] = useState('');
+  const [resetCooldownSec, setResetCooldownSec] = useState(0);
+  const [resetDeadlineMs, setResetDeadlineMs] = useState(0);
 
   useEffect(() => {
     let canceled = false;
@@ -31,6 +42,28 @@ export default function LoginPage() {
       canceled = true;
     };
   }, [navigate]);
+
+  useEffect(() => {
+    if(!showPasswordReset || resetCooldownSec <= 0) {
+      return undefined;
+    }
+    const timer = setInterval(() => {
+      setResetCooldownSec((prev) => (prev > 1 ? prev - 1 : 0));
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [showPasswordReset, resetCooldownSec]);
+
+  useEffect(() => {
+    if(!showPasswordReset || !resetDeadlineMs || resetDeadlineMs <= Date.now()) {
+      return undefined;
+    }
+    const timer = setInterval(() => {
+      if(Date.now() >= resetDeadlineMs) {
+        setResetDeadlineMs(0);
+      }
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [showPasswordReset, resetDeadlineMs]);
 
   const onSubmit = async (event) => {
     event.preventDefault();
@@ -52,6 +85,70 @@ export default function LoginPage() {
       }
     } finally {
       setSubmitting(false);
+    }
+  };
+
+  const remainingResetSeconds = resetDeadlineMs > Date.now()
+    ? Math.ceil((resetDeadlineMs - Date.now()) / 1000)
+    : 0;
+  const resetTimerText = remainingResetSeconds > 0
+    ? `${Math.floor(remainingResetSeconds / 60)}:${String(remainingResetSeconds % 60).padStart(2, '0')}`
+    : '';
+
+  const onRequestResetCode = async () => {
+    setResetInfoText('');
+    setResetErrorText('');
+    setRequestingCode(true);
+    try {
+      const data = await requestPasswordResetCode({ email: resetEmail.trim() });
+      setResetCodeRequested(true);
+      setResetCooldownSec(60);
+      const nextDeadline = data?.expiresAt ? Date.parse(data.expiresAt) : NaN;
+      setResetDeadlineMs(Number.isFinite(nextDeadline) ? nextDeadline : 0);
+      setResetInfoText(t('login.resetCodeSent'));
+    } catch (err) {
+      if(err.status === 403 && err.payload?.code === 'PASSWORD_RESET_EMAIL_NOT_VERIFIED') {
+        setResetErrorText(`${t('login.resetUnverifiedLine1')}\n${t('login.resetUnverifiedLine2')}`);
+      } else if(err.status === 429 && err.payload?.code === 'PASSWORD_RESET_COOLDOWN') {
+        const wait = Number(err.payload?.waitSeconds || 0);
+        if(wait > 0) {
+          setResetCooldownSec(wait);
+        }
+        const nextDeadline = err.payload?.expiresAt ? Date.parse(err.payload.expiresAt) : NaN;
+        setResetDeadlineMs(Number.isFinite(nextDeadline) ? nextDeadline : 0);
+        setResetErrorText(t('login.resetCooldown', { seconds: wait || 1 }));
+      } else {
+        setResetErrorText(err.message || t('login.resetRequestFailed'));
+      }
+    } finally {
+      setRequestingCode(false);
+    }
+  };
+
+  const onResetPassword = async (event) => {
+    event.preventDefault();
+    setResetInfoText('');
+    setResetErrorText('');
+    setResettingPassword(true);
+    try {
+      await resetPasswordWithCode({
+        email: resetEmail.trim(),
+        code: resetCode.trim(),
+        newPassword: resetPassword,
+      });
+      setResetInfoText(t('login.resetSuccess'));
+      setResetCode('');
+      setResetPassword('');
+      setResetCodeRequested(false);
+      setResetDeadlineMs(0);
+    } catch (err) {
+      if(err.status === 403 && err.payload?.code === 'PASSWORD_RESET_EMAIL_NOT_VERIFIED') {
+        setResetErrorText(`${t('login.resetUnverifiedLine1')}\n${t('login.resetUnverifiedLine2')}`);
+      } else {
+        setResetErrorText(err.message || t('login.resetConfirmFailed'));
+      }
+    } finally {
+      setResettingPassword(false);
     }
   };
 
@@ -80,6 +177,68 @@ export default function LoginPage() {
         </form>
 
         <p className="switch-line">{t('common.notLoggedInYet')} <Link to="/register">{t('common.register')}</Link></p>
+        <p className="switch-line">
+          {t('login.lostAccount')}{' '}
+          <a href="https://discord.gg/NNtuG9es32" target="_blank" rel="noreferrer">{t('login.contactSupport')}</a>
+          {' · '}
+          <button
+            className="link-button"
+            type="button"
+            onClick={() => {
+              const next = !showPasswordReset;
+              setShowPasswordReset(next);
+              if(next) {
+                setResetEmail((prev) => prev || email.trim());
+              }
+            }}
+          >
+            {t('login.lostPassword')}
+          </button>
+        </p>
+
+        {showPasswordReset ? (
+          <form className="form password-reset-box" onSubmit={onResetPassword}>
+            <p className="muted">{t('login.resetSubtitle')}</p>
+            <label>
+              {t('login.resetEmail')}
+              <input type="email" value={resetEmail} onChange={(e) => setResetEmail(e.target.value)} required autoComplete="email" />
+            </label>
+            <div className="reset-actions-row">
+              <button className="btn ghost" type="button" onClick={onRequestResetCode} disabled={requestingCode || resetCooldownSec > 0}>
+                {requestingCode ? t('login.resetSending') : t('login.resetSendCode')}
+              </button>
+              {resetCooldownSec > 0 ? <span className="muted">{t('login.resetCooldown', { seconds: resetCooldownSec })}</span> : null}
+            </div>
+            {resetTimerText ? <p className="muted">{t('login.resetExpiresIn', { time: resetTimerText })}</p> : null}
+            {resetCodeRequested ? (
+              <>
+                <label>
+                  {t('login.resetCode')}
+                  <input type="text" value={resetCode} onChange={(e) => setResetCode(e.target.value)} inputMode="numeric" maxLength={6} required />
+                </label>
+                <label>
+                  {t('login.resetNewPassword')}
+                  <input type="password" value={resetPassword} onChange={(e) => setResetPassword(e.target.value)} minLength={8} required autoComplete="new-password" />
+                </label>
+                <button className="btn" type="submit" disabled={resettingPassword}>
+                  {resettingPassword ? t('login.resetting') : t('login.resetSubmit')}
+                </button>
+              </>
+            ) : null}
+            {resetInfoText ? <p className="form-ok-text">{resetInfoText}</p> : null}
+            {resetErrorText ? (
+              <p className="form-error-text preserve-lines">
+                {resetErrorText}
+                {resetErrorText.includes('\n') ? (
+                  <>
+                    {' '}
+                    <a href="https://discord.gg/NNtuG9es32" target="_blank" rel="noreferrer">{t('login.contactSupport')}</a>
+                  </>
+                ) : null}
+              </p>
+            ) : null}
+          </form>
+        ) : null}
       </section>
     </main>
   );

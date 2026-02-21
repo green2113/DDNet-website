@@ -28,6 +28,8 @@ const NAME_CHANGE_COOLDOWN_DAYS = 10;
 const NAME_CHANGE_COOLDOWN_MS = NAME_CHANGE_COOLDOWN_DAYS * 24 * 60 * 60 * 1000;
 const EMAIL_VERIFY_CODE_TTL_MS = 10 * 60 * 1000;
 const EMAIL_VERIFY_RESEND_COOLDOWN_MS = 60 * 1000;
+const PASSWORD_RESET_CODE_TTL_MS = 10 * 60 * 1000;
+const PASSWORD_RESET_RESEND_COOLDOWN_MS = 60 * 1000;
 const TRUE_VALUES = ['1', 'true', 'yes', 'on'];
 
 function cookieSecure(request) {
@@ -86,6 +88,56 @@ async function sendVerificationEmail(env, email, code) {
     const body = await response.text().catch(() => '');
     throw new Error(`Email provider failed (${response.status}): ${body}`);
   }
+}
+
+async function sendPasswordResetEmail(env, email, code) {
+  const apiKey = String(env.RESEND_API_KEY || '').trim();
+  const from = String(env.EMAIL_FROM || 'noreply@playravion.com').trim();
+  if(!apiKey || !from) {
+    throw new Error('Missing RESEND_API_KEY or EMAIL_FROM');
+  }
+  const fromWithName = from.includes('<') ? from : `Ravion <${from}>`;
+
+  const response = await fetch('https://api.resend.com/emails', {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${apiKey}`,
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({
+      from: fromWithName,
+      to: [email],
+      subject: '[Ravion] Password Reset Code',
+      text: `Your password reset code is: ${code}\nThis code expires in 10 minutes.`,
+      html: `<p>Your password reset code is: <strong>${code}</strong></p><p>This code expires in 10 minutes.</p>`,
+    }),
+  });
+
+  if(!response.ok) {
+    const body = await response.text().catch(() => '');
+    throw new Error(`Email provider failed (${response.status}): ${body}`);
+  }
+}
+
+async function ensurePasswordResetTable(env) {
+  await env.DB.prepare(`
+    CREATE TABLE IF NOT EXISTS password_resets (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      code_hash TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+      sent_at TEXT NOT NULL,
+      used_at TEXT DEFAULT NULL
+    )
+  `).run();
+  await env.DB.prepare(`
+    CREATE INDEX IF NOT EXISTS idx_password_resets_user_id
+    ON password_resets(user_id)
+  `).run();
+}
+
+async function passwordResetCodeHash(env, userId, code) {
+  return sha256Hex(`pwreset:${env.SESSION_SECRET || ''}:${userId}:${code}`);
 }
 
 async function issueEmailVerificationCode(env, userId, email, { bypassCooldown = false } = {}) {
@@ -700,6 +752,144 @@ async function handleEmailVerify(context) {
   return json({ ok: true, user, message: 'Email verified' });
 }
 
+async function handlePasswordResetRequest(context) {
+  const { request, env } = context;
+  const body = await parseRequestBody(request);
+  const data = typeof body === 'string' ? {} : (body || {});
+  const email = lower(data.email || '');
+
+  if(!email || !isValidEmail(email)) {
+    return json({ ok: false, message: 'Invalid email format' }, 400);
+  }
+
+  const user = await env.DB.prepare(`
+    SELECT id, email, email_verified
+    FROM users
+    WHERE email_lower = ?
+    LIMIT 1
+  `).bind(email).first();
+
+  // Avoid leaking account existence.
+  if(!user) {
+    return json({ ok: true, message: 'If the account exists, a reset code was sent.' });
+  }
+
+  if(Number(user.email_verified || 0) !== 1) {
+    return json({
+      ok: false,
+      code: 'PASSWORD_RESET_EMAIL_NOT_VERIFIED',
+      message: 'This email is not verified, so password reset is unavailable.',
+      supportUrl: 'https://discord.gg/NNtuG9es32',
+    }, 403);
+  }
+
+  await ensurePasswordResetTable(env);
+
+  const active = await env.DB.prepare(`
+    SELECT sent_at, expires_at
+    FROM password_resets
+    WHERE user_id = ? AND used_at IS NULL
+    ORDER BY id DESC
+    LIMIT 1
+  `).bind(user.id).first();
+
+  const sentAtMs = Date.parse(String(active?.sent_at || ''));
+  if(Number.isFinite(sentAtMs) && Date.now() - sentAtMs < PASSWORD_RESET_RESEND_COOLDOWN_MS) {
+    const waitSeconds = Math.max(1, Math.ceil((PASSWORD_RESET_RESEND_COOLDOWN_MS - (Date.now() - sentAtMs)) / 1000));
+    return json({
+      ok: false,
+      code: 'PASSWORD_RESET_COOLDOWN',
+      message: `Please wait ${waitSeconds} second(s) before requesting another code.`,
+      waitSeconds,
+      expiresAt: String(active?.expires_at || '') || null,
+    }, 429);
+  }
+
+  const code = randomDigits(6);
+  await sendPasswordResetEmail(env, String(user.email || email), code);
+
+  const now = nowIso();
+  const expiresAt = new Date(Date.now() + PASSWORD_RESET_CODE_TTL_MS).toISOString();
+  const codeHash = await passwordResetCodeHash(env, user.id, code);
+
+  await env.DB.prepare(`
+    INSERT INTO password_resets (user_id, code_hash, expires_at, sent_at, used_at)
+    VALUES (?, ?, ?, ?, NULL)
+  `).bind(user.id, codeHash, expiresAt, now).run();
+
+  return json({ ok: true, message: 'Password reset code sent', expiresAt });
+}
+
+async function handlePasswordResetConfirm(context) {
+  const { request, env } = context;
+  const body = await parseRequestBody(request);
+  const data = typeof body === 'string' ? {} : (body || {});
+  const email = lower(data.email || '');
+  const code = String(data.code || '').trim();
+  const newPassword = String(data.newPassword || data.password || '');
+
+  if(!email || !isValidEmail(email)) {
+    return json({ ok: false, message: 'Invalid email format' }, 400);
+  }
+  if(!/^\d{6}$/.test(code)) {
+    return json({ ok: false, message: 'Verification code must be 6 digits' }, 400);
+  }
+  if(!isValidPassword(newPassword)) {
+    return json({ ok: false, message: 'Password must be at least 8 characters' }, 400);
+  }
+
+  const user = await env.DB.prepare(`
+    SELECT id, email_verified
+    FROM users
+    WHERE email_lower = ?
+    LIMIT 1
+  `).bind(email).first();
+  if(!user) {
+    return json({ ok: false, message: 'Invalid email or reset code' }, 400);
+  }
+  if(Number(user.email_verified || 0) !== 1) {
+    return json({
+      ok: false,
+      code: 'PASSWORD_RESET_EMAIL_NOT_VERIFIED',
+      message: 'This email is not verified, so password reset is unavailable.',
+      supportUrl: 'https://discord.gg/NNtuG9es32',
+    }, 403);
+  }
+
+  await ensurePasswordResetTable(env);
+  const row = await env.DB.prepare(`
+    SELECT id, code_hash, expires_at
+    FROM password_resets
+    WHERE user_id = ? AND used_at IS NULL
+    ORDER BY id DESC
+    LIMIT 1
+  `).bind(user.id).first();
+
+  const hash = String(row?.code_hash || '');
+  const expiresAtRaw = String(row?.expires_at || '');
+  if(!hash || !expiresAtRaw) {
+    return json({ ok: false, message: 'No active reset code. Please request a new one.' }, 400);
+  }
+
+  const expiresAtMs = Date.parse(expiresAtRaw);
+  if(!Number.isFinite(expiresAtMs) || expiresAtMs <= Date.now()) {
+    return json({ ok: false, message: 'Reset code expired. Please request a new one.' }, 400);
+  }
+
+  const expected = await passwordResetCodeHash(env, user.id, code);
+  if(!timingSafeEqual(expected, hash)) {
+    return json({ ok: false, message: 'Invalid email or reset code' }, 400);
+  }
+
+  const passwordHash = await hashPassword(newPassword);
+  await env.DB.batch([
+    env.DB.prepare(`UPDATE users SET password_hash = ? WHERE id = ?`).bind(passwordHash, user.id),
+    env.DB.prepare(`UPDATE password_resets SET used_at = ? WHERE user_id = ? AND used_at IS NULL`).bind(nowIso(), user.id),
+  ]);
+
+  return json({ ok: true, message: 'Password has been reset' });
+}
+
 async function handleUpdateProfileName(context) {
   const { request, env } = context;
   const result = await currentUser(context);
@@ -1278,6 +1468,12 @@ export async function onRequest(context) {
   }
   if(request.method === 'POST' && path === '/auth/email/verify') {
     return handleEmailVerify(context);
+  }
+  if(request.method === 'POST' && path === '/auth/password/request') {
+    return handlePasswordResetRequest(context);
+  }
+  if(request.method === 'POST' && path === '/auth/password/reset') {
+    return handlePasswordResetConfirm(context);
   }
 
   if(request.method === 'GET' && path === '/me') {

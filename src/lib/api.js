@@ -60,6 +60,20 @@ export async function verifyEmailCode(payload) {
   });
 }
 
+export async function requestPasswordResetCode(payload) {
+  return api('/api/auth/password/request', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function resetPasswordWithCode(payload) {
+  return api('/api/auth/password/reset', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
 export async function rotateGameCode() {
   return api('/api/game-code/rotate', { method: 'POST' });
 }
