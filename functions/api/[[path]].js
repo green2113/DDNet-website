@@ -216,10 +216,7 @@ async function publicUserById(env, userId) {
       country_signup,
       ban_is_permanent,
       ban_until,
-      ban_reason,
-      ${hasNameChangeCooldown ? 'name_change_available_at' : 'NULL AS name_change_available_at'},
-      game_login_code_rotated_at,
-      created_at
+      ${hasNameChangeCooldown ? 'name_change_available_at' : 'NULL AS name_change_available_at'}
     FROM users
     WHERE id = ?
     LIMIT 1
