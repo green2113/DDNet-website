@@ -186,7 +186,7 @@ body {
 .eyebrow {
   margin: 0;
   color: #95aff0;
-  font-size: 0.8rem;
+  font-size: 0.86rem;
   letter-spacing: 0.12em;
   font-weight: 700;
 }
@@ -258,7 +258,7 @@ label {
 
 .input-help {
   color: #8ea6d9;
-  font-size: 0.8rem;
+  font-size: 0.86rem;
 }
 
 .form-error-text {
