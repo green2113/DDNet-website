@@ -1071,9 +1071,7 @@ export default function DashboardPage() {
                   <p className="muted admin-selected-user">
                     {t('dashboard.adminSelectedUser', { id: adminSelectedUser.id, name: adminSelectedUser.username || '-' })}
                   </p>
-                ) : (
-                  <p className="muted admin-selected-user">{t('dashboard.adminSelectHint')}</p>
-                )}
+                ) : null}
                 <label>
                   {t('dashboard.adminMinutes')}
                   <input
