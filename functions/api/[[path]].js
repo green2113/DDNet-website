@@ -202,6 +202,7 @@ async function publicUserById(env, userId) {
   const hasDummyName = await hasUsersColumn(env, 'dummy_name');
   const hasDummyNameChangeCooldown = await hasUsersColumn(env, 'dummy_name_change_available_at');
   const hasEmailVerified = await hasUsersColumn(env, 'email_verified');
+  const hasIsAdmin = await hasUsersColumn(env, 'is_admin');
   return env.DB.prepare(`
     SELECT
       id,
@@ -214,6 +215,7 @@ async function publicUserById(env, userId) {
       invite_quota,
       invite_used,
       country_signup,
+      ${hasIsAdmin ? 'is_admin' : '0 AS is_admin'},
       ban_is_permanent,
       ban_until,
       ${hasNameChangeCooldown ? 'name_change_available_at' : 'NULL AS name_change_available_at'}
@@ -280,6 +282,17 @@ function emailVerificationRequiredResponse() {
     code: 'EMAIL_NOT_VERIFIED',
     message: 'Email verification is required',
   }, 403);
+}
+
+async function requireAdmin(context) {
+  const result = await currentUser(context);
+  if(result.error) {
+    return result;
+  }
+  if(Number(result.user?.is_admin || 0) !== 1) {
+    return { error: json({ ok: false, message: 'Admin privileges required' }, 403) };
+  }
+  return result;
 }
 
 async function allocateInviteCode(env) {
@@ -1485,6 +1498,73 @@ async function handleGameUnban(context) {
   return json({ ok: true, accountId });
 }
 
+async function handleAdminBan(context) {
+  const { request, env } = context;
+  const auth = await requireAdmin(context);
+  if(auth.error) {
+    return auth.error;
+  }
+
+  const body = await parseRequestBody(request);
+  const data = typeof body === 'string' ? {} : (body || {});
+  const accountId = Number(data.accountId || 0);
+  const minutesRaw = Number(data.minutes ?? 0);
+  const reason = String(data.reason || '').trim();
+
+  if(!Number.isFinite(accountId) || accountId <= 0) {
+    return json({ ok: false, message: 'Invalid account id' }, 400);
+  }
+
+  const permanent = minutesRaw <= 0;
+  const minutes = Math.max(1, Math.floor(minutesRaw));
+  const banUntil = permanent ? null : new Date(Date.now() + minutes * 60 * 1000).toISOString();
+
+  const updated = await env.DB.prepare(`
+    UPDATE users
+    SET ban_is_permanent = ?, ban_until = ?, ban_reason = ?
+    WHERE id = ?
+  `).bind(permanent ? 1 : 0, banUntil, reason, accountId).run();
+
+  if((updated.meta?.changes || 0) !== 1) {
+    return json({ ok: false, message: 'Account not found' }, 404);
+  }
+
+  return json({
+    ok: true,
+    accountId,
+    banPermanent: permanent,
+    banUntil,
+    banReason: reason,
+  });
+}
+
+async function handleAdminUnban(context) {
+  const { request, env } = context;
+  const auth = await requireAdmin(context);
+  if(auth.error) {
+    return auth.error;
+  }
+
+  const body = await parseRequestBody(request);
+  const data = typeof body === 'string' ? {} : (body || {});
+  const accountId = Number(data.accountId || 0);
+  if(!Number.isFinite(accountId) || accountId <= 0) {
+    return json({ ok: false, message: 'Invalid account id' }, 400);
+  }
+
+  const updated = await env.DB.prepare(`
+    UPDATE users
+    SET ban_is_permanent = 0, ban_until = NULL, ban_reason = ''
+    WHERE id = ?
+  `).bind(accountId).run();
+
+  if((updated.meta?.changes || 0) !== 1) {
+    return json({ ok: false, message: 'Account not found' }, 404);
+  }
+
+  return json({ ok: true, accountId });
+}
+
 export async function onRequest(context) {
   const { request } = context;
   const url = new URL(request.url);
@@ -1573,6 +1653,14 @@ export async function onRequest(context) {
 
   if(request.method === 'POST' && path === '/game/unban') {
     return handleGameUnban(context);
+  }
+
+  if(request.method === 'POST' && path === '/admin/ban') {
+    return handleAdminBan(context);
+  }
+
+  if(request.method === 'POST' && path === '/admin/unban') {
+    return handleAdminUnban(context);
   }
 
   return json({ ok: false, message: 'API route not found' }, 404);

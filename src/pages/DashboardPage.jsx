@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { getCurrentDummyGameCode, getCurrentGameCode, resendEmailVerification, rotateDummyGameCode, rotateGameCode, updateDummyProfileName, updateProfileName, verifyEmailCode } from '../lib/api';
+import { adminBanAccount, adminUnbanAccount, getCurrentDummyGameCode, getCurrentGameCode, resendEmailVerification, rotateDummyGameCode, rotateGameCode, updateDummyProfileName, updateProfileName, verifyEmailCode } from '../lib/api';
 import { useAuth } from '../components/AuthProvider';
 import { useI18n } from '../components/I18nProvider';
 import { Feedback, TopBar } from '../components/Layout';
@@ -122,6 +122,10 @@ export default function DashboardPage() {
   const [verifyRemainingMs, setVerifyRemainingMs] = useState(0);
   const [verifyResendCooldownSec, setVerifyResendCooldownSec] = useState(0);
   const [showVerifySentToast, setShowVerifySentToast] = useState(false);
+  const [adminTargetId, setAdminTargetId] = useState('');
+  const [adminMinutes, setAdminMinutes] = useState('10');
+  const [adminReason, setAdminReason] = useState('');
+  const [adminSubmitting, setAdminSubmitting] = useState(false);
 
   const currentName = String(user?.username || '');
   const currentDummyName = String(user?.dummy_name || '');
@@ -145,10 +149,17 @@ export default function DashboardPage() {
   const canSaveName = editingName && !savingName && trimmedName.length > 0 && trimmedName !== currentName;
   const canSaveDummyName = editingDummyName && !dummyNameCooldownActive && !savingDummyName && trimmedDummyName.length > 0 && trimmedDummyName !== currentDummyName;
   const isDummyNameInputActive = editingDummyName || showDummyFirstIssue;
+  const isAdmin = Number(user?.is_admin || 0) === 1;
   const verifyRemainingSeconds = Math.min(600, Math.max(0, Math.ceil(verifyRemainingMs / 1000)));
   const verifyTimerText = verifyRemainingSeconds > 0
     ? `${String(Math.floor(verifyRemainingSeconds / 60)).padStart(2, '0')}:${String(verifyRemainingSeconds % 60).padStart(2, '0')}`
     : '';
+
+  useEffect(() => {
+    if(!isAdmin && activeSection === 'admin-ban') {
+      setActiveSection('account');
+    }
+  }, [isAdmin, activeSection]);
 
   useEffect(() => {
     setNameForm(currentName);
@@ -498,6 +509,53 @@ export default function DashboardPage() {
     }
   };
 
+  const onAdminBan = async () => {
+    const accountId = Number(adminTargetId);
+    const minutes = Number(adminMinutes);
+    if(!Number.isFinite(accountId) || accountId <= 0) {
+      setFeedback({ type: 'error', message: '계정 ID를 올바르게 입력하세요.' });
+      return;
+    }
+    if(!Number.isFinite(minutes)) {
+      setFeedback({ type: 'error', message: '분(minutes) 값을 숫자로 입력하세요.' });
+      return;
+    }
+    setAdminSubmitting(true);
+    setFeedback(null);
+    try {
+      await adminBanAccount({
+        accountId,
+        minutes,
+        reason: adminReason.trim(),
+      });
+      setFeedback({ type: 'ok', message: '차단 처리 완료.' });
+      await refresh();
+    } catch (err) {
+      setFeedback({ type: 'error', message: err.message });
+    } finally {
+      setAdminSubmitting(false);
+    }
+  };
+
+  const onAdminUnban = async () => {
+    const accountId = Number(adminTargetId);
+    if(!Number.isFinite(accountId) || accountId <= 0) {
+      setFeedback({ type: 'error', message: '계정 ID를 올바르게 입력하세요.' });
+      return;
+    }
+    setAdminSubmitting(true);
+    setFeedback(null);
+    try {
+      await adminUnbanAccount({ accountId });
+      setFeedback({ type: 'ok', message: '차단 해제 완료.' });
+      await refresh();
+    } catch (err) {
+      setFeedback({ type: 'error', message: err.message });
+    } finally {
+      setAdminSubmitting(false);
+    }
+  };
+
   const displayCode = loadingCode
     ? '••••••••••••••••••••'
     : (!gameCode ? '-' : (revealed ? gameCode : '•'.repeat(gameCode.length)));
@@ -578,6 +636,19 @@ export default function DashboardPage() {
               </button>
             ))}
           </nav>
+          {isAdmin ? (
+            <div className="dashboard-admin-nav">
+              <div className="dashboard-nav-divider" />
+              <p className="dashboard-admin-label">운영자 전용</p>
+              <button
+                className={`dashboard-nav-btn${activeSection === 'admin-ban' ? ' active' : ''}`}
+                type="button"
+                onClick={() => setActiveSection('admin-ban')}
+              >
+                차단
+              </button>
+            </div>
+          ) : null}
         </aside>
 
         <div className="dashboard-content">
@@ -878,6 +949,50 @@ export default function DashboardPage() {
                 )}
               </article>
             </div>
+          ) : null}
+
+          {activeSection === 'admin-ban' && isAdmin ? (
+            <article className="panel">
+              <h3>차단</h3>
+              <p className="muted">계정 ID 기준으로 차단/해제를 처리합니다. minutes가 0 이하이면 영구 차단입니다.</p>
+              <div className="admin-form-grid">
+                <label>
+                  계정 ID
+                  <input
+                    type="number"
+                    min="1"
+                    value={adminTargetId}
+                    onChange={(event) => setAdminTargetId(event.target.value)}
+                    placeholder="예: 123"
+                  />
+                </label>
+                <label>
+                  차단 분(minutes)
+                  <input
+                    type="number"
+                    value={adminMinutes}
+                    onChange={(event) => setAdminMinutes(event.target.value)}
+                    placeholder="0 = 영구"
+                  />
+                </label>
+                <label>
+                  사유(선택)
+                  <input
+                    value={adminReason}
+                    onChange={(event) => setAdminReason(event.target.value)}
+                    placeholder="예: abuse"
+                  />
+                </label>
+              </div>
+              <div className="admin-actions">
+                <button className="btn" type="button" onClick={onAdminBan} disabled={adminSubmitting}>
+                  차단
+                </button>
+                <button className="btn ghost" type="button" onClick={onAdminUnban} disabled={adminSubmitting}>
+                  차단 해제
+                </button>
+              </div>
+            </article>
           ) : null}
 
         </div>

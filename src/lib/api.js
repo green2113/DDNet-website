@@ -113,3 +113,17 @@ export async function updateDummyProfileName(payload) {
     body: JSON.stringify(payload),
   });
 }
+
+export async function adminBanAccount(payload) {
+  return api('/api/admin/ban', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function adminUnbanAccount(payload) {
+  return api('/api/admin/unban', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}

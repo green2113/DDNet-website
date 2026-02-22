@@ -7,3 +7,4 @@
 .read migrations/0007_dummy_name.sql
 .read migrations/0008_email_verification.sql
 .read migrations/0009_dummy_name_change_cooldown.sql
+.read migrations/0010_user_admin_flag.sql
