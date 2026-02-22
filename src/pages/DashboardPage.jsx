@@ -93,6 +93,7 @@ export default function DashboardPage() {
   const { user, refresh, logout } = useAuth();
   const { t, locale } = useI18n();
   const navigate = useNavigate();
+  const [activeSection, setActiveSection] = useState('account');
   const [feedback, setFeedback] = useState(null);
   const [gameCode, setGameCode] = useState('');
   const [dummyCode, setDummyCode] = useState('');
@@ -520,6 +521,13 @@ export default function DashboardPage() {
   const accessStatusClass = isBanned
     ? (banPermanent ? 'status-text status-permanent' : 'status-text status-temporary')
     : 'status-text status-normal';
+  const navItems = [
+    { id: 'account', label: t('dashboard.accountTitle') },
+    ...(canUseInvite ? [{ id: 'invite', label: t('dashboard.inviteTitle') }] : []),
+    { id: 'codes', label: t('dashboard.gameCodeTitle') },
+    { id: 'guide', label: t('dashboard.inGameTitle') },
+  ];
+  const activeTitle = navItems.find((item) => item.id === activeSection)?.label || navItems[0]?.label || '';
 
   const onLogout = async () => {
     try {
@@ -557,8 +565,30 @@ export default function DashboardPage() {
         <p className="lead">{t('dashboard.lead')}</p>
       </section>
 
-      <section className="feature-grid dash-grid">
-        <article className="panel">
+      <section className="dashboard-layout">
+        <aside className="panel dashboard-sidebar">
+          <p className="dashboard-sidebar-caption">{t('dashboard.title')}</p>
+          <nav className="dashboard-nav" aria-label="Dashboard sections">
+            {navItems.map((item) => (
+              <button
+                key={item.id}
+                className={`dashboard-nav-btn${activeSection === item.id ? ' active' : ''}`}
+                type="button"
+                onClick={() => setActiveSection(item.id)}
+              >
+                {item.label}
+              </button>
+            ))}
+          </nav>
+        </aside>
+
+        <div className="dashboard-content">
+          <section className="panel">
+            <h3>{activeTitle}</h3>
+          </section>
+
+          {activeSection === 'account' ? (
+            <article className="panel">
           <h3>{t('dashboard.accountTitle')}</h3>
           <dl className="info">
             <dt>{t('dashboard.rowUserId')}</dt>
@@ -748,117 +778,125 @@ export default function DashboardPage() {
             <dt>{t('dashboard.rowAccess')}</dt>
             <dd><span className={accessStatusClass}>{accessStatusText}</span></dd>
           </dl>
-        </article>
+            </article>
+          ) : null}
 
-        {canUseInvite ? (
-          <article className="panel">
-            <h3>{t('dashboard.inviteTitle')}</h3>
-            <p className="muted">{t('dashboard.inviteBody')}</p>
-            <pre className="mono">{user?.invite_code || '-'}</pre>
-            <p className="muted">{t('dashboard.inviteUsage', { used: user?.invite_used ?? 0, quota: user?.invite_quota ?? 0 })}</p>
-            <p className="muted">{t('dashboard.inviteNotice')}</p>
-          </article>
-        ) : null}
+          {activeSection === 'invite' && canUseInvite ? (
+            <article className="panel">
+              <h3>{t('dashboard.inviteTitle')}</h3>
+              <p className="muted">{t('dashboard.inviteBody')}</p>
+              <pre className="mono">{user?.invite_code || '-'}</pre>
+              <p className="muted">{t('dashboard.inviteUsage', { used: user?.invite_used ?? 0, quota: user?.invite_quota ?? 0 })}</p>
+              <p className="muted">{t('dashboard.inviteNotice')}</p>
+            </article>
+          ) : null}
 
-        <article className="panel">
-          <h3>{t('dashboard.gameCodeTitle')}</h3>
-          <p className="muted">{t('dashboard.gameCodeBody')}</p>
-          <div className="code-line">
-            <pre className="mono code-mono">{displayCode}</pre>
-            <div className="code-actions">
-              <Tooltip label={revealed ? t('dashboard.hideCode') : t('dashboard.showCode')}>
-                <button
-                  className="btn ghost icon-btn"
-                  type="button"
-                  onClick={() => setRevealed((prev) => !prev)}
-                  disabled={!gameCode || loadingCode}
-                >
-                  {revealed ? <EyeOffIcon /> : <EyeIcon />}
-                </button>
-              </Tooltip>
-              <Tooltip label={t('dashboard.copyCode')}>
-                <button
-                  className="btn ghost icon-btn"
-                  type="button"
-                  onClick={onCopyCode}
-                  disabled={!gameCode || loadingCode}
-                >
-                  <CopyIcon />
-                </button>
-              </Tooltip>
+          {activeSection === 'codes' ? (
+            <div className="dashboard-codes-grid">
+              <article className="panel">
+                <h3>{t('dashboard.gameCodeTitle')}</h3>
+                <p className="muted">{t('dashboard.gameCodeBody')}</p>
+                <div className="code-line">
+                  <pre className="mono code-mono">{displayCode}</pre>
+                  <div className="code-actions">
+                    <Tooltip label={revealed ? t('dashboard.hideCode') : t('dashboard.showCode')}>
+                      <button
+                        className="btn ghost icon-btn"
+                        type="button"
+                        onClick={() => setRevealed((prev) => !prev)}
+                        disabled={!gameCode || loadingCode}
+                      >
+                        {revealed ? <EyeOffIcon /> : <EyeIcon />}
+                      </button>
+                    </Tooltip>
+                    <Tooltip label={t('dashboard.copyCode')}>
+                      <button
+                        className="btn ghost icon-btn"
+                        type="button"
+                        onClick={onCopyCode}
+                        disabled={!gameCode || loadingCode}
+                      >
+                        <CopyIcon />
+                      </button>
+                    </Tooltip>
+                  </div>
+                </div>
+                {!emailVerified ? (
+                  <Tooltip label={t('dashboard.verifyRequiredTooltip')}>
+                    <button className="btn locked-action" type="button" aria-disabled="true">
+                      {gameCode ? t('dashboard.reissueCode') : t('dashboard.issueCode')}
+                    </button>
+                  </Tooltip>
+                ) : (
+                  <button className="btn" type="button" onClick={onRotateClick} disabled={rotating || loadingCode}>
+                    {rotating ? t('dashboard.rotating') : (gameCode ? t('dashboard.reissueCode') : t('dashboard.issueCode'))}
+                  </button>
+                )}
+              </article>
+
+              <article className="panel">
+                <h3>{t('dashboard.dummyCodeTitle')}</h3>
+                <p className="muted">{t('dashboard.dummyCodeBody')}</p>
+                <div className="code-line">
+                  <pre className="mono code-mono">{displayDummyCode}</pre>
+                  <div className="code-actions">
+                    <Tooltip label={dummyRevealed ? t('dashboard.hideCode') : t('dashboard.showCode')}>
+                      <button
+                        className="btn ghost icon-btn"
+                        type="button"
+                        onClick={() => setDummyRevealed((prev) => !prev)}
+                        disabled={!dummyCode || loadingDummyCode}
+                      >
+                        {dummyRevealed ? <EyeOffIcon /> : <EyeIcon />}
+                      </button>
+                    </Tooltip>
+                    <Tooltip label={t('dashboard.copyCode')}>
+                      <button
+                        className="btn ghost icon-btn"
+                        type="button"
+                        onClick={async () => {
+                          if(!dummyCode) return;
+                          try {
+                            await navigator.clipboard.writeText(dummyCode);
+                            setShowCopyToast(false);
+                            requestAnimationFrame(() => setShowCopyToast(true));
+                          } catch {
+                            setFeedback({ type: 'error', message: t('dashboard.copyFailed') });
+                          }
+                        }}
+                        disabled={!dummyCode || loadingDummyCode}
+                      >
+                        <CopyIcon />
+                      </button>
+                    </Tooltip>
+                  </div>
+                </div>
+                {!emailVerified ? (
+                  <Tooltip label={t('dashboard.verifyRequiredTooltip')}>
+                    <button className="btn locked-action" type="button" aria-disabled="true">
+                      {dummyCode ? t('dashboard.dummyReissueCode') : t('dashboard.dummyIssueCode')}
+                    </button>
+                  </Tooltip>
+                ) : (
+                  <button className="btn" type="button" onClick={onDummyRotateClick} disabled={rotatingDummy || loadingDummyCode}>
+                    {rotatingDummy ? t('dashboard.rotating') : (dummyCode ? t('dashboard.dummyReissueCode') : t('dashboard.dummyIssueCode'))}
+                  </button>
+                )}
+              </article>
             </div>
-          </div>
-          {!emailVerified ? (
-            <Tooltip label={t('dashboard.verifyRequiredTooltip')}>
-              <button className="btn locked-action" type="button" aria-disabled="true">
-                {gameCode ? t('dashboard.reissueCode') : t('dashboard.issueCode')}
-              </button>
-            </Tooltip>
-          ) : (
-            <button className="btn" type="button" onClick={onRotateClick} disabled={rotating || loadingCode}>
-              {rotating ? t('dashboard.rotating') : (gameCode ? t('dashboard.reissueCode') : t('dashboard.issueCode'))}
-            </button>
-          )}
-        </article>
+          ) : null}
 
-        <article className="panel">
-          <h3>{t('dashboard.dummyCodeTitle')}</h3>
-          <p className="muted">{t('dashboard.dummyCodeBody')}</p>
-          <div className="code-line">
-            <pre className="mono code-mono">{displayDummyCode}</pre>
-            <div className="code-actions">
-              <Tooltip label={dummyRevealed ? t('dashboard.hideCode') : t('dashboard.showCode')}>
-                <button
-                  className="btn ghost icon-btn"
-                  type="button"
-                  onClick={() => setDummyRevealed((prev) => !prev)}
-                  disabled={!dummyCode || loadingDummyCode}
-                >
-                  {dummyRevealed ? <EyeOffIcon /> : <EyeIcon />}
-                </button>
-              </Tooltip>
-              <Tooltip label={t('dashboard.copyCode')}>
-                <button
-                  className="btn ghost icon-btn"
-                  type="button"
-                  onClick={async () => {
-                    if(!dummyCode) return;
-                    try {
-                      await navigator.clipboard.writeText(dummyCode);
-                      setShowCopyToast(false);
-                      requestAnimationFrame(() => setShowCopyToast(true));
-                    } catch {
-                      setFeedback({ type: 'error', message: t('dashboard.copyFailed') });
-                    }
-                  }}
-                  disabled={!dummyCode || loadingDummyCode}
-                >
-                  <CopyIcon />
-                </button>
-              </Tooltip>
-            </div>
-          </div>
-          {!emailVerified ? (
-            <Tooltip label={t('dashboard.verifyRequiredTooltip')}>
-              <button className="btn locked-action" type="button" aria-disabled="true">
-                {dummyCode ? t('dashboard.dummyReissueCode') : t('dashboard.dummyIssueCode')}
-              </button>
-            </Tooltip>
-          ) : (
-            <button className="btn" type="button" onClick={onDummyRotateClick} disabled={rotatingDummy || loadingDummyCode}>
-              {rotatingDummy ? t('dashboard.rotating') : (dummyCode ? t('dashboard.dummyReissueCode') : t('dashboard.dummyIssueCode'))}
-            </button>
-          )}
-        </article>
-      </section>
-
-      <section className="panel">
-        <h3>{t('dashboard.inGameTitle')}</h3>
-        <ol className="steps">
-          <li>{t('dashboard.step1')}</li>
-          <li>{t('dashboard.step2')}</li>
-          <li>{t('dashboard.step3')}</li>
-        </ol>
+          {activeSection === 'guide' ? (
+            <section className="panel">
+              <h3>{t('dashboard.inGameTitle')}</h3>
+              <ol className="steps">
+                <li>{t('dashboard.step1')}</li>
+                <li>{t('dashboard.step2')}</li>
+                <li>{t('dashboard.step3')}</li>
+              </ol>
+            </section>
+          ) : null}
+        </div>
       </section>
 
       {showRotateConfirm ? (
