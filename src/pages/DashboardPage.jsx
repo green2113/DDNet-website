@@ -25,6 +25,21 @@ function maskEmail(value) {
   return `${visible}${'*'.repeat(hiddenLength)}@${domain}`;
 }
 
+function formatDateTimePrecise(valueMs, locale) {
+  if(!Number.isFinite(valueMs) || valueMs <= 0) {
+    return '';
+  }
+  return new Intl.DateTimeFormat(locale || 'en-US', {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  }).format(new Date(valueMs));
+}
+
 function EyeIcon() {
   return (
     <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
@@ -128,9 +143,12 @@ export default function DashboardPage() {
   const [adminUsersLoading, setAdminUsersLoading] = useState(false);
   const [adminPickerOpen, setAdminPickerOpen] = useState(false);
   const [adminMinutes, setAdminMinutes] = useState('10');
-  const [adminReason, setAdminReason] = useState('');
+  const [adminReasonPreset, setAdminReasonPreset] = useState('abuse');
+  const [adminReasonCustom, setAdminReasonCustom] = useState('');
   const [adminSubmitting, setAdminSubmitting] = useState(false);
+  const [showAdminBanConfirm, setShowAdminBanConfirm] = useState(false);
   const adminPickerRef = useRef(null);
+  const adminSearchInputRef = useRef(null);
 
   const currentName = String(user?.username || '');
   const currentDummyName = String(user?.dummy_name || '');
@@ -159,6 +177,10 @@ export default function DashboardPage() {
   const verifyTimerText = verifyRemainingSeconds > 0
     ? `${String(Math.floor(verifyRemainingSeconds / 60)).padStart(2, '0')}:${String(verifyRemainingSeconds % 60).padStart(2, '0')}`
     : '';
+  const adminMinutesNum = Number(adminMinutes);
+  const adminReasonValue = adminReasonPreset === 'custom'
+    ? adminReasonCustom.trim()
+    : adminReasonPreset;
 
   useEffect(() => {
     if(!isAdmin && activeSection === 'admin-ban') {
@@ -172,10 +194,10 @@ export default function DashboardPage() {
       return undefined;
     }
     let cancelled = false;
-    const timer = setTimeout(async () => {
+    const loadUsers = async () => {
       setAdminUsersLoading(true);
       try {
-        const result = await adminSearchUsers(adminSearchName);
+        const result = await adminSearchUsers('');
         if(!cancelled) {
           setAdminUsers(Array.isArray(result?.users) ? result.users : []);
         }
@@ -189,12 +211,12 @@ export default function DashboardPage() {
           setAdminUsersLoading(false);
         }
       }
-    }, 200);
+    };
+    loadUsers();
     return () => {
       cancelled = true;
-      clearTimeout(timer);
     };
-  }, [isAdmin, activeSection, adminSearchName]);
+  }, [isAdmin, activeSection]);
 
   useEffect(() => {
     if(!adminPickerOpen) {
@@ -560,7 +582,7 @@ export default function DashboardPage() {
 
   const onAdminBan = async () => {
     const accountId = Number(adminSelectedUser?.id || 0);
-    const minutes = Number(adminMinutes);
+    const minutes = adminMinutesNum;
     if(!Number.isFinite(accountId) || accountId <= 0) {
       setFeedback({ type: 'error', message: t('dashboard.adminSelectUserRequired') });
       return;
@@ -575,8 +597,15 @@ export default function DashboardPage() {
       await adminBanAccount({
         accountId,
         minutes,
-        reason: adminReason.trim(),
+        reason: adminReasonValue,
       });
+      const list = await adminSearchUsers('');
+      setAdminUsers(Array.isArray(list?.users) ? list.users : []);
+      const refreshedSelected = Array.isArray(list?.users)
+        ? list.users.find((entry) => Number(entry?.id) === accountId) || null
+        : null;
+      setAdminSelectedUser(refreshedSelected);
+      setShowAdminBanConfirm(false);
       setFeedback({ type: 'ok', message: t('dashboard.adminBanDone') });
       await refresh();
     } catch (err) {
@@ -596,6 +625,12 @@ export default function DashboardPage() {
     setFeedback(null);
     try {
       await adminUnbanAccount({ accountId });
+      const list = await adminSearchUsers('');
+      setAdminUsers(Array.isArray(list?.users) ? list.users : []);
+      const refreshedSelected = Array.isArray(list?.users)
+        ? list.users.find((entry) => Number(entry?.id) === accountId) || null
+        : null;
+      setAdminSelectedUser(refreshedSelected);
       setFeedback({ type: 'ok', message: t('dashboard.adminUnbanDone') });
       await refresh();
     } catch (err) {
@@ -628,6 +663,14 @@ export default function DashboardPage() {
   const accessStatusClass = isBanned
     ? (banPermanent ? 'status-text status-permanent' : 'status-text status-temporary')
     : 'status-text status-normal';
+  const adminSearchLower = adminSearchName.trim().toLowerCase();
+  const adminFilteredUsers = adminSearchLower
+    ? adminUsers.filter((entry) => {
+      const username = String(entry?.username || '').toLowerCase();
+      const dummyName = String(entry?.dummy_name || '').toLowerCase();
+      return username.includes(adminSearchLower) || dummyName.includes(adminSearchLower);
+    })
+    : adminUsers;
   const adminUserStatusText = (targetUser) => {
     const permanent = Number(targetUser?.ban_is_permanent || 0) !== 0;
     const untilRaw = String(targetUser?.ban_until || '');
@@ -640,6 +683,34 @@ export default function DashboardPage() {
       return t('dashboard.accessBannedUntil', { time: new Date(untilMs).toLocaleString(locale || 'en-US') });
     }
     return t('dashboard.accessActive');
+  };
+  const selectedBanPermanent = Number(adminSelectedUser?.ban_is_permanent || 0) !== 0;
+  const selectedBanUntilRaw = String(adminSelectedUser?.ban_until || '');
+  const selectedBanUntilMs = selectedBanUntilRaw ? Date.parse(selectedBanUntilRaw) : NaN;
+  const selectedBanTempActive = Number.isFinite(selectedBanUntilMs) && selectedBanUntilMs > Date.now();
+  const selectedUserBanned = selectedBanPermanent || selectedBanTempActive;
+  const selectedUserStatusText = adminSelectedUser ? adminUserStatusText(adminSelectedUser) : '';
+  const selectedUserStatusClass = selectedUserBanned
+    ? (selectedBanPermanent ? 'status-text status-permanent' : 'status-text status-temporary')
+    : 'status-text status-normal';
+  const adminBanUntilMs = Number.isFinite(adminMinutesNum) && adminMinutesNum > 0
+    ? Date.now() + Math.floor(adminMinutesNum) * 60 * 1000
+    : NaN;
+  const adminBanUntilText = Number.isFinite(adminBanUntilMs)
+    ? formatDateTimePrecise(adminBanUntilMs, locale)
+    : '';
+
+  const onOpenAdminBanConfirm = () => {
+    const accountId = Number(adminSelectedUser?.id || 0);
+    if(!Number.isFinite(accountId) || accountId <= 0) {
+      setFeedback({ type: 'error', message: t('dashboard.adminSelectUserRequired') });
+      return;
+    }
+    if(!Number.isFinite(adminMinutesNum)) {
+      setFeedback({ type: 'error', message: t('dashboard.adminInvalidMinutes') });
+      return;
+    }
+    setShowAdminBanConfirm(true);
   };
   const navItems = [
     { id: 'account', label: t('dashboard.accountTitle') },
@@ -1021,6 +1092,7 @@ export default function DashboardPage() {
                   {t('dashboard.adminSearchName')}
                   <div className="admin-user-picker" ref={adminPickerRef}>
                     <input
+                      ref={adminSearchInputRef}
                       value={adminSearchName}
                       onChange={(event) => {
                         setAdminSearchName(event.target.value);
@@ -1039,12 +1111,12 @@ export default function DashboardPage() {
                           <span>{t('dashboard.rowAccess')}</span>
                         </div>
                         <div className="admin-user-list">
-                          {adminUsersLoading ? (
-                            <div className="admin-user-list-empty">{t('common.loadingSession')}</div>
-                          ) : adminUsers.length === 0 ? (
+                          {adminUsersLoading && adminUsers.length === 0 ? (
+                            <div className="admin-user-list-empty">{t('dashboard.adminNoUsers')}</div>
+                          ) : adminFilteredUsers.length === 0 ? (
                             <div className="admin-user-list-empty">{t('dashboard.adminNoUsers')}</div>
                           ) : (
-                            adminUsers.map((entry) => (
+                            adminFilteredUsers.map((entry) => (
                               <button
                                 key={entry.id}
                                 className="admin-user-row"
@@ -1053,6 +1125,9 @@ export default function DashboardPage() {
                                   setAdminSelectedUser(entry);
                                   setAdminSearchName(String(entry.username || ''));
                                   setAdminPickerOpen(false);
+                                  if(adminSearchInputRef.current) {
+                                    adminSearchInputRef.current.blur();
+                                  }
                                 }}
                               >
                                 <span>{entry.id}</span>
@@ -1068,36 +1143,76 @@ export default function DashboardPage() {
                   </div>
                 </label>
                 {adminSelectedUser ? (
-                  <p className="muted admin-selected-user">
-                    {t('dashboard.adminSelectedUser', { id: adminSelectedUser.id, name: adminSelectedUser.username || '-' })}
-                  </p>
+                  <div className="admin-picked-user">
+                    <div className="admin-picked-row">
+                      <span>{t('dashboard.rowUserId')}</span>
+                      <span>{adminSelectedUser.id}</span>
+                    </div>
+                    <div className="admin-picked-row">
+                      <span>{t('dashboard.rowUsername')}</span>
+                      <span>{adminSelectedUser.username || '-'}</span>
+                    </div>
+                    <div className="admin-picked-row">
+                      <span>{t('dashboard.rowDummyName')}</span>
+                      <span>{adminSelectedUser.dummy_name || '-'}</span>
+                    </div>
+                    <div className="admin-picked-row">
+                      <span>{t('dashboard.rowAccess')}</span>
+                      <span className={selectedUserStatusClass}>{selectedUserStatusText}</span>
+                    </div>
+                  </div>
                 ) : null}
-                <label>
-                  {t('dashboard.adminMinutes')}
-                  <input
-                    type="number"
-                    value={adminMinutes}
-                    onChange={(event) => setAdminMinutes(event.target.value)}
-                    placeholder={t('dashboard.adminMinutesPlaceholder')}
-                  />
-                </label>
-                <label>
-                  {t('dashboard.adminReason')}
-                  <input
-                    value={adminReason}
-                    onChange={(event) => setAdminReason(event.target.value)}
-                    placeholder={t('dashboard.adminReasonPlaceholder')}
-                  />
-                </label>
+                {adminSelectedUser && !selectedUserBanned ? (
+                  <>
+                    <label>
+                      {t('dashboard.adminMinutes')}
+                      <input
+                        type="number"
+                        value={adminMinutes}
+                        onChange={(event) => setAdminMinutes(event.target.value)}
+                        placeholder={t('dashboard.adminMinutesPlaceholder')}
+                      />
+                    </label>
+                    <label>
+                      {t('dashboard.adminReason')}
+                      <select
+                        value={adminReasonPreset}
+                        onChange={(event) => setAdminReasonPreset(event.target.value)}
+                      >
+                        <option value="abuse">{t('dashboard.adminReasonAbuse')}</option>
+                        <option value="chat">{t('dashboard.adminReasonChat')}</option>
+                        <option value="griefing">{t('dashboard.adminReasonGriefing')}</option>
+                        <option value="cheat">{t('dashboard.adminReasonCheat')}</option>
+                        <option value="custom">{t('dashboard.adminReasonCustomOption')}</option>
+                      </select>
+                    </label>
+                    {adminReasonPreset === 'custom' ? (
+                      <label>
+                        {t('dashboard.adminReasonCustom')}
+                        <input
+                          value={adminReasonCustom}
+                          onChange={(event) => setAdminReasonCustom(event.target.value)}
+                          placeholder={t('dashboard.adminReasonPlaceholder')}
+                        />
+                      </label>
+                    ) : null}
+                  </>
+                ) : null}
               </div>
-              <div className="admin-actions">
-                <button className="btn" type="button" onClick={onAdminBan} disabled={adminSubmitting || !adminSelectedUser}>
-                  {t('dashboard.adminBanAction')}
-                </button>
-                <button className="btn ghost" type="button" onClick={onAdminUnban} disabled={adminSubmitting || !adminSelectedUser}>
-                  {t('dashboard.adminUnbanAction')}
-                </button>
-              </div>
+              {adminSelectedUser && !selectedUserBanned ? (
+                <div className="admin-actions">
+                  <button className="btn admin-main-action" type="button" onClick={onOpenAdminBanConfirm} disabled={adminSubmitting}>
+                    {t('dashboard.adminBanAction')}
+                  </button>
+                </div>
+              ) : null}
+              {adminSelectedUser && selectedUserBanned ? (
+                <div className="admin-actions">
+                  <button className="btn admin-main-action" type="button" onClick={onAdminUnban} disabled={adminSubmitting}>
+                    {t('dashboard.adminUnbanAction')}
+                  </button>
+                </div>
+              ) : null}
             </article>
           ) : null}
 
@@ -1254,6 +1369,33 @@ export default function DashboardPage() {
               </button>
               <button className="btn" type="button" onClick={onVerifyEmail} disabled={verifySubmitting || verifyCodeInput.length !== 6}>
                 {verifySubmitting ? t('dashboard.emailVerifyVerifying') : t('dashboard.emailVerifySubmit')}
+              </button>
+            </div>
+          </section>
+        </div>
+      ) : null}
+
+      {showAdminBanConfirm && adminSelectedUser ? (
+        <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label={t('dashboard.adminBanConfirmTitle')}>
+          <section className="modal-card">
+            <h3>{t('dashboard.adminBanConfirmTitle')}</h3>
+            <p className="muted">
+              {adminBanUntilText
+                ? t('dashboard.adminBanConfirmBodyUntil', {
+                  name: adminSelectedUser.username || '-',
+                  time: adminBanUntilText,
+                })
+                : t('dashboard.adminBanConfirmBodyPermanent', {
+                  name: adminSelectedUser.username || '-',
+                })}
+            </p>
+            <p className="muted">{t('dashboard.adminBanConfirmBodyLive')}</p>
+            <div className="modal-actions modal-actions-even">
+              <button className="btn ghost" type="button" onClick={() => setShowAdminBanConfirm(false)}>
+                {t('common.cancel')}
+              </button>
+              <button className="btn" type="button" onClick={onAdminBan} disabled={adminSubmitting}>
+                {t('dashboard.adminBanConfirmAction')}
               </button>
             </div>
           </section>
