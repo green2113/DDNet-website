@@ -525,9 +525,7 @@ export default function DashboardPage() {
     { id: 'account', label: t('dashboard.accountTitle') },
     ...(canUseInvite ? [{ id: 'invite', label: t('dashboard.inviteTitle') }] : []),
     { id: 'codes', label: t('dashboard.gameCodeTitle') },
-    { id: 'guide', label: t('dashboard.inGameTitle') },
   ];
-  const activeTitle = navItems.find((item) => item.id === activeSection)?.label || navItems[0]?.label || '';
 
   const onLogout = async () => {
     try {
@@ -583,10 +581,6 @@ export default function DashboardPage() {
         </aside>
 
         <div className="dashboard-content">
-          <section className="panel">
-            <h3>{activeTitle}</h3>
-          </section>
-
           {activeSection === 'account' ? (
             <article className="panel">
           <h3>{t('dashboard.accountTitle')}</h3>
@@ -886,16 +880,6 @@ export default function DashboardPage() {
             </div>
           ) : null}
 
-          {activeSection === 'guide' ? (
-            <section className="panel">
-              <h3>{t('dashboard.inGameTitle')}</h3>
-              <ol className="steps">
-                <li>{t('dashboard.step1')}</li>
-                <li>{t('dashboard.step2')}</li>
-                <li>{t('dashboard.step3')}</li>
-              </ol>
-            </section>
-          ) : null}
         </div>
       </section>
 
