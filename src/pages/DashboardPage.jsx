@@ -349,47 +349,6 @@ export default function DashboardPage() {
     };
   }, [isDummyNameInputActive]);
 
-  useEffect(() => {
-    if(!user?.id) {
-      return undefined;
-    }
-
-    let disposed = false;
-    let inFlight = false;
-    const tick = async () => {
-      if(disposed || inFlight || document.hidden) {
-        return;
-      }
-      inFlight = true;
-      try {
-        await refresh({ silent: true });
-        const [game, dummy] = await Promise.all([
-          getCurrentGameCode().catch(() => null),
-          getCurrentDummyGameCode().catch(() => null),
-        ]);
-        if(!disposed) {
-          if(game) {
-            setGameCode(String(game.code || ''));
-          }
-          if(dummy) {
-            setDummyCode(String(dummy.code || ''));
-            if(!isDummyNameInputActive && typeof dummy.dummyName === 'string') {
-              setDummyNameForm(dummy.dummyName);
-            }
-          }
-        }
-      } finally {
-        inFlight = false;
-      }
-    };
-
-    const timer = setInterval(tick, 3000);
-    return () => {
-      disposed = true;
-      clearInterval(timer);
-    };
-  }, [user?.id, refresh, isDummyNameInputActive]);
-
   const onCopyCode = async () => {
     if(!gameCode) {
       return;
