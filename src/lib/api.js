@@ -127,3 +127,8 @@ export async function adminUnbanAccount(payload) {
     body: JSON.stringify(payload),
   });
 }
+
+export async function adminSearchUsers(query = '') {
+  const q = encodeURIComponent(String(query || ''));
+  return api(`/api/admin/users?q=${q}`, { method: 'GET' });
+}

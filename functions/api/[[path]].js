@@ -1565,6 +1565,47 @@ async function handleAdminUnban(context) {
   return json({ ok: true, accountId });
 }
 
+async function handleAdminUsers(context) {
+  const { request, env } = context;
+  const auth = await requireAdmin(context);
+  if(auth.error) {
+    return auth.error;
+  }
+
+  const url = new URL(request.url);
+  const q = String(url.searchParams.get('q') || '').trim();
+  const like = `%${q}%`;
+  const hasDummyName = await hasUsersColumn(env, 'dummy_name');
+
+  const rows = q
+    ? await env.DB.prepare(`
+      SELECT
+        id,
+        username,
+        ${hasDummyName ? 'dummy_name' : 'NULL AS dummy_name'},
+        ban_is_permanent,
+        ban_until
+      FROM users
+      WHERE username LIKE ?
+      ${hasDummyName ? 'OR dummy_name LIKE ?' : ''}
+      ORDER BY id ASC
+      LIMIT 200
+    `).bind(...(hasDummyName ? [like, like] : [like])).all()
+    : await env.DB.prepare(`
+      SELECT
+        id,
+        username,
+        ${hasDummyName ? 'dummy_name' : 'NULL AS dummy_name'},
+        ban_is_permanent,
+        ban_until
+      FROM users
+      ORDER BY id ASC
+      LIMIT 200
+    `).all();
+
+  return json({ ok: true, users: rows?.results || [] });
+}
+
 export async function onRequest(context) {
   const { request } = context;
   const url = new URL(request.url);
@@ -1661,6 +1702,10 @@ export async function onRequest(context) {
 
   if(request.method === 'POST' && path === '/admin/unban') {
     return handleAdminUnban(context);
+  }
+
+  if(request.method === 'GET' && path === '/admin/users') {
+    return handleAdminUsers(context);
   }
 
   return json({ ok: false, message: 'API route not found' }, 404);

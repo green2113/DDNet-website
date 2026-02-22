@@ -296,7 +296,7 @@ h3 {
 }
 
 .dashboard-admin-label {
-  margin: 0 0 6px;
+  margin: 0 0 10px;
   color: #8ea6d9;
   font-size: 0.82rem;
   font-weight: 700;
@@ -325,6 +325,80 @@ h3 {
   display: flex;
   gap: 10px;
   flex-wrap: wrap;
+}
+
+.admin-user-picker {
+  position: relative;
+}
+
+.admin-user-list-wrap {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: calc(100% + 6px);
+  z-index: 15;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgba(10, 16, 37, 0.96);
+  overflow: hidden;
+}
+
+.admin-user-list-header,
+.admin-user-row {
+  display: grid;
+  grid-template-columns: 60px minmax(0, 1fr) minmax(0, 1fr) 140px;
+  gap: 10px;
+  align-items: center;
+  padding: 9px 10px;
+}
+
+.admin-user-list-header {
+  border-bottom: 1px solid var(--line);
+  color: #9bb0d8;
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
+.admin-user-list {
+  max-height: 230px;
+  overflow: auto;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.admin-user-list::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
+
+.admin-user-row {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: #d7e5ff;
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+}
+
+.admin-user-row:hover {
+  background: rgba(79, 124, 255, 0.15);
+}
+
+.admin-user-row span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.admin-user-list-empty {
+  padding: 12px 10px;
+  color: #9bb0d8;
+  font-size: 0.9rem;
+}
+
+.admin-selected-user {
+  margin-top: -4px;
 }
 
 .feature p {
@@ -802,6 +876,11 @@ button.btn {
 
   .dashboard-codes-grid {
     grid-template-columns: 1fr;
+  }
+
+  .admin-user-list-header,
+  .admin-user-row {
+    grid-template-columns: 54px minmax(0, 1fr) minmax(0, 1fr) 110px;
   }
 
   .code-line {

@@ -1,6 +1,6 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { adminBanAccount, adminUnbanAccount, getCurrentDummyGameCode, getCurrentGameCode, resendEmailVerification, rotateDummyGameCode, rotateGameCode, updateDummyProfileName, updateProfileName, verifyEmailCode } from '../lib/api';
+import { adminBanAccount, adminSearchUsers, adminUnbanAccount, getCurrentDummyGameCode, getCurrentGameCode, resendEmailVerification, rotateDummyGameCode, rotateGameCode, updateDummyProfileName, updateProfileName, verifyEmailCode } from '../lib/api';
 import { useAuth } from '../components/AuthProvider';
 import { useI18n } from '../components/I18nProvider';
 import { Feedback, TopBar } from '../components/Layout';
@@ -122,10 +122,15 @@ export default function DashboardPage() {
   const [verifyRemainingMs, setVerifyRemainingMs] = useState(0);
   const [verifyResendCooldownSec, setVerifyResendCooldownSec] = useState(0);
   const [showVerifySentToast, setShowVerifySentToast] = useState(false);
-  const [adminTargetId, setAdminTargetId] = useState('');
+  const [adminSearchName, setAdminSearchName] = useState('');
+  const [adminSelectedUser, setAdminSelectedUser] = useState(null);
+  const [adminUsers, setAdminUsers] = useState([]);
+  const [adminUsersLoading, setAdminUsersLoading] = useState(false);
+  const [adminPickerOpen, setAdminPickerOpen] = useState(false);
   const [adminMinutes, setAdminMinutes] = useState('10');
   const [adminReason, setAdminReason] = useState('');
   const [adminSubmitting, setAdminSubmitting] = useState(false);
+  const adminPickerRef = useRef(null);
 
   const currentName = String(user?.username || '');
   const currentDummyName = String(user?.dummy_name || '');
@@ -160,6 +165,50 @@ export default function DashboardPage() {
       setActiveSection('account');
     }
   }, [isAdmin, activeSection]);
+
+  useEffect(() => {
+    if(!isAdmin || activeSection !== 'admin-ban') {
+      setAdminPickerOpen(false);
+      return undefined;
+    }
+    let cancelled = false;
+    const timer = setTimeout(async () => {
+      setAdminUsersLoading(true);
+      try {
+        const result = await adminSearchUsers(adminSearchName);
+        if(!cancelled) {
+          setAdminUsers(Array.isArray(result?.users) ? result.users : []);
+        }
+      } catch (err) {
+        if(!cancelled) {
+          setAdminUsers([]);
+          setFeedback({ type: 'error', message: err.message });
+        }
+      } finally {
+        if(!cancelled) {
+          setAdminUsersLoading(false);
+        }
+      }
+    }, 200);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [isAdmin, activeSection, adminSearchName]);
+
+  useEffect(() => {
+    if(!adminPickerOpen) {
+      return undefined;
+    }
+    const onMouseDown = (event) => {
+      if(!adminPickerRef.current || adminPickerRef.current.contains(event.target)) {
+        return;
+      }
+      setAdminPickerOpen(false);
+    };
+    document.addEventListener('mousedown', onMouseDown);
+    return () => document.removeEventListener('mousedown', onMouseDown);
+  }, [adminPickerOpen]);
 
   useEffect(() => {
     setNameForm(currentName);
@@ -510,14 +559,14 @@ export default function DashboardPage() {
   };
 
   const onAdminBan = async () => {
-    const accountId = Number(adminTargetId);
+    const accountId = Number(adminSelectedUser?.id || 0);
     const minutes = Number(adminMinutes);
     if(!Number.isFinite(accountId) || accountId <= 0) {
-      setFeedback({ type: 'error', message: '계정 ID를 올바르게 입력하세요.' });
+      setFeedback({ type: 'error', message: t('dashboard.adminSelectUserRequired') });
       return;
     }
     if(!Number.isFinite(minutes)) {
-      setFeedback({ type: 'error', message: '분(minutes) 값을 숫자로 입력하세요.' });
+      setFeedback({ type: 'error', message: t('dashboard.adminInvalidMinutes') });
       return;
     }
     setAdminSubmitting(true);
@@ -528,7 +577,7 @@ export default function DashboardPage() {
         minutes,
         reason: adminReason.trim(),
       });
-      setFeedback({ type: 'ok', message: '차단 처리 완료.' });
+      setFeedback({ type: 'ok', message: t('dashboard.adminBanDone') });
       await refresh();
     } catch (err) {
       setFeedback({ type: 'error', message: err.message });
@@ -538,16 +587,16 @@ export default function DashboardPage() {
   };
 
   const onAdminUnban = async () => {
-    const accountId = Number(adminTargetId);
+    const accountId = Number(adminSelectedUser?.id || 0);
     if(!Number.isFinite(accountId) || accountId <= 0) {
-      setFeedback({ type: 'error', message: '계정 ID를 올바르게 입력하세요.' });
+      setFeedback({ type: 'error', message: t('dashboard.adminSelectUserRequired') });
       return;
     }
     setAdminSubmitting(true);
     setFeedback(null);
     try {
       await adminUnbanAccount({ accountId });
-      setFeedback({ type: 'ok', message: '차단 해제 완료.' });
+      setFeedback({ type: 'ok', message: t('dashboard.adminUnbanDone') });
       await refresh();
     } catch (err) {
       setFeedback({ type: 'error', message: err.message });
@@ -579,6 +628,19 @@ export default function DashboardPage() {
   const accessStatusClass = isBanned
     ? (banPermanent ? 'status-text status-permanent' : 'status-text status-temporary')
     : 'status-text status-normal';
+  const adminUserStatusText = (targetUser) => {
+    const permanent = Number(targetUser?.ban_is_permanent || 0) !== 0;
+    const untilRaw = String(targetUser?.ban_until || '');
+    const untilMs = untilRaw ? Date.parse(untilRaw) : NaN;
+    const tempActive = Number.isFinite(untilMs) && untilMs > Date.now();
+    if(permanent) {
+      return t('dashboard.accessBannedPermanent');
+    }
+    if(tempActive) {
+      return t('dashboard.accessBannedUntil', { time: new Date(untilMs).toLocaleString(locale || 'en-US') });
+    }
+    return t('dashboard.accessActive');
+  };
   const navItems = [
     { id: 'account', label: t('dashboard.accountTitle') },
     ...(canUseInvite ? [{ id: 'invite', label: t('dashboard.inviteTitle') }] : []),
@@ -639,13 +701,13 @@ export default function DashboardPage() {
           {isAdmin ? (
             <div className="dashboard-admin-nav">
               <div className="dashboard-nav-divider" />
-              <p className="dashboard-admin-label">운영자 전용</p>
+              <p className="dashboard-admin-label">{t('dashboard.adminSection')}</p>
               <button
                 className={`dashboard-nav-btn${activeSection === 'admin-ban' ? ' active' : ''}`}
                 type="button"
                 onClick={() => setActiveSection('admin-ban')}
               >
-                차단
+                {t('dashboard.adminBanNav')}
               </button>
             </div>
           ) : null}
@@ -953,43 +1015,89 @@ export default function DashboardPage() {
 
           {activeSection === 'admin-ban' && isAdmin ? (
             <article className="panel">
-              <h3>차단</h3>
-              <p className="muted">계정 ID 기준으로 차단/해제를 처리합니다. minutes가 0 이하이면 영구 차단입니다.</p>
+              <h3>{t('dashboard.adminBanTitle')}</h3>
               <div className="admin-form-grid">
                 <label>
-                  계정 ID
-                  <input
-                    type="number"
-                    min="1"
-                    value={adminTargetId}
-                    onChange={(event) => setAdminTargetId(event.target.value)}
-                    placeholder="예: 123"
-                  />
+                  {t('dashboard.adminSearchName')}
+                  <div className="admin-user-picker" ref={adminPickerRef}>
+                    <input
+                      value={adminSearchName}
+                      onChange={(event) => {
+                        setAdminSearchName(event.target.value);
+                        setAdminPickerOpen(true);
+                        setAdminSelectedUser(null);
+                      }}
+                      onFocus={() => setAdminPickerOpen(true)}
+                      placeholder={t('dashboard.adminSearchPlaceholder')}
+                    />
+                    {adminPickerOpen ? (
+                      <div className="admin-user-list-wrap">
+                        <div className="admin-user-list-header">
+                          <span>{t('dashboard.rowUserId')}</span>
+                          <span>{t('dashboard.rowUsername')}</span>
+                          <span>{t('dashboard.rowDummyName')}</span>
+                          <span>{t('dashboard.rowAccess')}</span>
+                        </div>
+                        <div className="admin-user-list">
+                          {adminUsersLoading ? (
+                            <div className="admin-user-list-empty">{t('common.loadingSession')}</div>
+                          ) : adminUsers.length === 0 ? (
+                            <div className="admin-user-list-empty">{t('dashboard.adminNoUsers')}</div>
+                          ) : (
+                            adminUsers.map((entry) => (
+                              <button
+                                key={entry.id}
+                                className="admin-user-row"
+                                type="button"
+                                onClick={() => {
+                                  setAdminSelectedUser(entry);
+                                  setAdminSearchName(String(entry.username || ''));
+                                  setAdminPickerOpen(false);
+                                }}
+                              >
+                                <span>{entry.id}</span>
+                                <span>{entry.username || '-'}</span>
+                                <span>{entry.dummy_name || '-'}</span>
+                                <span>{adminUserStatusText(entry)}</span>
+                              </button>
+                            ))
+                          )}
+                        </div>
+                      </div>
+                    ) : null}
+                  </div>
                 </label>
+                {adminSelectedUser ? (
+                  <p className="muted admin-selected-user">
+                    {t('dashboard.adminSelectedUser', { id: adminSelectedUser.id, name: adminSelectedUser.username || '-' })}
+                  </p>
+                ) : (
+                  <p className="muted admin-selected-user">{t('dashboard.adminSelectHint')}</p>
+                )}
                 <label>
-                  차단 분(minutes)
+                  {t('dashboard.adminMinutes')}
                   <input
                     type="number"
                     value={adminMinutes}
                     onChange={(event) => setAdminMinutes(event.target.value)}
-                    placeholder="0 = 영구"
+                    placeholder={t('dashboard.adminMinutesPlaceholder')}
                   />
                 </label>
                 <label>
-                  사유(선택)
+                  {t('dashboard.adminReason')}
                   <input
                     value={adminReason}
                     onChange={(event) => setAdminReason(event.target.value)}
-                    placeholder="예: abuse"
+                    placeholder={t('dashboard.adminReasonPlaceholder')}
                   />
                 </label>
               </div>
               <div className="admin-actions">
-                <button className="btn" type="button" onClick={onAdminBan} disabled={adminSubmitting}>
-                  차단
+                <button className="btn" type="button" onClick={onAdminBan} disabled={adminSubmitting || !adminSelectedUser}>
+                  {t('dashboard.adminBanAction')}
                 </button>
-                <button className="btn ghost" type="button" onClick={onAdminUnban} disabled={adminSubmitting}>
-                  차단 해제
+                <button className="btn ghost" type="button" onClick={onAdminUnban} disabled={adminSubmitting || !adminSelectedUser}>
+                  {t('dashboard.adminUnbanAction')}
                 </button>
               </div>
             </article>
