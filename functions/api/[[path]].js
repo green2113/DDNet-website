@@ -384,6 +384,7 @@ async function publicUserById(env, userId) {
       ${hasIsAdmin ? 'is_admin' : '0 AS is_admin'},
       ban_is_permanent,
       ban_until,
+      ban_reason,
       ${hasNameChangeCooldown ? 'name_change_available_at' : 'NULL AS name_change_available_at'}
     FROM users
     WHERE id = ?

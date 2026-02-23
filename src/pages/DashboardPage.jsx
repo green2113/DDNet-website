@@ -652,7 +652,14 @@ export default function DashboardPage() {
   const banUntilMs = banUntilRaw ? Date.parse(banUntilRaw) : NaN;
   const banTempActive = Number.isFinite(banUntilMs) && banUntilMs > Date.now();
   const isBanned = banPermanent || banTempActive;
-  const banReasonText = String(user?.ban_reason || '').trim();
+  const localizeBanReason = (reasonRaw) => {
+    const reason = String(reasonRaw || '').trim();
+    if(reason === 'chat') return t('dashboard.adminReasonChat');
+    if(reason === 'griefing') return t('dashboard.adminReasonGriefing');
+    if(reason === 'cheat') return t('dashboard.adminReasonCheat');
+    return reason;
+  };
+  const banReasonText = localizeBanReason(user?.ban_reason);
   const banUntilText = banTempActive
     ? new Date(banUntilMs).toLocaleString(locale || 'en-US')
     : '';
@@ -691,7 +698,7 @@ ${t('dashboard.accessReasonLine', { reason: banReasonText || '-' })}`
   const selectedBanUntilMs = selectedBanUntilRaw ? Date.parse(selectedBanUntilRaw) : NaN;
   const selectedBanTempActive = Number.isFinite(selectedBanUntilMs) && selectedBanUntilMs > Date.now();
   const selectedUserBanned = selectedBanPermanent || selectedBanTempActive;
-  const selectedUserBanReason = String(adminSelectedUser?.ban_reason || '').trim();
+  const selectedUserBanReason = localizeBanReason(adminSelectedUser?.ban_reason);
   const selectedUserStatusText = adminSelectedUser ? adminUserStatusText(adminSelectedUser) : '';
   const selectedUserStatusClass = selectedUserBanned
     ? (selectedBanPermanent ? 'status-text status-permanent' : 'status-text status-temporary')
