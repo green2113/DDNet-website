@@ -149,6 +149,7 @@ export default function DashboardPage() {
   const [showAdminBanConfirm, setShowAdminBanConfirm] = useState(false);
   const adminPickerRef = useRef(null);
   const adminSearchInputRef = useRef(null);
+  const adminUsersRequestIdRef = useRef(0);
 
   const currentName = String(user?.username || '');
   const currentDummyName = String(user?.dummy_name || '');
@@ -181,6 +182,25 @@ export default function DashboardPage() {
   const adminReasonValue = adminReasonPreset === 'custom'
     ? adminReasonCustom.trim()
     : adminReasonPreset;
+  const refreshAdminUsers = async () => {
+    const requestId = ++adminUsersRequestIdRef.current;
+    setAdminUsersLoading(true);
+    try {
+      const result = await adminSearchUsers('');
+      if(requestId === adminUsersRequestIdRef.current) {
+        setAdminUsers(Array.isArray(result?.users) ? result.users : []);
+      }
+    } catch (err) {
+      if(requestId === adminUsersRequestIdRef.current) {
+        setAdminUsers([]);
+        setFeedback({ type: 'error', message: err.message });
+      }
+    } finally {
+      if(requestId === adminUsersRequestIdRef.current) {
+        setAdminUsersLoading(false);
+      }
+    }
+  };
 
   useEffect(() => {
     if(!isAdmin && activeSection === 'admin-ban') {
@@ -191,32 +211,21 @@ export default function DashboardPage() {
   useEffect(() => {
     if(!isAdmin || activeSection !== 'admin-ban') {
       setAdminPickerOpen(false);
+      adminUsersRequestIdRef.current += 1;
       return undefined;
     }
-    let cancelled = false;
-    const loadUsers = async () => {
-      setAdminUsersLoading(true);
-      try {
-        const result = await adminSearchUsers('');
-        if(!cancelled) {
-          setAdminUsers(Array.isArray(result?.users) ? result.users : []);
-        }
-      } catch (err) {
-        if(!cancelled) {
-          setAdminUsers([]);
-          setFeedback({ type: 'error', message: err.message });
-        }
-      } finally {
-        if(!cancelled) {
-          setAdminUsersLoading(false);
-        }
-      }
-    };
-    loadUsers();
+    refreshAdminUsers();
     return () => {
-      cancelled = true;
+      adminUsersRequestIdRef.current += 1;
     };
   }, [isAdmin, activeSection]);
+
+  useEffect(() => {
+    if(!isAdmin || activeSection !== 'admin-ban' || !adminPickerOpen) {
+      return;
+    }
+    refreshAdminUsers();
+  }, [isAdmin, activeSection, adminPickerOpen]);
 
   useEffect(() => {
     if(!adminPickerOpen) {
@@ -665,8 +674,8 @@ export default function DashboardPage() {
     : '';
   const accessStatusText = isBanned
     ? `${banPermanent
-      ? t('dashboard.accessBannedPermanentByReason')
-      : t('dashboard.accessBannedUntilByReason', { time: banUntilText })}
+      ? t('dashboard.accessBannedPermanent')
+      : t('dashboard.accessBannedUntil', { time: banUntilText })}
 ${t('dashboard.accessReasonLine', { reason: banReasonText || '-' })}`
     : t('dashboard.accessActive');
   const accessStatusClass = isBanned
