@@ -82,6 +82,8 @@ export default function LoginPage() {
       }
       if(err.status === 401) {
         setErrorText(t('login.invalidCredentials'));
+      } else if(err.status === 429 && err.payload?.code === 'LOGIN_RATE_LIMITED') {
+        setErrorText(t('login.rateLimited'));
       } else {
         setErrorText(err.message);
       }
@@ -108,9 +110,7 @@ export default function LoginPage() {
       setResetDeadlineMs(Number.isFinite(nextDeadline) ? nextDeadline : 0);
       setResetInfoText(t('login.resetCodeSent'));
     } catch (err) {
-      if(err.status === 403 && err.payload?.code === 'PASSWORD_RESET_EMAIL_NOT_VERIFIED') {
-        setResetErrorText(`${t('login.resetUnverifiedLine1')}\n${t('login.resetUnverifiedLine2')}`);
-      } else if(err.status === 429 && err.payload?.code === 'PASSWORD_RESET_COOLDOWN') {
+      if(err.status === 429 && err.payload?.code === 'PASSWORD_RESET_COOLDOWN') {
         const wait = Number(err.payload?.waitSeconds || 0);
         if(wait > 0) {
           setResetCooldownSec(wait);
@@ -118,6 +118,8 @@ export default function LoginPage() {
         const nextDeadline = err.payload?.expiresAt ? Date.parse(err.payload.expiresAt) : NaN;
         setResetDeadlineMs(Number.isFinite(nextDeadline) ? nextDeadline : 0);
         setResetErrorText(t('login.resetCooldown', { seconds: wait || 1 }));
+      } else if(err.status === 429 && err.payload?.code === 'PASSWORD_RESET_RATE_LIMITED') {
+        setResetErrorText(t('login.resetRateLimited'));
       } else {
         setResetErrorText(err.message || t('login.resetRequestFailed'));
       }
@@ -139,8 +141,8 @@ export default function LoginPage() {
       setResetStep('set-password');
       setResetInfoText(t('login.resetCodeVerified'));
     } catch (err) {
-      if(err.status === 403 && err.payload?.code === 'PASSWORD_RESET_EMAIL_NOT_VERIFIED') {
-        setResetErrorText(`${t('login.resetUnverifiedLine1')}\n${t('login.resetUnverifiedLine2')}`);
+      if(err.status === 429 && err.payload?.code === 'PASSWORD_RESET_RATE_LIMITED') {
+        setResetErrorText(t('login.resetRateLimited'));
       } else {
         setResetErrorText(err.message || t('login.resetConfirmFailed'));
       }
@@ -171,8 +173,8 @@ export default function LoginPage() {
       setResetStep('verify-code');
       setResetDeadlineMs(0);
     } catch (err) {
-      if(err.status === 403 && err.payload?.code === 'PASSWORD_RESET_EMAIL_NOT_VERIFIED') {
-        setResetErrorText(`${t('login.resetUnverifiedLine1')}\n${t('login.resetUnverifiedLine2')}`);
+      if(err.status === 429 && err.payload?.code === 'PASSWORD_RESET_RATE_LIMITED') {
+        setResetErrorText(t('login.resetRateLimited'));
       } else {
         setResetErrorText(err.message || t('login.resetConfirmFailed'));
       }

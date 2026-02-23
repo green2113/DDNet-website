@@ -39,6 +39,8 @@ const RESET_VERIFY_MAX_ATTEMPTS = 5;
 const RESET_VERIFY_WINDOW_MS = 10 * 60 * 1000;
 const RESET_VERIFY_BLOCK_MS = 10 * 60 * 1000;
 const TRUE_VALUES = ['1', 'true', 'yes', 'on'];
+const PASSWORD_RESET_GENERIC_REQUEST_MESSAGE = 'If the account exists, a reset code was sent.';
+const PASSWORD_RESET_GENERIC_VERIFY_MESSAGE = 'Invalid email or reset code';
 
 function cookieSecure(request) {
   return new URL(request.url).protocol === 'https:';
@@ -796,7 +798,7 @@ async function handleLogin(context) {
     return json({
       ok: false,
       code: 'LOGIN_RATE_LIMITED',
-      message: `Too many login attempts. Try again in ${waitSeconds} second(s).`,
+      message: `Too many login attempts. Please try again later.`,
       waitSeconds,
     }, 429);
   }
@@ -816,7 +818,7 @@ async function handleLogin(context) {
       return json({
         ok: false,
         code: 'LOGIN_RATE_LIMITED',
-        message: `Too many login attempts. Try again in ${waitSeconds} second(s).`,
+        message: `Too many login attempts. Please try again later.`,
         waitSeconds,
       }, 429);
     }
@@ -832,7 +834,7 @@ async function handleLogin(context) {
       return json({
         ok: false,
         code: 'LOGIN_RATE_LIMITED',
-        message: `Too many login attempts. Try again in ${waitSeconds} second(s).`,
+        message: `Too many login attempts. Please try again later.`,
         waitSeconds,
       }, 429);
     }
@@ -993,16 +995,11 @@ async function handlePasswordResetRequest(context) {
 
   // Avoid leaking account existence.
   if(!user) {
-    return json({ ok: true, message: 'If the account exists, a reset code was sent.' });
+    return json({ ok: true, message: PASSWORD_RESET_GENERIC_REQUEST_MESSAGE });
   }
 
   if(Number(user.email_verified || 0) !== 1) {
-    return json({
-      ok: false,
-      code: 'PASSWORD_RESET_EMAIL_NOT_VERIFIED',
-      message: 'This email is not verified, so password reset is unavailable.',
-      supportUrl: 'https://discord.gg/NNtuG9es32',
-    }, 403);
+    return json({ ok: true, message: PASSWORD_RESET_GENERIC_REQUEST_MESSAGE });
   }
 
   await ensurePasswordResetTable(env);
@@ -1017,14 +1014,8 @@ async function handlePasswordResetRequest(context) {
 
   const sentAtMs = Date.parse(String(active?.sent_at || ''));
   if(Number.isFinite(sentAtMs) && Date.now() - sentAtMs < PASSWORD_RESET_RESEND_COOLDOWN_MS) {
-    const waitSeconds = Math.max(1, Math.ceil((PASSWORD_RESET_RESEND_COOLDOWN_MS - (Date.now() - sentAtMs)) / 1000));
-    return json({
-      ok: false,
-      code: 'PASSWORD_RESET_COOLDOWN',
-      message: `Please wait ${waitSeconds} second(s) before requesting another code.`,
-      waitSeconds,
-      expiresAt: String(active?.expires_at || '') || null,
-    }, 429);
+    // Silent success to avoid account-state enumeration.
+    return json({ ok: true, message: PASSWORD_RESET_GENERIC_REQUEST_MESSAGE });
   }
 
   const code = randomDigits(6);
@@ -1039,7 +1030,7 @@ async function handlePasswordResetRequest(context) {
     VALUES (?, ?, ?, ?, NULL)
   `).bind(user.id, codeHash, expiresAt, now).run();
 
-  return json({ ok: true, message: 'Password reset code sent', expiresAt });
+  return json({ ok: true, message: PASSWORD_RESET_GENERIC_REQUEST_MESSAGE, expiresAt });
 }
 
 async function handlePasswordResetConfirm(context) {
@@ -1068,7 +1059,7 @@ async function handlePasswordResetConfirm(context) {
     return json({
       ok: false,
       code: 'PASSWORD_RESET_RATE_LIMITED',
-      message: `Too many reset-code attempts. Try again in ${waitSeconds} second(s).`,
+      message: `Too many reset-code attempts. Please try again later.`,
       waitSeconds,
     }, 429);
   }
@@ -1087,19 +1078,25 @@ async function handlePasswordResetConfirm(context) {
       return json({
         ok: false,
         code: 'PASSWORD_RESET_RATE_LIMITED',
-        message: `Too many reset-code attempts. Try again in ${waitSeconds} second(s).`,
+        message: `Too many reset-code attempts. Please try again later.`,
         waitSeconds,
       }, 429);
     }
-    return json({ ok: false, message: 'Invalid email or reset code' }, 400);
+    return json({ ok: false, message: PASSWORD_RESET_GENERIC_VERIFY_MESSAGE }, 400);
   }
   if(Number(user.email_verified || 0) !== 1) {
-    return json({
-      ok: false,
-      code: 'PASSWORD_RESET_EMAIL_NOT_VERIFIED',
-      message: 'This email is not verified, so password reset is unavailable.',
-      supportUrl: 'https://discord.gg/NNtuG9es32',
-    }, 403);
+    const emailFail = await registerRateLimitFailure(env, 'reset_verify_email', email, RESET_VERIFY_MAX_ATTEMPTS, RESET_VERIFY_WINDOW_MS, RESET_VERIFY_BLOCK_MS);
+    const ipFail = await registerRateLimitFailure(env, 'reset_verify_ip', ip, RESET_VERIFY_MAX_ATTEMPTS, RESET_VERIFY_WINDOW_MS, RESET_VERIFY_BLOCK_MS);
+    if(emailFail.blocked || ipFail.blocked) {
+      const waitSeconds = Math.max(emailFail.waitSeconds, ipFail.waitSeconds);
+      return json({
+        ok: false,
+        code: 'PASSWORD_RESET_RATE_LIMITED',
+        message: `Too many reset-code attempts. Please try again later.`,
+        waitSeconds,
+      }, 429);
+    }
+    return json({ ok: false, message: PASSWORD_RESET_GENERIC_VERIFY_MESSAGE }, 400);
   }
 
   await ensurePasswordResetTable(env);
@@ -1121,11 +1118,11 @@ async function handlePasswordResetConfirm(context) {
       return json({
         ok: false,
         code: 'PASSWORD_RESET_RATE_LIMITED',
-        message: `Too many reset-code attempts. Try again in ${waitSeconds} second(s).`,
+        message: `Too many reset-code attempts. Please try again later.`,
         waitSeconds,
       }, 429);
     }
-    return json({ ok: false, message: 'No active reset code. Please request a new one.' }, 400);
+    return json({ ok: false, message: PASSWORD_RESET_GENERIC_VERIFY_MESSAGE }, 400);
   }
 
   const expiresAtMs = Date.parse(expiresAtRaw);
@@ -1137,11 +1134,11 @@ async function handlePasswordResetConfirm(context) {
       return json({
         ok: false,
         code: 'PASSWORD_RESET_RATE_LIMITED',
-        message: `Too many reset-code attempts. Try again in ${waitSeconds} second(s).`,
+        message: `Too many reset-code attempts. Please try again later.`,
         waitSeconds,
       }, 429);
     }
-    return json({ ok: false, message: 'Reset code expired. Please request a new one.' }, 400);
+    return json({ ok: false, message: PASSWORD_RESET_GENERIC_VERIFY_MESSAGE }, 400);
   }
 
   const expected = await passwordResetCodeHash(env, user.id, code);
@@ -1153,11 +1150,11 @@ async function handlePasswordResetConfirm(context) {
       return json({
         ok: false,
         code: 'PASSWORD_RESET_RATE_LIMITED',
-        message: `Too many reset-code attempts. Try again in ${waitSeconds} second(s).`,
+        message: `Too many reset-code attempts. Please try again later.`,
         waitSeconds,
       }, 429);
     }
-    return json({ ok: false, message: 'Invalid email or reset code' }, 400);
+    return json({ ok: false, message: PASSWORD_RESET_GENERIC_VERIFY_MESSAGE }, 400);
   }
 
   const passwordHash = await hashPassword(newPassword);
@@ -1197,7 +1194,7 @@ async function handlePasswordResetCheck(context) {
     return json({
       ok: false,
       code: 'PASSWORD_RESET_RATE_LIMITED',
-      message: `Too many reset-code attempts. Try again in ${waitSeconds} second(s).`,
+      message: `Too many reset-code attempts. Please try again later.`,
       waitSeconds,
     }, 429);
   }
@@ -1216,19 +1213,25 @@ async function handlePasswordResetCheck(context) {
       return json({
         ok: false,
         code: 'PASSWORD_RESET_RATE_LIMITED',
-        message: `Too many reset-code attempts. Try again in ${waitSeconds} second(s).`,
+        message: `Too many reset-code attempts. Please try again later.`,
         waitSeconds,
       }, 429);
     }
-    return json({ ok: false, message: 'Invalid email or reset code' }, 400);
+    return json({ ok: false, message: PASSWORD_RESET_GENERIC_VERIFY_MESSAGE }, 400);
   }
   if(Number(user.email_verified || 0) !== 1) {
-    return json({
-      ok: false,
-      code: 'PASSWORD_RESET_EMAIL_NOT_VERIFIED',
-      message: 'This email is not verified, so password reset is unavailable.',
-      supportUrl: 'https://discord.gg/NNtuG9es32',
-    }, 403);
+    const emailFail = await registerRateLimitFailure(env, 'reset_verify_email', email, RESET_VERIFY_MAX_ATTEMPTS, RESET_VERIFY_WINDOW_MS, RESET_VERIFY_BLOCK_MS);
+    const ipFail = await registerRateLimitFailure(env, 'reset_verify_ip', ip, RESET_VERIFY_MAX_ATTEMPTS, RESET_VERIFY_WINDOW_MS, RESET_VERIFY_BLOCK_MS);
+    if(emailFail.blocked || ipFail.blocked) {
+      const waitSeconds = Math.max(emailFail.waitSeconds, ipFail.waitSeconds);
+      return json({
+        ok: false,
+        code: 'PASSWORD_RESET_RATE_LIMITED',
+        message: `Too many reset-code attempts. Please try again later.`,
+        waitSeconds,
+      }, 429);
+    }
+    return json({ ok: false, message: PASSWORD_RESET_GENERIC_VERIFY_MESSAGE }, 400);
   }
 
   await ensurePasswordResetTable(env);
@@ -1250,11 +1253,11 @@ async function handlePasswordResetCheck(context) {
       return json({
         ok: false,
         code: 'PASSWORD_RESET_RATE_LIMITED',
-        message: `Too many reset-code attempts. Try again in ${waitSeconds} second(s).`,
+        message: `Too many reset-code attempts. Please try again later.`,
         waitSeconds,
       }, 429);
     }
-    return json({ ok: false, message: 'No active reset code. Please request a new one.' }, 400);
+    return json({ ok: false, message: PASSWORD_RESET_GENERIC_VERIFY_MESSAGE }, 400);
   }
 
   const expiresAtMs = Date.parse(expiresAtRaw);
@@ -1266,11 +1269,11 @@ async function handlePasswordResetCheck(context) {
       return json({
         ok: false,
         code: 'PASSWORD_RESET_RATE_LIMITED',
-        message: `Too many reset-code attempts. Try again in ${waitSeconds} second(s).`,
+        message: `Too many reset-code attempts. Please try again later.`,
         waitSeconds,
       }, 429);
     }
-    return json({ ok: false, message: 'Reset code expired. Please request a new one.' }, 400);
+    return json({ ok: false, message: PASSWORD_RESET_GENERIC_VERIFY_MESSAGE }, 400);
   }
 
   const expected = await passwordResetCodeHash(env, user.id, code);
@@ -1282,11 +1285,11 @@ async function handlePasswordResetCheck(context) {
       return json({
         ok: false,
         code: 'PASSWORD_RESET_RATE_LIMITED',
-        message: `Too many reset-code attempts. Try again in ${waitSeconds} second(s).`,
+        message: `Too many reset-code attempts. Please try again later.`,
         waitSeconds,
       }, 429);
     }
-    return json({ ok: false, message: 'Invalid email or reset code' }, 400);
+    return json({ ok: false, message: PASSWORD_RESET_GENERIC_VERIFY_MESSAGE }, 400);
   }
 
   await clearRateLimitState(env, 'reset_verify_email', email);
