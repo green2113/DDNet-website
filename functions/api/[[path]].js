@@ -23,17 +23,33 @@ import {
 } from '../_lib/utils.js';
 
 const AUTH_COOKIE = 'ddnet_auth';
-const SESSION_MAX_AGE = 30 * 24 * 60 * 60;
+const SESSION_MAX_AGE_DEFAULT = 30 * 24 * 60 * 60;
+const SESSION_MAX_AGE_MIN = 5 * 60;
+const SESSION_MAX_AGE_MAX = 90 * 24 * 60 * 60;
 const NAME_CHANGE_COOLDOWN_DAYS = 10;
 const NAME_CHANGE_COOLDOWN_MS = NAME_CHANGE_COOLDOWN_DAYS * 24 * 60 * 60 * 1000;
 const EMAIL_VERIFY_CODE_TTL_MS = 10 * 60 * 1000;
 const EMAIL_VERIFY_RESEND_COOLDOWN_MS = 60 * 1000;
 const PASSWORD_RESET_CODE_TTL_MS = 10 * 60 * 1000;
 const PASSWORD_RESET_RESEND_COOLDOWN_MS = 60 * 1000;
+const LOGIN_MAX_ATTEMPTS = 5;
+const LOGIN_WINDOW_MS = 10 * 60 * 1000;
+const LOGIN_BLOCK_MS = 10 * 60 * 1000;
+const RESET_VERIFY_MAX_ATTEMPTS = 5;
+const RESET_VERIFY_WINDOW_MS = 10 * 60 * 1000;
+const RESET_VERIFY_BLOCK_MS = 10 * 60 * 1000;
 const TRUE_VALUES = ['1', 'true', 'yes', 'on'];
 
 function cookieSecure(request) {
   return new URL(request.url).protocol === 'https:';
+}
+
+function getSessionMaxAgeSeconds(env) {
+  const raw = Number(env.SESSION_MAX_AGE_SECONDS || SESSION_MAX_AGE_DEFAULT);
+  if(!Number.isFinite(raw)) {
+    return SESSION_MAX_AGE_DEFAULT;
+  }
+  return Math.max(SESSION_MAX_AGE_MIN, Math.min(SESSION_MAX_AGE_MAX, Math.floor(raw)));
 }
 
 function vpnProxyBlockingEnabled(env) {
@@ -136,6 +152,119 @@ async function ensurePasswordResetTable(env) {
   `).run();
 }
 
+async function ensureAuthRateLimitTable(env) {
+  await env.DB.prepare(`
+    CREATE TABLE IF NOT EXISTS auth_rate_limits (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      scope TEXT NOT NULL,
+      subject TEXT NOT NULL,
+      fail_count INTEGER NOT NULL DEFAULT 0,
+      window_start TEXT NOT NULL,
+      blocked_until TEXT DEFAULT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE(scope, subject)
+    )
+  `).run();
+  await env.DB.prepare(`
+    CREATE INDEX IF NOT EXISTS idx_auth_rate_limits_scope_subject
+    ON auth_rate_limits(scope, subject)
+  `).run();
+}
+
+function rateLimitWaitSeconds(blockedUntilRaw) {
+  const blockedUntilMs = Date.parse(String(blockedUntilRaw || ''));
+  if(!Number.isFinite(blockedUntilMs) || blockedUntilMs <= Date.now()) {
+    return 0;
+  }
+  return Math.max(1, Math.ceil((blockedUntilMs - Date.now()) / 1000));
+}
+
+async function getRateLimitStatus(env, scope, subject, windowMs) {
+  await ensureAuthRateLimitTable(env);
+  const row = await env.DB.prepare(`
+    SELECT fail_count, window_start, blocked_until
+    FROM auth_rate_limits
+    WHERE scope = ? AND subject = ?
+    LIMIT 1
+  `).bind(scope, subject).first();
+
+  if(!row) {
+    return { blocked: false, waitSeconds: 0 };
+  }
+
+  const waitSeconds = rateLimitWaitSeconds(row.blocked_until);
+  if(waitSeconds > 0) {
+    return { blocked: true, waitSeconds };
+  }
+
+  const windowStartMs = Date.parse(String(row.window_start || ''));
+  if(!Number.isFinite(windowStartMs) || (Date.now() - windowStartMs) > windowMs) {
+    await env.DB.prepare(`
+      DELETE FROM auth_rate_limits
+      WHERE scope = ? AND subject = ?
+    `).bind(scope, subject).run();
+    return { blocked: false, waitSeconds: 0 };
+  }
+
+  return { blocked: false, waitSeconds: 0 };
+}
+
+async function registerRateLimitFailure(env, scope, subject, maxAttempts, windowMs, blockMs) {
+  await ensureAuthRateLimitTable(env);
+
+  const row = await env.DB.prepare(`
+    SELECT fail_count, window_start, blocked_until
+    FROM auth_rate_limits
+    WHERE scope = ? AND subject = ?
+    LIMIT 1
+  `).bind(scope, subject).first();
+
+  const now = Date.now();
+  const nowText = nowIso();
+  const blockedWaitSeconds = rateLimitWaitSeconds(row?.blocked_until || '');
+  if(row && blockedWaitSeconds > 0) {
+    return { blocked: true, waitSeconds: blockedWaitSeconds };
+  }
+
+  const windowStartMs = Date.parse(String(row?.window_start || ''));
+  const inWindow = Number.isFinite(windowStartMs) && (now - windowStartMs) <= windowMs;
+  const nextFailCount = row && inWindow ? Number(row.fail_count || 0) + 1 : 1;
+
+  const shouldBlock = nextFailCount >= maxAttempts;
+  const blockedUntil = shouldBlock ? new Date(now + blockMs).toISOString() : null;
+
+  await env.DB.prepare(`
+    INSERT INTO auth_rate_limits (
+      scope, subject, fail_count, window_start, blocked_until, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?)
+    ON CONFLICT(scope, subject) DO UPDATE SET
+      fail_count = excluded.fail_count,
+      window_start = excluded.window_start,
+      blocked_until = excluded.blocked_until,
+      updated_at = excluded.updated_at
+  `).bind(
+    scope,
+    subject,
+    nextFailCount,
+    inWindow ? String(row.window_start || nowText) : nowText,
+    blockedUntil,
+    nowText,
+  ).run();
+
+  if(!shouldBlock) {
+    return { blocked: false, waitSeconds: 0 };
+  }
+  return { blocked: true, waitSeconds: Math.max(1, Math.ceil(blockMs / 1000)) };
+}
+
+async function clearRateLimitState(env, scope, subject) {
+  await ensureAuthRateLimitTable(env);
+  await env.DB.prepare(`
+    DELETE FROM auth_rate_limits
+    WHERE scope = ? AND subject = ?
+  `).bind(scope, subject).run();
+}
+
 async function passwordResetCodeHash(env, userId, code) {
   return sha256Hex(`pwreset:${env.SESSION_SECRET || ''}:${userId}:${code}`);
 }
@@ -195,6 +324,41 @@ async function hasUsersColumn(env, columnName) {
     LIMIT 1
   `).bind(columnName).first();
   return !!row;
+}
+
+async function ensureUsersSessionVersionColumn(env) {
+  if(await hasUsersColumn(env, 'session_version')) {
+    return true;
+  }
+  try {
+    await env.DB.prepare(`
+      ALTER TABLE users ADD COLUMN session_version INTEGER NOT NULL DEFAULT 0
+    `).run();
+  } catch(err) {
+    const message = String(err?.message || err);
+    if(!message.toLowerCase().includes('duplicate column')) {
+      throw err;
+    }
+  }
+  return await hasUsersColumn(env, 'session_version');
+}
+
+async function getUserSessionVersion(env, userId) {
+  const hasSessionVersion = await ensureUsersSessionVersionColumn(env);
+  if(!hasSessionVersion) {
+    return 0;
+  }
+  const row = await env.DB.prepare(`
+    SELECT session_version
+    FROM users
+    WHERE id = ?
+    LIMIT 1
+  `).bind(userId).first();
+  const version = Number(row?.session_version || 0);
+  if(!Number.isFinite(version)) {
+    return 0;
+  }
+  return Math.max(0, Math.floor(version));
 }
 
 async function publicUserById(env, userId) {
@@ -261,6 +425,12 @@ async function currentUser(context) {
 
   const payload = await verifySessionToken(token, secret);
   if(!payload) {
+    return { error: json({ ok: false, message: 'Session expired' }, 401) };
+  }
+
+  const tokenVersion = Number.isFinite(Number(payload.ver)) ? Number(payload.ver) : 0;
+  const userSessionVersion = await getUserSessionVersion(env, payload.uid);
+  if(tokenVersion !== userSessionVersion) {
     return { error: json({ ok: false, message: 'Session expired' }, 401) };
   }
 
@@ -568,9 +738,11 @@ async function handleRegister(context) {
     return json({ ok: false, message: 'Registration failed, retry later' }, 500);
   }
 
-  const token = await signSessionToken(userId, env.SESSION_SECRET, SESSION_MAX_AGE);
+  const sessionMaxAge = getSessionMaxAgeSeconds(env);
+  const sessionVersion = await getUserSessionVersion(env, userId);
+  const token = await signSessionToken(userId, env.SESSION_SECRET, sessionMaxAge, sessionVersion);
   const setCookie = buildSetCookie(AUTH_COOKIE, token, {
-    maxAge: SESSION_MAX_AGE,
+    maxAge: sessionMaxAge,
     secure: cookieSecure(request),
   });
 
@@ -605,8 +777,9 @@ async function handleLogin(context) {
 	const body = await parseRequestBody(request);
 	const data = typeof body === 'string' ? {} : (body || {});
 
-  const email = lower(data.email || data.identifier || '');
+	const email = lower(data.email || data.identifier || '');
   const password = String(data.password || '');
+  const ip = getClientIp(request);
 
   if(!email || !password) {
     return json({ ok: false, message: 'email and password are required' }, 400);
@@ -614,6 +787,18 @@ async function handleLogin(context) {
 
   if(!isValidEmail(email)) {
     return json({ ok: false, message: 'Invalid email format' }, 400);
+  }
+
+  const blockedByEmail = await getRateLimitStatus(env, 'login_email', email, LOGIN_WINDOW_MS);
+  const blockedByIp = await getRateLimitStatus(env, 'login_ip', ip, LOGIN_WINDOW_MS);
+  if(blockedByEmail.blocked || blockedByIp.blocked) {
+    const waitSeconds = Math.max(blockedByEmail.waitSeconds, blockedByIp.waitSeconds);
+    return json({
+      ok: false,
+      code: 'LOGIN_RATE_LIMITED',
+      message: `Too many login attempts. Try again in ${waitSeconds} second(s).`,
+      waitSeconds,
+    }, 429);
   }
 
   const row = await env.DB.prepare(`
@@ -624,17 +809,44 @@ async function handleLogin(context) {
   `).bind(email).first();
 
   if(!row) {
+    const emailFail = await registerRateLimitFailure(env, 'login_email', email, LOGIN_MAX_ATTEMPTS, LOGIN_WINDOW_MS, LOGIN_BLOCK_MS);
+    const ipFail = await registerRateLimitFailure(env, 'login_ip', ip, LOGIN_MAX_ATTEMPTS, LOGIN_WINDOW_MS, LOGIN_BLOCK_MS);
+    if(emailFail.blocked || ipFail.blocked) {
+      const waitSeconds = Math.max(emailFail.waitSeconds, ipFail.waitSeconds);
+      return json({
+        ok: false,
+        code: 'LOGIN_RATE_LIMITED',
+        message: `Too many login attempts. Try again in ${waitSeconds} second(s).`,
+        waitSeconds,
+      }, 429);
+    }
     return json({ ok: false, message: 'Invalid credentials' }, 401);
   }
 
   const ok = await verifyPassword(password, row.password_hash);
   if(!ok) {
+    const emailFail = await registerRateLimitFailure(env, 'login_email', email, LOGIN_MAX_ATTEMPTS, LOGIN_WINDOW_MS, LOGIN_BLOCK_MS);
+    const ipFail = await registerRateLimitFailure(env, 'login_ip', ip, LOGIN_MAX_ATTEMPTS, LOGIN_WINDOW_MS, LOGIN_BLOCK_MS);
+    if(emailFail.blocked || ipFail.blocked) {
+      const waitSeconds = Math.max(emailFail.waitSeconds, ipFail.waitSeconds);
+      return json({
+        ok: false,
+        code: 'LOGIN_RATE_LIMITED',
+        message: `Too many login attempts. Try again in ${waitSeconds} second(s).`,
+        waitSeconds,
+      }, 429);
+    }
     return json({ ok: false, message: 'Invalid credentials' }, 401);
   }
 
-  const token = await signSessionToken(row.id, env.SESSION_SECRET, SESSION_MAX_AGE);
+  await clearRateLimitState(env, 'login_email', email);
+  await clearRateLimitState(env, 'login_ip', ip);
+
+  const sessionMaxAge = getSessionMaxAgeSeconds(env);
+  const sessionVersion = await getUserSessionVersion(env, row.id);
+  const token = await signSessionToken(row.id, env.SESSION_SECRET, sessionMaxAge, sessionVersion);
   const setCookie = buildSetCookie(AUTH_COOKIE, token, {
-    maxAge: SESSION_MAX_AGE,
+    maxAge: sessionMaxAge,
     secure: cookieSecure(request),
   });
 
@@ -837,6 +1049,7 @@ async function handlePasswordResetConfirm(context) {
   const email = lower(data.email || '');
   const code = String(data.code || '').trim();
   const newPassword = String(data.newPassword || data.password || '');
+  const ip = getClientIp(request);
 
   if(!email || !isValidEmail(email)) {
     return json({ ok: false, message: 'Invalid email format' }, 400);
@@ -848,6 +1061,18 @@ async function handlePasswordResetConfirm(context) {
     return json({ ok: false, message: 'Password must be at least 8 characters' }, 400);
   }
 
+  const blockedByEmail = await getRateLimitStatus(env, 'reset_verify_email', email, RESET_VERIFY_WINDOW_MS);
+  const blockedByIp = await getRateLimitStatus(env, 'reset_verify_ip', ip, RESET_VERIFY_WINDOW_MS);
+  if(blockedByEmail.blocked || blockedByIp.blocked) {
+    const waitSeconds = Math.max(blockedByEmail.waitSeconds, blockedByIp.waitSeconds);
+    return json({
+      ok: false,
+      code: 'PASSWORD_RESET_RATE_LIMITED',
+      message: `Too many reset-code attempts. Try again in ${waitSeconds} second(s).`,
+      waitSeconds,
+    }, 429);
+  }
+
   const user = await env.DB.prepare(`
     SELECT id, email_verified
     FROM users
@@ -855,6 +1080,17 @@ async function handlePasswordResetConfirm(context) {
     LIMIT 1
   `).bind(email).first();
   if(!user) {
+    const emailFail = await registerRateLimitFailure(env, 'reset_verify_email', email, RESET_VERIFY_MAX_ATTEMPTS, RESET_VERIFY_WINDOW_MS, RESET_VERIFY_BLOCK_MS);
+    const ipFail = await registerRateLimitFailure(env, 'reset_verify_ip', ip, RESET_VERIFY_MAX_ATTEMPTS, RESET_VERIFY_WINDOW_MS, RESET_VERIFY_BLOCK_MS);
+    if(emailFail.blocked || ipFail.blocked) {
+      const waitSeconds = Math.max(emailFail.waitSeconds, ipFail.waitSeconds);
+      return json({
+        ok: false,
+        code: 'PASSWORD_RESET_RATE_LIMITED',
+        message: `Too many reset-code attempts. Try again in ${waitSeconds} second(s).`,
+        waitSeconds,
+      }, 429);
+    }
     return json({ ok: false, message: 'Invalid email or reset code' }, 400);
   }
   if(Number(user.email_verified || 0) !== 1) {
@@ -878,24 +1114,63 @@ async function handlePasswordResetConfirm(context) {
   const hash = String(row?.code_hash || '');
   const expiresAtRaw = String(row?.expires_at || '');
   if(!hash || !expiresAtRaw) {
+    const emailFail = await registerRateLimitFailure(env, 'reset_verify_email', email, RESET_VERIFY_MAX_ATTEMPTS, RESET_VERIFY_WINDOW_MS, RESET_VERIFY_BLOCK_MS);
+    const ipFail = await registerRateLimitFailure(env, 'reset_verify_ip', ip, RESET_VERIFY_MAX_ATTEMPTS, RESET_VERIFY_WINDOW_MS, RESET_VERIFY_BLOCK_MS);
+    if(emailFail.blocked || ipFail.blocked) {
+      const waitSeconds = Math.max(emailFail.waitSeconds, ipFail.waitSeconds);
+      return json({
+        ok: false,
+        code: 'PASSWORD_RESET_RATE_LIMITED',
+        message: `Too many reset-code attempts. Try again in ${waitSeconds} second(s).`,
+        waitSeconds,
+      }, 429);
+    }
     return json({ ok: false, message: 'No active reset code. Please request a new one.' }, 400);
   }
 
   const expiresAtMs = Date.parse(expiresAtRaw);
   if(!Number.isFinite(expiresAtMs) || expiresAtMs <= Date.now()) {
+    const emailFail = await registerRateLimitFailure(env, 'reset_verify_email', email, RESET_VERIFY_MAX_ATTEMPTS, RESET_VERIFY_WINDOW_MS, RESET_VERIFY_BLOCK_MS);
+    const ipFail = await registerRateLimitFailure(env, 'reset_verify_ip', ip, RESET_VERIFY_MAX_ATTEMPTS, RESET_VERIFY_WINDOW_MS, RESET_VERIFY_BLOCK_MS);
+    if(emailFail.blocked || ipFail.blocked) {
+      const waitSeconds = Math.max(emailFail.waitSeconds, ipFail.waitSeconds);
+      return json({
+        ok: false,
+        code: 'PASSWORD_RESET_RATE_LIMITED',
+        message: `Too many reset-code attempts. Try again in ${waitSeconds} second(s).`,
+        waitSeconds,
+      }, 429);
+    }
     return json({ ok: false, message: 'Reset code expired. Please request a new one.' }, 400);
   }
 
   const expected = await passwordResetCodeHash(env, user.id, code);
   if(!timingSafeEqual(expected, hash)) {
+    const emailFail = await registerRateLimitFailure(env, 'reset_verify_email', email, RESET_VERIFY_MAX_ATTEMPTS, RESET_VERIFY_WINDOW_MS, RESET_VERIFY_BLOCK_MS);
+    const ipFail = await registerRateLimitFailure(env, 'reset_verify_ip', ip, RESET_VERIFY_MAX_ATTEMPTS, RESET_VERIFY_WINDOW_MS, RESET_VERIFY_BLOCK_MS);
+    if(emailFail.blocked || ipFail.blocked) {
+      const waitSeconds = Math.max(emailFail.waitSeconds, ipFail.waitSeconds);
+      return json({
+        ok: false,
+        code: 'PASSWORD_RESET_RATE_LIMITED',
+        message: `Too many reset-code attempts. Try again in ${waitSeconds} second(s).`,
+        waitSeconds,
+      }, 429);
+    }
     return json({ ok: false, message: 'Invalid email or reset code' }, 400);
   }
 
   const passwordHash = await hashPassword(newPassword);
+  const hasSessionVersion = await ensureUsersSessionVersionColumn(env);
+  const updatePasswordSql = hasSessionVersion
+    ? `UPDATE users SET password_hash = ?, session_version = session_version + 1 WHERE id = ?`
+    : `UPDATE users SET password_hash = ? WHERE id = ?`;
   await env.DB.batch([
-    env.DB.prepare(`UPDATE users SET password_hash = ? WHERE id = ?`).bind(passwordHash, user.id),
+    env.DB.prepare(updatePasswordSql).bind(passwordHash, user.id),
     env.DB.prepare(`UPDATE password_resets SET used_at = ? WHERE user_id = ? AND used_at IS NULL`).bind(nowIso(), user.id),
   ]);
+  await clearRateLimitState(env, 'reset_verify_email', email);
+  await clearRateLimitState(env, 'reset_verify_ip', ip);
 
   return json({ ok: true, message: 'Password has been reset' });
 }
@@ -906,12 +1181,25 @@ async function handlePasswordResetCheck(context) {
   const data = typeof body === 'string' ? {} : (body || {});
   const email = lower(data.email || '');
   const code = String(data.code || '').trim();
+  const ip = getClientIp(request);
 
   if(!email || !isValidEmail(email)) {
     return json({ ok: false, message: 'Invalid email format' }, 400);
   }
   if(!/^\d{6}$/.test(code)) {
     return json({ ok: false, message: 'Verification code must be 6 digits' }, 400);
+  }
+
+  const blockedByEmail = await getRateLimitStatus(env, 'reset_verify_email', email, RESET_VERIFY_WINDOW_MS);
+  const blockedByIp = await getRateLimitStatus(env, 'reset_verify_ip', ip, RESET_VERIFY_WINDOW_MS);
+  if(blockedByEmail.blocked || blockedByIp.blocked) {
+    const waitSeconds = Math.max(blockedByEmail.waitSeconds, blockedByIp.waitSeconds);
+    return json({
+      ok: false,
+      code: 'PASSWORD_RESET_RATE_LIMITED',
+      message: `Too many reset-code attempts. Try again in ${waitSeconds} second(s).`,
+      waitSeconds,
+    }, 429);
   }
 
   const user = await env.DB.prepare(`
@@ -921,6 +1209,17 @@ async function handlePasswordResetCheck(context) {
     LIMIT 1
   `).bind(email).first();
   if(!user) {
+    const emailFail = await registerRateLimitFailure(env, 'reset_verify_email', email, RESET_VERIFY_MAX_ATTEMPTS, RESET_VERIFY_WINDOW_MS, RESET_VERIFY_BLOCK_MS);
+    const ipFail = await registerRateLimitFailure(env, 'reset_verify_ip', ip, RESET_VERIFY_MAX_ATTEMPTS, RESET_VERIFY_WINDOW_MS, RESET_VERIFY_BLOCK_MS);
+    if(emailFail.blocked || ipFail.blocked) {
+      const waitSeconds = Math.max(emailFail.waitSeconds, ipFail.waitSeconds);
+      return json({
+        ok: false,
+        code: 'PASSWORD_RESET_RATE_LIMITED',
+        message: `Too many reset-code attempts. Try again in ${waitSeconds} second(s).`,
+        waitSeconds,
+      }, 429);
+    }
     return json({ ok: false, message: 'Invalid email or reset code' }, 400);
   }
   if(Number(user.email_verified || 0) !== 1) {
@@ -944,18 +1243,54 @@ async function handlePasswordResetCheck(context) {
   const hash = String(row?.code_hash || '');
   const expiresAtRaw = String(row?.expires_at || '');
   if(!hash || !expiresAtRaw) {
+    const emailFail = await registerRateLimitFailure(env, 'reset_verify_email', email, RESET_VERIFY_MAX_ATTEMPTS, RESET_VERIFY_WINDOW_MS, RESET_VERIFY_BLOCK_MS);
+    const ipFail = await registerRateLimitFailure(env, 'reset_verify_ip', ip, RESET_VERIFY_MAX_ATTEMPTS, RESET_VERIFY_WINDOW_MS, RESET_VERIFY_BLOCK_MS);
+    if(emailFail.blocked || ipFail.blocked) {
+      const waitSeconds = Math.max(emailFail.waitSeconds, ipFail.waitSeconds);
+      return json({
+        ok: false,
+        code: 'PASSWORD_RESET_RATE_LIMITED',
+        message: `Too many reset-code attempts. Try again in ${waitSeconds} second(s).`,
+        waitSeconds,
+      }, 429);
+    }
     return json({ ok: false, message: 'No active reset code. Please request a new one.' }, 400);
   }
 
   const expiresAtMs = Date.parse(expiresAtRaw);
   if(!Number.isFinite(expiresAtMs) || expiresAtMs <= Date.now()) {
+    const emailFail = await registerRateLimitFailure(env, 'reset_verify_email', email, RESET_VERIFY_MAX_ATTEMPTS, RESET_VERIFY_WINDOW_MS, RESET_VERIFY_BLOCK_MS);
+    const ipFail = await registerRateLimitFailure(env, 'reset_verify_ip', ip, RESET_VERIFY_MAX_ATTEMPTS, RESET_VERIFY_WINDOW_MS, RESET_VERIFY_BLOCK_MS);
+    if(emailFail.blocked || ipFail.blocked) {
+      const waitSeconds = Math.max(emailFail.waitSeconds, ipFail.waitSeconds);
+      return json({
+        ok: false,
+        code: 'PASSWORD_RESET_RATE_LIMITED',
+        message: `Too many reset-code attempts. Try again in ${waitSeconds} second(s).`,
+        waitSeconds,
+      }, 429);
+    }
     return json({ ok: false, message: 'Reset code expired. Please request a new one.' }, 400);
   }
 
   const expected = await passwordResetCodeHash(env, user.id, code);
   if(!timingSafeEqual(expected, hash)) {
+    const emailFail = await registerRateLimitFailure(env, 'reset_verify_email', email, RESET_VERIFY_MAX_ATTEMPTS, RESET_VERIFY_WINDOW_MS, RESET_VERIFY_BLOCK_MS);
+    const ipFail = await registerRateLimitFailure(env, 'reset_verify_ip', ip, RESET_VERIFY_MAX_ATTEMPTS, RESET_VERIFY_WINDOW_MS, RESET_VERIFY_BLOCK_MS);
+    if(emailFail.blocked || ipFail.blocked) {
+      const waitSeconds = Math.max(emailFail.waitSeconds, ipFail.waitSeconds);
+      return json({
+        ok: false,
+        code: 'PASSWORD_RESET_RATE_LIMITED',
+        message: `Too many reset-code attempts. Try again in ${waitSeconds} second(s).`,
+        waitSeconds,
+      }, 429);
+    }
     return json({ ok: false, message: 'Invalid email or reset code' }, 400);
   }
+
+  await clearRateLimitState(env, 'reset_verify_email', email);
+  await clearRateLimitState(env, 'reset_verify_ip', ip);
 
   return json({ ok: true, message: 'Reset code verified' });
 }

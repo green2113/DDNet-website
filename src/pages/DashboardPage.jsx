@@ -712,6 +712,14 @@ export default function DashboardPage() {
     }
     setShowAdminBanConfirm(true);
   };
+  const blurAdminPickerFocus = () => {
+    if(typeof document !== 'undefined' && document.activeElement instanceof HTMLElement) {
+      document.activeElement.blur();
+    }
+    if(adminSearchInputRef.current) {
+      adminSearchInputRef.current.blur();
+    }
+  };
   const navItems = [
     { id: 'account', label: t('dashboard.accountTitle') },
     ...(canUseInvite ? [{ id: 'invite', label: t('dashboard.inviteTitle') }] : []),
@@ -1121,13 +1129,12 @@ export default function DashboardPage() {
                                 key={entry.id}
                                 className="admin-user-row"
                                 type="button"
+                                onMouseDown={(event) => event.preventDefault()}
                                 onClick={() => {
                                   setAdminSelectedUser(entry);
                                   setAdminSearchName(String(entry.username || ''));
                                   setAdminPickerOpen(false);
-                                  if(adminSearchInputRef.current) {
-                                    adminSearchInputRef.current.blur();
-                                  }
+                                  blurAdminPickerFocus();
                                 }}
                               >
                                 <span>{entry.id}</span>

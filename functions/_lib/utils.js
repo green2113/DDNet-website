@@ -158,9 +158,13 @@ export async function verifyPassword(password, stored) {
   }
 }
 
-export async function signSessionToken(userId, secret, durationSeconds = 30 * 24 * 60 * 60) {
+export async function signSessionToken(userId, secret, durationSeconds = 30 * 24 * 60 * 60, sessionVersion = 0) {
+  const normalizedVersion = Number.isFinite(Number(sessionVersion))
+    ? Math.max(0, Math.floor(Number(sessionVersion)))
+    : 0;
   const payloadObj = {
     uid: Number(userId),
+    ver: normalizedVersion,
     exp: Math.floor(Date.now() / 1000) + durationSeconds,
   };
   const payload = bytesToBase64Url(encoder.encode(JSON.stringify(payloadObj)));
@@ -190,11 +194,16 @@ export async function verifySessionToken(token, secret) {
     if(!payload || typeof payload.uid !== 'number' || typeof payload.exp !== 'number') {
       return null;
     }
+    if(payload.ver !== undefined && typeof payload.ver !== 'number') {
+      return null;
+    }
 
     if(payload.exp < Math.floor(Date.now() / 1000)) {
       return null;
     }
 
+    // Old tokens may not contain version, treat as version 0 for compatibility.
+    payload.ver = payload.ver === undefined ? 0 : Math.max(0, Math.floor(payload.ver));
     return payload;
   } catch {
     return null;
