@@ -8,7 +8,7 @@ import { LanguageSelector } from '../components/Layout';
 export default function LoginPage() {
   const navigate = useNavigate();
   const { refresh } = useAuth();
-  const { t } = useI18n();
+  const { t, language } = useI18n();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [submitting, setSubmitting] = useState(false);
@@ -104,7 +104,13 @@ export default function LoginPage() {
     setResetErrorText('');
     setRequestingCode(true);
     try {
-      const data = await requestPasswordResetCode({ email: resetEmail.trim() });
+      const data = await requestPasswordResetCode({ email: resetEmail.trim(), language });
+      if(data?.code === 'PASSWORD_RESET_EMAIL_UNVERIFIED' || data?.sent === false) {
+        setResetCooldownSec(0);
+        setResetDeadlineMs(0);
+        setResetErrorText(`${t('login.resetUnverifiedLine1')}\n${t('login.resetUnverifiedLine2')} https://discord.gg/playravion`);
+        return;
+      }
       setResetCooldownSec(60);
       const nextDeadline = data?.expiresAt ? Date.parse(data.expiresAt) : NaN;
       setResetDeadlineMs(Number.isFinite(nextDeadline) ? nextDeadline : 0);
@@ -165,6 +171,7 @@ export default function LoginPage() {
         email: resetEmail.trim(),
         code: resetCode.trim(),
         newPassword: resetPassword,
+        language,
       });
       setResetInfoText(t('login.resetSuccess'));
       setResetCode('');

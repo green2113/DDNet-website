@@ -137,6 +137,121 @@ async function sendPasswordResetEmail(env, email, code) {
   }
 }
 
+function normalizeUiLanguage(input) {
+  const value = String(input || '').trim().toLowerCase();
+  if(!value) return '';
+  if(value === 'zh-tw' || value === 'zhtw' || value === 'zh_hant') return 'zh-TW';
+  if(value === 'zh-cn' || value === 'zhcn' || value === 'zh_hans') return 'zh-CN';
+  if(value === 'ko' || value === 'ko-kr') return 'ko';
+  if(value === 'ja' || value === 'ja-jp') return 'ja';
+  return 'en';
+}
+
+function parseLanguageFromAcceptHeader(header) {
+  const raw = String(header || '').toLowerCase();
+  if(raw.includes('zh-tw') || raw.includes('zh-hk') || raw.includes('zh-hant')) return 'zh-TW';
+  if(raw.includes('zh-cn') || raw.includes('zh-sg') || raw.includes('zh-hans')) return 'zh-CN';
+  if(raw.includes('ko')) return 'ko';
+  if(raw.includes('ja')) return 'ja';
+  return 'en';
+}
+
+function formatUtcTimestamp(isoLike) {
+  const date = new Date(isoLike || Date.now());
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${date.getUTCFullYear()}-${pad(date.getUTCMonth() + 1)}-${pad(date.getUTCDate())} ${pad(date.getUTCHours())}:${pad(date.getUTCMinutes())}:${pad(date.getUTCSeconds())} UTC`;
+}
+
+function passwordChangedEmailContent({ language, email, changedAtUtc }) {
+  switch(language) {
+  case 'ko':
+    return {
+      subject: '[Ravion] 비밀번호 변경 안내',
+      text:
+`안녕하세요.
+
+이메일(${email})과 연결된 Ravion 계정의 비밀번호가 ${changedAtUtc} 에 변경되었습니다.
+
+본인이 변경한 것이 아니라면 즉시 Discord(https://discord.gg/NNtuG9es32)로 문의해 주세요.`,
+    };
+  case 'zh-TW':
+    return {
+      subject: '[Ravion] 密碼變更通知',
+      text:
+`您好，
+
+與此電子郵件（${email}）綁定的 Ravion 帳號密碼已於 ${changedAtUtc} 變更。
+
+若這不是您本人操作，請立即前往 Discord（https://discord.gg/NNtuG9es32）與我們聯繫。`,
+    };
+  case 'zh-CN':
+    return {
+      subject: '[Ravion] 密码变更通知',
+      text:
+`您好，
+
+与此邮箱（${email}）绑定的 Ravion 账号密码已于 ${changedAtUtc} 变更。
+
+如果这不是您本人操作，请立即前往 Discord（https://discord.gg/NNtuG9es32）联系我们。`,
+    };
+  case 'ja':
+    return {
+      subject: '[Ravion] パスワード変更のお知らせ',
+      text:
+`こんにちは。
+
+このメールアドレス（${email}）に紐づく Ravion アカウントのパスワードが ${changedAtUtc} に変更されました。
+
+心当たりがない場合は、すぐに Discord（https://discord.gg/NNtuG9es32）までご連絡ください。`,
+    };
+  default:
+    return {
+      subject: '[Ravion] Password changed',
+      text:
+`Hello,
+
+The password for your Ravion account linked to this email (${email}) was changed at ${changedAtUtc}.
+
+If this was not you, please contact us immediately on Discord: https://discord.gg/NNtuG9es32`,
+    };
+  }
+}
+
+async function sendPasswordChangedEmail(env, email, language, changedAtIso) {
+  const apiKey = String(env.RESEND_API_KEY || '').trim();
+  const from = String(env.EMAIL_FROM || 'noreply@playravion.com').trim();
+  if(!apiKey || !from) {
+    throw new Error('Missing RESEND_API_KEY or EMAIL_FROM');
+  }
+  const fromWithName = from.includes('<') ? from : `Ravion <${from}>`;
+  const changedAtUtc = formatUtcTimestamp(changedAtIso);
+  const content = passwordChangedEmailContent({
+    language: normalizeUiLanguage(language),
+    email,
+    changedAtUtc,
+  });
+
+  const response = await fetch('https://api.resend.com/emails', {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${apiKey}`,
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({
+      from: fromWithName,
+      to: [email],
+      subject: content.subject,
+      text: content.text,
+      html: content.text.replace(/\n/g, '<br/>'),
+    }),
+  });
+
+  if(!response.ok) {
+    const body = await response.text().catch(() => '');
+    throw new Error(`Email provider failed (${response.status}): ${body}`);
+  }
+}
+
 async function ensurePasswordResetTable(env) {
   await env.DB.prepare(`
     CREATE TABLE IF NOT EXISTS password_resets (
@@ -1000,7 +1115,12 @@ async function handlePasswordResetRequest(context) {
   }
 
   if(Number(user.email_verified || 0) !== 1) {
-    return json({ ok: true, message: PASSWORD_RESET_GENERIC_REQUEST_MESSAGE });
+    return json({
+      ok: true,
+      sent: false,
+      code: 'PASSWORD_RESET_EMAIL_UNVERIFIED',
+      message: 'Email is not verified',
+    });
   }
 
   await ensurePasswordResetTable(env);
@@ -1016,7 +1136,7 @@ async function handlePasswordResetRequest(context) {
   const sentAtMs = Date.parse(String(active?.sent_at || ''));
   if(Number.isFinite(sentAtMs) && Date.now() - sentAtMs < PASSWORD_RESET_RESEND_COOLDOWN_MS) {
     // Silent success to avoid account-state enumeration.
-    return json({ ok: true, message: PASSWORD_RESET_GENERIC_REQUEST_MESSAGE });
+    return json({ ok: true, sent: true, message: PASSWORD_RESET_GENERIC_REQUEST_MESSAGE });
   }
 
   const code = randomDigits(6);
@@ -1031,7 +1151,7 @@ async function handlePasswordResetRequest(context) {
     VALUES (?, ?, ?, ?, NULL)
   `).bind(user.id, codeHash, expiresAt, now).run();
 
-  return json({ ok: true, message: PASSWORD_RESET_GENERIC_REQUEST_MESSAGE, expiresAt });
+  return json({ ok: true, sent: true, message: PASSWORD_RESET_GENERIC_REQUEST_MESSAGE, expiresAt });
 }
 
 async function handlePasswordResetConfirm(context) {
@@ -1041,6 +1161,9 @@ async function handlePasswordResetConfirm(context) {
   const email = lower(data.email || '');
   const code = String(data.code || '').trim();
   const newPassword = String(data.newPassword || data.password || '');
+  const requestedLanguage = normalizeUiLanguage(data.language || data.lang || '');
+  const acceptLanguage = parseLanguageFromAcceptHeader(request.headers.get('accept-language'));
+  const emailLanguage = requestedLanguage || acceptLanguage || 'en';
   const ip = getClientIp(request);
 
   if(!email || !isValidEmail(email)) {
@@ -1163,12 +1286,19 @@ async function handlePasswordResetConfirm(context) {
   const updatePasswordSql = hasSessionVersion
     ? `UPDATE users SET password_hash = ?, session_version = session_version + 1 WHERE id = ?`
     : `UPDATE users SET password_hash = ? WHERE id = ?`;
+  const changedAtIso = nowIso();
   await env.DB.batch([
     env.DB.prepare(updatePasswordSql).bind(passwordHash, user.id),
-    env.DB.prepare(`UPDATE password_resets SET used_at = ? WHERE user_id = ? AND used_at IS NULL`).bind(nowIso(), user.id),
+    env.DB.prepare(`UPDATE password_resets SET used_at = ? WHERE user_id = ? AND used_at IS NULL`).bind(changedAtIso, user.id),
   ]);
   await clearRateLimitState(env, 'reset_verify_email', email);
   await clearRateLimitState(env, 'reset_verify_ip', ip);
+
+  try {
+    await sendPasswordChangedEmail(env, email, emailLanguage, changedAtIso);
+  } catch(err) {
+    console.error('password changed mail failed', err);
+  }
 
   return json({ ok: true, message: 'Password has been reset' });
 }

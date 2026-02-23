@@ -393,6 +393,21 @@ h3 {
   white-space: nowrap;
 }
 
+.admin-user-row .tooltip-wrap {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  justify-content: center;
+}
+
+.admin-user-row .tooltip-wrap > span {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .admin-user-list-empty {
   padding: 12px 10px;
   color: #9bb0d8;
