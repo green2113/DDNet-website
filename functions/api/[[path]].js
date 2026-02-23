@@ -1836,6 +1836,48 @@ async function handleGameUnban(context) {
   return json({ ok: true, accountId });
 }
 
+async function handleGameAccountStatus(context) {
+  const { request, env } = context;
+  const key = request.headers.get('X-Game-Server-Key') || '';
+  if(!env.GAME_SERVER_API_KEY || !timingSafeEqual(key, env.GAME_SERVER_API_KEY)) {
+    return json({ ok: false, message: 'Unauthorized game server key' }, 401);
+  }
+
+  const accountId = Number(request.headers.get('X-Game-Account-Id') || 0);
+  if(!Number.isFinite(accountId) || accountId <= 0) {
+    return json({ ok: false, message: 'Invalid account id' }, 400);
+  }
+
+  const user = await env.DB.prepare(`
+    SELECT ban_is_permanent, ban_until, ban_reason
+    FROM users
+    WHERE id = ?
+    LIMIT 1
+  `).bind(accountId).first();
+
+  if(!user) {
+    return json({ ok: false, message: 'Account not found' }, 404);
+  }
+
+  const now = Date.now();
+  const permanent = Number(user.ban_is_permanent || 0) !== 0;
+  const banUntilRaw = String(user.ban_until || '');
+  const banUntilMs = banUntilRaw ? Date.parse(banUntilRaw) : NaN;
+  const tempActive = Number.isFinite(banUntilMs) && banUntilMs > now;
+  const banned = permanent || tempActive;
+  const remainingSeconds = tempActive ? Math.max(0, Math.ceil((banUntilMs - now) / 1000)) : 0;
+
+  return json({
+    ok: true,
+    accountId,
+    banned,
+    banPermanent: permanent,
+    banUntil: banUntilRaw,
+    banReason: String(user.ban_reason || ''),
+    remainingSeconds,
+  });
+}
+
 async function handleAdminBan(context) {
   const { request, env } = context;
   const auth = await requireAdmin(context);
@@ -1922,7 +1964,8 @@ async function handleAdminUsers(context) {
         username,
         ${hasDummyName ? 'dummy_name' : 'NULL AS dummy_name'},
         ban_is_permanent,
-        ban_until
+        ban_until,
+        ban_reason
       FROM users
       WHERE username LIKE ?
       ${hasDummyName ? 'OR dummy_name LIKE ?' : ''}
@@ -1935,7 +1978,8 @@ async function handleAdminUsers(context) {
         username,
         ${hasDummyName ? 'dummy_name' : 'NULL AS dummy_name'},
         ban_is_permanent,
-        ban_until
+        ban_until,
+        ban_reason
       FROM users
       ORDER BY id ASC
       LIMIT 200
@@ -2032,6 +2076,10 @@ export async function onRequest(context) {
 
   if(request.method === 'POST' && path === '/game/unban') {
     return handleGameUnban(context);
+  }
+
+  if(request.method === 'POST' && path === '/game/account-status') {
+    return handleGameAccountStatus(context);
   }
 
   if(request.method === 'POST' && path === '/admin/ban') {

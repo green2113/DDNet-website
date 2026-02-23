@@ -143,7 +143,7 @@ export default function DashboardPage() {
   const [adminUsersLoading, setAdminUsersLoading] = useState(false);
   const [adminPickerOpen, setAdminPickerOpen] = useState(false);
   const [adminMinutes, setAdminMinutes] = useState('10');
-  const [adminReasonPreset, setAdminReasonPreset] = useState('abuse');
+  const [adminReasonPreset, setAdminReasonPreset] = useState('chat');
   const [adminReasonCustom, setAdminReasonCustom] = useState('');
   const [adminSubmitting, setAdminSubmitting] = useState(false);
   const [showAdminBanConfirm, setShowAdminBanConfirm] = useState(false);
@@ -652,13 +652,15 @@ export default function DashboardPage() {
   const banUntilMs = banUntilRaw ? Date.parse(banUntilRaw) : NaN;
   const banTempActive = Number.isFinite(banUntilMs) && banUntilMs > Date.now();
   const isBanned = banPermanent || banTempActive;
+  const banReasonText = String(user?.ban_reason || '').trim();
   const banUntilText = banTempActive
     ? new Date(banUntilMs).toLocaleString(locale || 'en-US')
     : '';
   const accessStatusText = isBanned
-    ? (banPermanent
-      ? t('dashboard.accessBannedPermanent')
-      : t('dashboard.accessBannedUntil', { time: banUntilText }))
+    ? `${banPermanent
+      ? t('dashboard.accessBannedPermanentByReason')
+      : t('dashboard.accessBannedUntilByReason', { time: banUntilText })}
+${t('dashboard.accessReasonLine', { reason: banReasonText || '-' })}`
     : t('dashboard.accessActive');
   const accessStatusClass = isBanned
     ? (banPermanent ? 'status-text status-permanent' : 'status-text status-temporary')
@@ -689,6 +691,7 @@ export default function DashboardPage() {
   const selectedBanUntilMs = selectedBanUntilRaw ? Date.parse(selectedBanUntilRaw) : NaN;
   const selectedBanTempActive = Number.isFinite(selectedBanUntilMs) && selectedBanUntilMs > Date.now();
   const selectedUserBanned = selectedBanPermanent || selectedBanTempActive;
+  const selectedUserBanReason = String(adminSelectedUser?.ban_reason || '').trim();
   const selectedUserStatusText = adminSelectedUser ? adminUserStatusText(adminSelectedUser) : '';
   const selectedUserStatusClass = selectedUserBanned
     ? (selectedBanPermanent ? 'status-text status-permanent' : 'status-text status-temporary')
@@ -982,7 +985,7 @@ export default function DashboardPage() {
               </div>
             </dd>
             <dt>{t('dashboard.rowAccess')}</dt>
-            <dd><span className={accessStatusClass}>{accessStatusText}</span></dd>
+            <dd><span className={`${accessStatusClass} preserve-lines`}>{accessStatusText}</span></dd>
           </dl>
             </article>
           ) : null}
@@ -1167,6 +1170,10 @@ export default function DashboardPage() {
                       <span>{t('dashboard.rowAccess')}</span>
                       <span className={selectedUserStatusClass}>{selectedUserStatusText}</span>
                     </div>
+                    <div className="admin-picked-row">
+                      <span>{t('dashboard.adminReason')}</span>
+                      <span>{selectedUserBanReason || '-'}</span>
+                    </div>
                   </div>
                 ) : null}
                 {adminSelectedUser && !selectedUserBanned ? (
@@ -1186,7 +1193,6 @@ export default function DashboardPage() {
                         value={adminReasonPreset}
                         onChange={(event) => setAdminReasonPreset(event.target.value)}
                       >
-                        <option value="abuse">{t('dashboard.adminReasonAbuse')}</option>
                         <option value="chat">{t('dashboard.adminReasonChat')}</option>
                         <option value="griefing">{t('dashboard.adminReasonGriefing')}</option>
                         <option value="cheat">{t('dashboard.adminReasonCheat')}</option>

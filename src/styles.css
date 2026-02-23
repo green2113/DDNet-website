@@ -641,7 +641,7 @@ button.btn {
   color: var(--muted);
   line-height: 1.2;
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   min-height: 28px;
 }
 
@@ -650,7 +650,7 @@ button.btn {
   word-break: break-all;
   line-height: 1.2;
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   min-height: 28px;
 }
 
