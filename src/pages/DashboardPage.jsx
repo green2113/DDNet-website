@@ -702,6 +702,19 @@ ${t('dashboard.accessReasonLine', { reason: banReasonText || '-' })}`
     }
     return t('dashboard.accessActive');
   };
+  const adminUserStatusCompact = (targetUser) => {
+    const permanent = Number(targetUser?.ban_is_permanent || 0) !== 0;
+    const untilRaw = String(targetUser?.ban_until || '');
+    const untilMs = untilRaw ? Date.parse(untilRaw) : NaN;
+    const tempActive = Number.isFinite(untilMs) && untilMs > Date.now();
+    if(permanent) {
+      return t('dashboard.accessBannedPermanent');
+    }
+    if(tempActive) {
+      return t('dashboard.adminTemporaryBanShort');
+    }
+    return t('dashboard.accessActive');
+  };
   const selectedBanPermanent = Number(adminSelectedUser?.ban_is_permanent || 0) !== 0;
   const selectedBanUntilRaw = String(adminSelectedUser?.ban_until || '');
   const selectedBanUntilMs = selectedBanUntilRaw ? Date.parse(selectedBanUntilRaw) : NaN;
@@ -1159,7 +1172,9 @@ ${t('dashboard.accessReasonLine', { reason: banReasonText || '-' })}`
                                 <span>{entry.id}</span>
                                 <span>{entry.username || '-'}</span>
                                 <span>{entry.dummy_name || '-'}</span>
-                                <span>{adminUserStatusText(entry)}</span>
+                                <Tooltip label={adminUserStatusText(entry)}>
+                                  <span>{adminUserStatusCompact(entry)}</span>
+                                </Tooltip>
                               </button>
                             ))
                           )}
