@@ -5,6 +5,10 @@ import { useAuth } from '../components/AuthProvider';
 import { useI18n } from '../components/I18nProvider';
 import { Feedback, TopBar } from '../components/Layout';
 import Tooltip from '../components/Tooltip';
+import iconEnvelope from '../assets/icons/icon-envelope.svg';
+import iconUser from '../assets/icons/icon-user.svg';
+import iconSiren from '../assets/icons/icon-siren.svg';
+import iconKey from '../assets/icons/icon-key.svg';
 
 function maskEmail(value) {
   const email = String(value || '');
@@ -100,43 +104,6 @@ function LockIcon() {
   return (
     <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
       <path fill="currentColor" d="M17 8h-1V6a4 4 0 0 0-8 0v2H7a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-9a2 2 0 0 0-2-2Zm-7-2a2 2 0 1 1 4 0v2h-4V6Z" />
-    </svg>
-  );
-}
-
-function AccountNavIcon() {
-  return (
-    <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M15.75 6.75a3.75 3.75 0 1 1-7.5 0 3.75 3.75 0 0 1 7.5 0Z" />
-      <path d="M4.5 20.1a8.7 8.7 0 0 1 15 0" />
-    </svg>
-  );
-}
-
-function InviteNavIcon() {
-  return (
-    <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M4.5 8.25h15v11.25a1.5 1.5 0 0 1-1.5 1.5H6a1.5 1.5 0 0 1-1.5-1.5V8.25Z" />
-      <path d="M3.75 8.25h16.5V6a1.5 1.5 0 0 0-1.5-1.5H5.25A1.5 1.5 0 0 0 3.75 6v2.25Z" />
-      <path d="M9.75 4.5v6M14.25 4.5v6" />
-    </svg>
-  );
-}
-
-function LoginCodeNavIcon() {
-  return (
-    <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M7.5 10.5a4.5 4.5 0 1 1 7.9 2.9l-5.65 5.65a3.25 3.25 0 1 1-4.6-4.6l1.7-1.7" />
-      <path d="m9.25 14.75 5.5-5.5" />
-    </svg>
-  );
-}
-
-function BanNavIcon() {
-  return (
-    <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M12 3.75 4.5 6.75v5.7c0 4.73 3.12 9.06 7.5 10.8 4.38-1.74 7.5-6.07 7.5-10.8v-5.7L12 3.75Z" />
-      <path d="m8.25 15.75 7.5-7.5" />
     </svg>
   );
 }
@@ -790,9 +757,9 @@ ${t('dashboard.accessReasonLine', { reason: banReasonText || '-' })}`
     }
   };
   const navItems = [
-    { id: 'account', label: t('dashboard.accountTitle'), icon: <AccountNavIcon /> },
-    ...(canUseInvite ? [{ id: 'invite', label: t('dashboard.inviteTitle'), icon: <InviteNavIcon /> }] : []),
-    { id: 'codes', label: t('dashboard.gameCodeTitle'), icon: <LoginCodeNavIcon /> },
+    { id: 'account', label: t('dashboard.accountTitle'), icon: iconUser },
+    ...(canUseInvite ? [{ id: 'invite', label: t('dashboard.inviteTitle'), icon: iconEnvelope }] : []),
+    { id: 'codes', label: t('dashboard.gameCodeTitle'), icon: iconKey },
   ];
 
   const onLogout = async () => {
@@ -842,7 +809,7 @@ ${t('dashboard.accessReasonLine', { reason: banReasonText || '-' })}`
                 type="button"
                 onClick={() => setActiveSection(item.id)}
               >
-                <span className="dashboard-nav-icon" aria-hidden="true">{item.icon}</span>
+                <span className="dashboard-nav-icon" aria-hidden="true"><img src={item.icon} alt="" /></span>
                 <span>{item.label}</span>
               </button>
             ))}
@@ -856,7 +823,7 @@ ${t('dashboard.accessReasonLine', { reason: banReasonText || '-' })}`
                 type="button"
                 onClick={() => setActiveSection('admin-ban')}
               >
-                <span className="dashboard-nav-icon" aria-hidden="true"><BanNavIcon /></span>
+                <span className="dashboard-nav-icon" aria-hidden="true"><img src={iconSiren} alt="" /></span>
                 <span>{t('dashboard.adminBanNav')}</span>
               </button>
             </div>
