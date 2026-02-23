@@ -104,6 +104,43 @@ function LockIcon() {
   );
 }
 
+function AccountNavIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M15.75 6.75a3.75 3.75 0 1 1-7.5 0 3.75 3.75 0 0 1 7.5 0Z" />
+      <path d="M4.5 20.1a8.7 8.7 0 0 1 15 0" />
+    </svg>
+  );
+}
+
+function InviteNavIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M4.5 8.25h15v11.25a1.5 1.5 0 0 1-1.5 1.5H6a1.5 1.5 0 0 1-1.5-1.5V8.25Z" />
+      <path d="M3.75 8.25h16.5V6a1.5 1.5 0 0 0-1.5-1.5H5.25A1.5 1.5 0 0 0 3.75 6v2.25Z" />
+      <path d="M9.75 4.5v6M14.25 4.5v6" />
+    </svg>
+  );
+}
+
+function LoginCodeNavIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M7.5 10.5a4.5 4.5 0 1 1 7.9 2.9l-5.65 5.65a3.25 3.25 0 1 1-4.6-4.6l1.7-1.7" />
+      <path d="m9.25 14.75 5.5-5.5" />
+    </svg>
+  );
+}
+
+function BanNavIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12 3.75 4.5 6.75v5.7c0 4.73 3.12 9.06 7.5 10.8 4.38-1.74 7.5-6.07 7.5-10.8v-5.7L12 3.75Z" />
+      <path d="m8.25 15.75 7.5-7.5" />
+    </svg>
+  );
+}
+
 export default function DashboardPage() {
   const { user, refresh, logout } = useAuth();
   const { t, locale } = useI18n();
@@ -753,9 +790,9 @@ ${t('dashboard.accessReasonLine', { reason: banReasonText || '-' })}`
     }
   };
   const navItems = [
-    { id: 'account', label: t('dashboard.accountTitle') },
-    ...(canUseInvite ? [{ id: 'invite', label: t('dashboard.inviteTitle') }] : []),
-    { id: 'codes', label: t('dashboard.gameCodeTitle') },
+    { id: 'account', label: t('dashboard.accountTitle'), icon: <AccountNavIcon /> },
+    ...(canUseInvite ? [{ id: 'invite', label: t('dashboard.inviteTitle'), icon: <InviteNavIcon /> }] : []),
+    { id: 'codes', label: t('dashboard.gameCodeTitle'), icon: <LoginCodeNavIcon /> },
   ];
 
   const onLogout = async () => {
@@ -805,7 +842,8 @@ ${t('dashboard.accessReasonLine', { reason: banReasonText || '-' })}`
                 type="button"
                 onClick={() => setActiveSection(item.id)}
               >
-                {item.label}
+                <span className="dashboard-nav-icon" aria-hidden="true">{item.icon}</span>
+                <span>{item.label}</span>
               </button>
             ))}
           </nav>
@@ -818,7 +856,8 @@ ${t('dashboard.accessReasonLine', { reason: banReasonText || '-' })}`
                 type="button"
                 onClick={() => setActiveSection('admin-ban')}
               >
-                {t('dashboard.adminBanNav')}
+                <span className="dashboard-nav-icon" aria-hidden="true"><BanNavIcon /></span>
+                <span>{t('dashboard.adminBanNav')}</span>
               </button>
             </div>
           ) : null}
@@ -1420,8 +1459,8 @@ ${t('dashboard.accessReasonLine', { reason: banReasonText || '-' })}`
       ) : null}
 
       {showAdminBanConfirm && adminSelectedUser ? (
-        <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label={t('dashboard.adminBanConfirmTitle')}>
-          <section className="modal-card">
+        <div className="modal-backdrop modal-backdrop-ban" role="dialog" aria-modal="true" aria-label={t('dashboard.adminBanConfirmTitle')}>
+          <section className="modal-card modal-card-ban">
             <h3>{t('dashboard.adminBanConfirmTitle')}</h3>
             <p className="muted">
               {adminBanUntilText
