@@ -693,7 +693,7 @@ button.btn {
 
 .name-inline {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 6px;
   max-width: 100%;
   min-height: 28px;
@@ -757,7 +757,7 @@ button.btn {
   width: 28px;
   height: 28px;
   margin-top: 0;
-  align-self: center;
+  align-self: flex-start;
 }
 
 .name-cooldown {
@@ -858,7 +858,7 @@ button.btn {
 
 .email-verify-row {
   display: inline-flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 8px;
 }
 
