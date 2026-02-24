@@ -351,6 +351,23 @@ h3 {
   flex-wrap: wrap;
 }
 
+.admin-ban-mode-toggle {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.admin-ban-mode-btn {
+  width: 100%;
+  justify-content: center;
+}
+
+.admin-ban-mode-btn.active {
+  border-color: #88a6ff;
+  background: rgba(79, 124, 255, 0.26);
+  color: #eff4ff;
+}
+
 .admin-user-picker {
   position: relative;
 }
@@ -518,6 +535,16 @@ input {
 input:focus {
   border-color: #91a9ff;
   box-shadow: 0 0 0 3px rgba(79, 124, 255, 0.22);
+}
+
+input[type="number"]::-webkit-outer-spin-button,
+input[type="number"]::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+input[type="number"] {
+  -moz-appearance: textfield;
 }
 
 select {

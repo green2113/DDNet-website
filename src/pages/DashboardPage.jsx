@@ -147,6 +147,7 @@ export default function DashboardPage() {
   const [adminUsersLoading, setAdminUsersLoading] = useState(false);
   const [adminPickerOpen, setAdminPickerOpen] = useState(false);
   const [adminMinutes, setAdminMinutes] = useState('10');
+  const [adminBanMode, setAdminBanMode] = useState('temporary');
   const [adminReasonPreset, setAdminReasonPreset] = useState('chat');
   const [adminReasonCustom, setAdminReasonCustom] = useState('');
   const [adminSubmitting, setAdminSubmitting] = useState(false);
@@ -182,7 +183,9 @@ export default function DashboardPage() {
   const verifyTimerText = verifyRemainingSeconds > 0
     ? `${String(Math.floor(verifyRemainingSeconds / 60)).padStart(2, '0')}:${String(verifyRemainingSeconds % 60).padStart(2, '0')}`
     : '';
-  const adminMinutesNum = Number(adminMinutes);
+  const parsedMinutes = Number(adminMinutes);
+  const temporaryMinutesValid = Number.isInteger(parsedMinutes) && parsedMinutes >= 1 && parsedMinutes <= 1440;
+  const adminMinutesNum = adminBanMode === 'permanent' ? 0 : parsedMinutes;
   const adminReasonValue = adminReasonPreset === 'custom'
     ? adminReasonCustom.trim()
     : adminReasonPreset;
@@ -230,6 +233,10 @@ export default function DashboardPage() {
     }
     refreshAdminUsers();
   }, [isAdmin, activeSection, adminPickerOpen]);
+
+  useEffect(() => {
+    setAdminBanMode('temporary');
+  }, [adminSelectedUser?.id, activeSection]);
 
   useEffect(() => {
     if(!adminPickerOpen) {
@@ -600,9 +607,15 @@ export default function DashboardPage() {
       setFeedback({ type: 'error', message: t('dashboard.adminSelectUserRequired') });
       return;
     }
-    if(!Number.isFinite(minutes)) {
-      setFeedback({ type: 'error', message: t('dashboard.adminInvalidMinutes') });
-      return;
+    if(adminBanMode === 'temporary') {
+      if(!Number.isFinite(parsedMinutes)) {
+        setFeedback({ type: 'error', message: t('dashboard.adminInvalidMinutes') });
+        return;
+      }
+      if(!temporaryMinutesValid) {
+        setFeedback({ type: 'error', message: t('dashboard.adminInvalidMinutesRange') });
+        return;
+      }
     }
     setAdminSubmitting(true);
     setFeedback(null);
@@ -742,9 +755,15 @@ ${t('dashboard.accessReasonLine', { reason: banReasonText || '-' })}`
       setFeedback({ type: 'error', message: t('dashboard.adminSelectUserRequired') });
       return;
     }
-    if(!Number.isFinite(adminMinutesNum)) {
-      setFeedback({ type: 'error', message: t('dashboard.adminInvalidMinutes') });
-      return;
+    if(adminBanMode === 'temporary') {
+      if(!Number.isFinite(parsedMinutes)) {
+        setFeedback({ type: 'error', message: t('dashboard.adminInvalidMinutes') });
+        return;
+      }
+      if(!temporaryMinutesValid) {
+        setFeedback({ type: 'error', message: t('dashboard.adminInvalidMinutesRange') });
+        return;
+      }
     }
     setShowAdminBanConfirm(true);
   };
@@ -1215,15 +1234,38 @@ ${t('dashboard.accessReasonLine', { reason: banReasonText || '-' })}`
                 ) : null}
                 {adminSelectedUser && !selectedUserBanned ? (
                   <>
-                    <label>
-                      {t('dashboard.adminMinutes')}
-                      <input
-                        type="number"
-                        value={adminMinutes}
-                        onChange={(event) => setAdminMinutes(event.target.value)}
-                        placeholder={t('dashboard.adminMinutesPlaceholder')}
-                      />
-                    </label>
+                    <div className="admin-ban-mode-toggle">
+                      <button
+                        className={`btn ghost admin-ban-mode-btn${adminBanMode === 'temporary' ? ' active' : ''}`}
+                        type="button"
+                        aria-pressed={adminBanMode === 'temporary'}
+                        onClick={() => setAdminBanMode('temporary')}
+                      >
+                        {t('dashboard.adminBanModeTemporary')}
+                      </button>
+                      <button
+                        className={`btn ghost admin-ban-mode-btn${adminBanMode === 'permanent' ? ' active' : ''}`}
+                        type="button"
+                        aria-pressed={adminBanMode === 'permanent'}
+                        onClick={() => setAdminBanMode('permanent')}
+                      >
+                        {t('dashboard.adminBanModePermanent')}
+                      </button>
+                    </div>
+                    {adminBanMode === 'temporary' ? (
+                      <label>
+                        {t('dashboard.adminMinutes')}
+                        <input
+                          type="number"
+                          min={1}
+                          max={1440}
+                          step={1}
+                          value={adminMinutes}
+                          onChange={(event) => setAdminMinutes(event.target.value)}
+                          placeholder={t('dashboard.adminMinutesPlaceholder')}
+                        />
+                      </label>
+                    ) : null}
                     <label>
                       {t('dashboard.adminReason')}
                       <select
