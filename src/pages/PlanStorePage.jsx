@@ -2,7 +2,7 @@ import { Link } from 'react-router-dom';
 import { TopBar } from '../components/Layout';
 
 export default function PlanStorePage() {
-  const plusPlanId = String(import.meta.env.VITE_PAYPAL_PLAN_ID_PLUS || '').trim();
+  const plusPlanId = String(import.meta.env.VITE_PAYPAL_PLAN_ID_PLUS || 'P-14V362713R263544HNGO3P5I').trim();
   const plans = [
     {
       key: 'plus',

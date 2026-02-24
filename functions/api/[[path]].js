@@ -2287,7 +2287,7 @@ async function handlePayPalActivate(context) {
   const data = typeof body === 'string' ? {} : (body || {});
   const subscriptionId = String(data.subscriptionId || '').trim();
   const planId = String(data.planId || '').trim();
-  const allowedPlanId = String(env.PAYPAL_PLAN_ID_PLUS || '').trim();
+  const allowedPlanId = String(env.PAYPAL_PLAN_ID_PLUS || 'P-14V362713R263544HNGO3P5I').trim();
   if(!subscriptionId) {
     return json({ ok: false, message: 'subscriptionId is required' }, 400);
   }

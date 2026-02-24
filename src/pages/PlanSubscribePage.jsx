@@ -10,7 +10,8 @@ function useQuery() {
 
 export default function PlanSubscribePage() {
   const query = useQuery();
-  const planId = String(query.get('plan') || '').trim();
+  const defaultPlanId = String(import.meta.env.VITE_PAYPAL_PLAN_ID_PLUS || 'P-14V362713R263544HNGO3P5I').trim();
+  const planId = String(query.get('plan') || defaultPlanId).trim();
   const planName = String(query.get('name') || 'Subscription').trim();
   const clientId = String(import.meta.env.VITE_PAYPAL_CLIENT_ID || '').trim();
   const buttonContainerRef = useRef(null);
@@ -84,7 +85,7 @@ export default function PlanSubscribePage() {
       </section>
 
       <article className="panel">
-        {!planId ? <p className="result error">Missing plan id. Open this page with `?plan=P-...`.</p> : null}
+        {!planId ? <p className="result error">Missing plan id. Set `VITE_PAYPAL_PLAN_ID_PLUS`.</p> : null}
         {!clientId ? <p className="result error">Missing `VITE_PAYPAL_CLIENT_ID` in frontend environment.</p> : null}
         <p className="muted mono-mini">Plan ID: {planId || '-'}</p>
         <div ref={buttonContainerRef} />
