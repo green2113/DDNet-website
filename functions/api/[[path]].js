@@ -583,6 +583,158 @@ async function requireAdmin(context) {
   return result;
 }
 
+function normalizeSubscriptionStatus(input) {
+  const value = String(input || '').toUpperCase();
+  const allowed = new Set(['APPROVAL_PENDING', 'ACTIVE', 'SUSPENDED', 'CANCELLED', 'EXPIRED']);
+  return allowed.has(value) ? value : 'APPROVAL_PENDING';
+}
+
+async function ensureBillingTables(env) {
+  await env.DB.prepare(`
+    CREATE TABLE IF NOT EXISTS billing_subscriptions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      provider TEXT NOT NULL,
+      paypal_subscription_id TEXT UNIQUE,
+      plan_key TEXT NOT NULL,
+      paypal_plan_id TEXT NOT NULL,
+      status TEXT NOT NULL,
+      current_period_end TEXT,
+      started_at TEXT,
+      cancelled_at TEXT,
+      is_grant INTEGER NOT NULL DEFAULT 0,
+      granted_by_user_id INTEGER,
+      raw_payload TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    )
+  `).run();
+  await env.DB.prepare(`
+    CREATE INDEX IF NOT EXISTS idx_billing_subscriptions_user_id
+    ON billing_subscriptions(user_id)
+  `).run();
+  await env.DB.prepare(`
+    CREATE INDEX IF NOT EXISTS idx_billing_subscriptions_status
+    ON billing_subscriptions(status)
+  `).run();
+  await env.DB.prepare(`
+    CREATE INDEX IF NOT EXISTS idx_billing_subscriptions_plan_key
+    ON billing_subscriptions(plan_key)
+  `).run();
+
+  await env.DB.prepare(`
+    CREATE TABLE IF NOT EXISTS billing_webhook_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      provider TEXT NOT NULL,
+      event_id TEXT NOT NULL UNIQUE,
+      event_type TEXT NOT NULL,
+      resource_id TEXT,
+      received_at TEXT NOT NULL,
+      processed_at TEXT,
+      raw_payload TEXT NOT NULL
+    )
+  `).run();
+  await env.DB.prepare(`
+    CREATE INDEX IF NOT EXISTS idx_billing_webhook_events_provider_type
+    ON billing_webhook_events(provider, event_type)
+  `).run();
+}
+
+async function getPayPalAccessToken(env) {
+  const clientId = String(env.PAYPAL_CLIENT_ID || '').trim();
+  const clientSecret = String(env.PAYPAL_CLIENT_SECRET || '').trim();
+  const apiBase = String(env.PAYPAL_API_BASE || '').trim();
+  if(!clientId || !clientSecret || !apiBase) {
+    throw new Error('PayPal environment is not configured');
+  }
+
+  const auth = btoa(`${clientId}:${clientSecret}`);
+  const response = await fetch(`${apiBase}/v1/oauth2/token`, {
+    method: 'POST',
+    headers: {
+      authorization: `Basic ${auth}`,
+      'content-type': 'application/x-www-form-urlencoded',
+      accept: 'application/json',
+    },
+    body: 'grant_type=client_credentials',
+  });
+
+  const payload = await response.json().catch(() => ({}));
+  if(!response.ok || !payload.access_token) {
+    throw new Error(`PayPal OAuth failed (${response.status})`);
+  }
+  return payload.access_token;
+}
+
+async function fetchPayPalSubscription(env, subscriptionId) {
+  const apiBase = String(env.PAYPAL_API_BASE || '').trim();
+  const accessToken = await getPayPalAccessToken(env);
+  const response = await fetch(`${apiBase}/v1/billing/subscriptions/${encodeURIComponent(subscriptionId)}`, {
+    method: 'GET',
+    headers: {
+      authorization: `Bearer ${accessToken}`,
+      accept: 'application/json',
+    },
+  });
+  const payload = await response.json().catch(() => ({}));
+  if(!response.ok) {
+    throw new Error(`PayPal subscription lookup failed (${response.status})`);
+  }
+  return payload;
+}
+
+async function verifyPayPalWebhook(env, request, rawBodyText, webhookEvent) {
+  const apiBase = String(env.PAYPAL_API_BASE || '').trim();
+  const webhookId = String(env.PAYPAL_WEBHOOK_ID || '').trim();
+  if(!apiBase || !webhookId) {
+    throw new Error('PayPal webhook environment is not configured');
+  }
+
+  const accessToken = await getPayPalAccessToken(env);
+  const response = await fetch(`${apiBase}/v1/notifications/verify-webhook-signature`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${accessToken}`,
+      'content-type': 'application/json',
+      accept: 'application/json',
+    },
+    body: JSON.stringify({
+      auth_algo: request.headers.get('paypal-auth-algo') || '',
+      cert_url: request.headers.get('paypal-cert-url') || '',
+      transmission_id: request.headers.get('paypal-transmission-id') || '',
+      transmission_sig: request.headers.get('paypal-transmission-sig') || '',
+      transmission_time: request.headers.get('paypal-transmission-time') || '',
+      webhook_id: webhookId,
+      webhook_event: webhookEvent,
+      webhook_event_raw: rawBodyText,
+    }),
+  });
+  const payload = await response.json().catch(() => ({}));
+  if(!response.ok) {
+    throw new Error(`PayPal webhook verification failed (${response.status})`);
+  }
+  return String(payload.verification_status || '').toUpperCase() === 'SUCCESS';
+}
+
+function extractSubscriptionFromPayPalPayload(payload) {
+  const status = normalizeSubscriptionStatus(payload?.status);
+  const currentPeriodEnd = String(payload?.billing_info?.next_billing_time || '').trim() || null;
+  const startedAt = String(payload?.start_time || payload?.create_time || '').trim() || null;
+  const cancelledAt = status === 'CANCELLED' || status === 'EXPIRED'
+    ? (String(payload?.status_update_time || '').trim() || nowIso())
+    : null;
+  const paypalPlanId = String(payload?.plan_id || '').trim();
+  const paypalSubscriptionId = String(payload?.id || '').trim();
+  return {
+    status,
+    currentPeriodEnd,
+    startedAt,
+    cancelledAt,
+    paypalPlanId,
+    paypalSubscriptionId,
+  };
+}
+
 async function allocateInviteCode(env) {
   for(let i = 0; i < 20; i += 1) {
     const code = randomCode(8);
@@ -2119,6 +2271,289 @@ async function handleAdminUsers(context) {
   return json({ ok: true, users: rows?.results || [] });
 }
 
+async function handlePayPalActivate(context) {
+  const { request, env } = context;
+  const auth = await currentUser(context);
+  if(auth.error) {
+    return auth.error;
+  }
+  if(!isEmailVerified(auth.user)) {
+    return emailVerificationRequiredResponse();
+  }
+
+  await ensureBillingTables(env);
+
+  const body = await parseRequestBody(request);
+  const data = typeof body === 'string' ? {} : (body || {});
+  const subscriptionId = String(data.subscriptionId || '').trim();
+  const planId = String(data.planId || '').trim();
+  const allowedPlanId = String(env.PAYPAL_PLAN_ID_PLUS || '').trim();
+  if(!subscriptionId) {
+    return json({ ok: false, message: 'subscriptionId is required' }, 400);
+  }
+  if(!allowedPlanId) {
+    return json({ ok: false, message: 'PAYPAL_PLAN_ID_PLUS is not configured' }, 500);
+  }
+  if(planId !== allowedPlanId) {
+    return json({ ok: false, message: 'Invalid plan id' }, 400);
+  }
+
+  let paypalPayload;
+  try {
+    paypalPayload = await fetchPayPalSubscription(env, subscriptionId);
+  } catch(err) {
+    return json({ ok: false, message: String(err?.message || 'PayPal lookup failed') }, 502);
+  }
+
+  const normalized = extractSubscriptionFromPayPalPayload(paypalPayload);
+  if(normalized.paypalPlanId !== allowedPlanId) {
+    return json({ ok: false, message: 'PayPal plan mismatch' }, 400);
+  }
+  if(normalized.paypalSubscriptionId !== subscriptionId) {
+    return json({ ok: false, message: 'PayPal subscription mismatch' }, 400);
+  }
+
+  const existing = await env.DB.prepare(`
+    SELECT id, user_id
+    FROM billing_subscriptions
+    WHERE paypal_subscription_id = ?
+    LIMIT 1
+  `).bind(subscriptionId).first();
+  if(existing && Number(existing.user_id || 0) !== Number(auth.user.id || 0)) {
+    return json({ ok: false, message: 'This subscription is already linked to another account' }, 409);
+  }
+
+  const now = nowIso();
+  await env.DB.prepare(`
+    INSERT INTO billing_subscriptions (
+      user_id, provider, paypal_subscription_id, plan_key, paypal_plan_id, status,
+      current_period_end, started_at, cancelled_at, is_grant, granted_by_user_id,
+      raw_payload, created_at, updated_at
+    ) VALUES (?, 'paypal', ?, 'plus', ?, ?, ?, ?, ?, 0, NULL, ?, ?, ?)
+    ON CONFLICT(paypal_subscription_id) DO UPDATE SET
+      user_id = excluded.user_id,
+      plan_key = excluded.plan_key,
+      paypal_plan_id = excluded.paypal_plan_id,
+      status = excluded.status,
+      current_period_end = excluded.current_period_end,
+      started_at = COALESCE(excluded.started_at, billing_subscriptions.started_at),
+      cancelled_at = excluded.cancelled_at,
+      raw_payload = excluded.raw_payload,
+      updated_at = excluded.updated_at
+  `).bind(
+    auth.user.id,
+    subscriptionId,
+    normalized.paypalPlanId,
+    normalized.status,
+    normalized.currentPeriodEnd,
+    normalized.startedAt,
+    normalized.cancelledAt,
+    JSON.stringify(paypalPayload),
+    now,
+    now,
+  ).run();
+
+  return json({
+    ok: true,
+    subscription: {
+      status: normalized.status,
+      planKey: 'plus',
+      currentPeriodEnd: normalized.currentPeriodEnd,
+    },
+  });
+}
+
+async function handlePayPalWebhook(context) {
+  const { request, env } = context;
+  await ensureBillingTables(env);
+
+  const rawBodyText = await request.text();
+  let payload;
+  try {
+    payload = JSON.parse(rawBodyText || '{}');
+  } catch {
+    return json({ ok: false, message: 'Invalid JSON payload' }, 400);
+  }
+
+  let verified = false;
+  try {
+    verified = await verifyPayPalWebhook(env, request, rawBodyText, payload);
+  } catch(err) {
+    return json({ ok: false, message: String(err?.message || 'Webhook verification failed') }, 502);
+  }
+  if(!verified) {
+    return json({ ok: false, message: 'Invalid PayPal webhook signature' }, 401);
+  }
+
+  const eventId = String(payload.id || '').trim();
+  const eventType = String(payload.event_type || '').trim();
+  const resourceId = String(payload?.resource?.id || '').trim();
+  if(!eventId || !eventType) {
+    return json({ ok: false, message: 'Missing webhook event id/type' }, 400);
+  }
+
+  const now = nowIso();
+  const inserted = await env.DB.prepare(`
+    INSERT INTO billing_webhook_events (
+      provider, event_id, event_type, resource_id, received_at, processed_at, raw_payload
+    ) VALUES ('paypal', ?, ?, ?, ?, NULL, ?)
+    ON CONFLICT(event_id) DO NOTHING
+  `).bind(eventId, eventType, resourceId || null, now, rawBodyText).run();
+  if((inserted.meta?.changes || 0) === 0) {
+    return json({ ok: true, duplicate: true });
+  }
+
+  const handledEventTypes = new Set([
+    'BILLING.SUBSCRIPTION.ACTIVATED',
+    'BILLING.SUBSCRIPTION.UPDATED',
+    'BILLING.SUBSCRIPTION.CANCELLED',
+    'BILLING.SUBSCRIPTION.SUSPENDED',
+    'BILLING.SUBSCRIPTION.EXPIRED',
+  ]);
+
+  if(handledEventTypes.has(eventType) && resourceId) {
+    const normalized = extractSubscriptionFromPayPalPayload(payload.resource || {});
+    const allowedPlanId = String(env.PAYPAL_PLAN_ID_PLUS || '').trim();
+    if(normalized.paypalPlanId === allowedPlanId) {
+      await env.DB.prepare(`
+        UPDATE billing_subscriptions
+        SET status = ?,
+            current_period_end = COALESCE(?, current_period_end),
+            cancelled_at = ?,
+            raw_payload = ?,
+            updated_at = ?
+        WHERE paypal_subscription_id = ?
+      `).bind(
+        normalized.status,
+        normalized.currentPeriodEnd,
+        normalized.cancelledAt,
+        JSON.stringify(payload.resource || payload),
+        now,
+        resourceId,
+      ).run();
+    }
+  }
+
+  await env.DB.prepare(`
+    UPDATE billing_webhook_events
+    SET processed_at = ?
+    WHERE event_id = ?
+  `).bind(now, eventId).run();
+
+  return json({ ok: true });
+}
+
+async function handleMySubscription(context) {
+  const auth = await currentUser(context);
+  if(auth.error) {
+    return auth.error;
+  }
+  await ensureBillingTables(context.env);
+
+  const row = await context.env.DB.prepare(`
+    SELECT id, user_id, provider, paypal_subscription_id, plan_key, paypal_plan_id, status,
+           current_period_end, started_at, cancelled_at, is_grant, granted_by_user_id, updated_at
+    FROM billing_subscriptions
+    WHERE user_id = ?
+    ORDER BY
+      CASE WHEN status = 'ACTIVE' THEN 0 ELSE 1 END,
+      datetime(COALESCE(current_period_end, '1970-01-01T00:00:00Z')) DESC,
+      id DESC
+    LIMIT 1
+  `).bind(auth.user.id).first();
+
+  return json({
+    ok: true,
+    subscription: row || null,
+  });
+}
+
+async function handleAdminSubscriptionGrant(context) {
+  const { request, env } = context;
+  const auth = await requireAdmin(context);
+  if(auth.error) {
+    return auth.error;
+  }
+  await ensureBillingTables(env);
+
+  const body = await parseRequestBody(request);
+  const data = typeof body === 'string' ? {} : (body || {});
+  const accountId = Number(data.accountId || 0);
+  const monthsRaw = Number(data.months || 1);
+  const reason = String(data.reason || '').trim();
+  if(!Number.isFinite(accountId) || accountId <= 0) {
+    return json({ ok: false, message: 'Invalid account id' }, 400);
+  }
+  const months = Math.max(1, Math.min(12, Math.floor(monthsRaw)));
+
+  const account = await env.DB.prepare(`SELECT id FROM users WHERE id = ? LIMIT 1`).bind(accountId).first();
+  if(!account) {
+    return json({ ok: false, message: 'Account not found' }, 404);
+  }
+
+  const active = await env.DB.prepare(`
+    SELECT id, current_period_end
+    FROM billing_subscriptions
+    WHERE user_id = ? AND is_grant = 1 AND status = 'ACTIVE'
+    ORDER BY id DESC
+    LIMIT 1
+  `).bind(accountId).first();
+
+  const nowMs = Date.now();
+  const activeEndMs = Date.parse(String(active?.current_period_end || ''));
+  const baseMs = Number.isFinite(activeEndMs) && activeEndMs > nowMs ? activeEndMs : nowMs;
+  const nextMs = baseMs + (months * 30 * 24 * 60 * 60 * 1000);
+  const nextIso = new Date(nextMs).toISOString();
+  const now = nowIso();
+  const planId = String(env.PAYPAL_PLAN_ID_PLUS || '').trim();
+  if(!planId) {
+    return json({ ok: false, message: 'PAYPAL_PLAN_ID_PLUS is not configured' }, 500);
+  }
+
+  if(active) {
+    await env.DB.prepare(`
+      UPDATE billing_subscriptions
+      SET plan_key = 'plus',
+          paypal_plan_id = ?,
+          status = 'ACTIVE',
+          current_period_end = ?,
+          updated_at = ?,
+          raw_payload = ?
+      WHERE id = ?
+    `).bind(
+      planId,
+      nextIso,
+      now,
+      JSON.stringify({ source: 'admin_grant_extend', reason, months }),
+      active.id,
+    ).run();
+  } else {
+    await env.DB.prepare(`
+      INSERT INTO billing_subscriptions (
+        user_id, provider, paypal_subscription_id, plan_key, paypal_plan_id, status,
+        current_period_end, started_at, cancelled_at, is_grant, granted_by_user_id,
+        raw_payload, created_at, updated_at
+      ) VALUES (?, 'paypal', NULL, 'plus', ?, 'ACTIVE', ?, ?, NULL, 1, ?, ?, ?, ?)
+    `).bind(
+      accountId,
+      planId,
+      nextIso,
+      now,
+      auth.user.id,
+      JSON.stringify({ source: 'admin_grant_create', reason, months }),
+      now,
+      now,
+    ).run();
+  }
+
+  return json({
+    ok: true,
+    accountId,
+    months,
+    currentPeriodEnd: nextIso,
+  });
+}
+
 export async function onRequest(context) {
   const { request } = context;
   const url = new URL(request.url);
@@ -2223,6 +2658,22 @@ export async function onRequest(context) {
 
   if(request.method === 'GET' && path === '/admin/users') {
     return handleAdminUsers(context);
+  }
+
+  if(request.method === 'POST' && path === '/billing/paypal/activate') {
+    return handlePayPalActivate(context);
+  }
+
+  if(request.method === 'POST' && path === '/billing/paypal/webhook') {
+    return handlePayPalWebhook(context);
+  }
+
+  if(request.method === 'GET' && path === '/billing/subscription/me') {
+    return handleMySubscription(context);
+  }
+
+  if(request.method === 'POST' && path === '/admin/subscription/grant') {
+    return handleAdminSubscriptionGrant(context);
   }
 
   return json({ ok: false, message: 'API route not found' }, 404);

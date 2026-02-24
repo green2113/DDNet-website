@@ -7,6 +7,8 @@ import LoginPage from './pages/LoginPage';
 import RegisterPage from './pages/RegisterPage';
 import DashboardPage from './pages/DashboardPage';
 import BlockedPage from './pages/BlockedPage';
+import PlanStorePage from './pages/PlanStorePage';
+import PlanSubscribePage from './pages/PlanSubscribePage';
 
 export default function App() {
   return (
@@ -36,6 +38,22 @@ export default function App() {
           element={
             <RequireAuth>
               <DashboardPage />
+            </RequireAuth>
+          }
+        />
+        <Route
+          path="/billing/plans"
+          element={
+            <RequireAuth>
+              <PlanStorePage />
+            </RequireAuth>
+          }
+        />
+        <Route
+          path="/billing/subscribe"
+          element={
+            <RequireAuth>
+              <PlanSubscribePage />
             </RequireAuth>
           }
         />

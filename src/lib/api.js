@@ -132,3 +132,21 @@ export async function adminSearchUsers(query = '') {
   const q = encodeURIComponent(String(query || ''));
   return api(`/api/admin/users?q=${q}`, { method: 'GET' });
 }
+
+export async function activatePaypalSubscription(payload) {
+  return api('/api/billing/paypal/activate', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function getMySubscription() {
+  return api('/api/billing/subscription/me', { method: 'GET' });
+}
+
+export async function adminGrantSubscription(payload) {
+  return api('/api/admin/subscription/grant', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
