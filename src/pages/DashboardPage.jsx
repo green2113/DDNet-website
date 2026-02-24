@@ -1241,7 +1241,7 @@ ${t('dashboard.accessReasonLine', { reason: banReasonText || '-' })}`
                         aria-pressed={adminBanMode === 'temporary'}
                         onClick={() => setAdminBanMode('temporary')}
                       >
-                        {t('dashboard.adminBanModeTemporary')}
+                        {adminBanMode === 'temporary' ? `✓ ${t('dashboard.adminBanModeTemporary')}` : t('dashboard.adminBanModeTemporary')}
                       </button>
                       <button
                         className={`btn ghost admin-ban-mode-btn${adminBanMode === 'permanent' ? ' active' : ''}`}
@@ -1249,7 +1249,7 @@ ${t('dashboard.accessReasonLine', { reason: banReasonText || '-' })}`
                         aria-pressed={adminBanMode === 'permanent'}
                         onClick={() => setAdminBanMode('permanent')}
                       >
-                        {t('dashboard.adminBanModePermanent')}
+                        {adminBanMode === 'permanent' ? `✓ ${t('dashboard.adminBanModePermanent')}` : t('dashboard.adminBanModePermanent')}
                       </button>
                     </div>
                     {adminBanMode === 'temporary' ? (

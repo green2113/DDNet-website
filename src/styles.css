@@ -360,12 +360,18 @@ h3 {
 .admin-ban-mode-btn {
   width: 100%;
   justify-content: center;
+  font-weight: 600;
+  opacity: 0.85;
+  transition: border-color 120ms ease, background-color 120ms ease, color 120ms ease, box-shadow 120ms ease, transform 120ms ease, opacity 120ms ease;
 }
 
 .admin-ban-mode-btn.active {
-  border-color: #88a6ff;
-  background: rgba(79, 124, 255, 0.26);
+  border-color: #a8bfff;
+  background: rgba(79, 124, 255, 0.38);
   color: #eff4ff;
+  box-shadow: 0 0 0 2px rgba(136, 166, 255, 0.28);
+  transform: translateY(-1px);
+  opacity: 1;
 }
 
 .admin-user-picker {
