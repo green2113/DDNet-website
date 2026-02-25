@@ -682,6 +682,24 @@ async function ensureBillingTables(env) {
     CREATE INDEX IF NOT EXISTS idx_billing_webhook_events_provider_type
     ON billing_webhook_events(provider, event_type)
   `).run();
+
+  await env.DB.prepare(`
+    CREATE TABLE IF NOT EXISTS billing_paypal_captures (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      capture_id TEXT NOT NULL UNIQUE,
+      order_id TEXT,
+      payer_email TEXT,
+      user_id INTEGER,
+      amount_value TEXT,
+      amount_currency TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    )
+  `).run();
+  await env.DB.prepare(`
+    CREATE INDEX IF NOT EXISTS idx_billing_paypal_captures_user_id
+    ON billing_paypal_captures(user_id)
+  `).run();
 }
 
 async function getPayPalAccessToken(env) {
@@ -776,6 +794,161 @@ function extractSubscriptionFromPayPalPayload(payload) {
     cancelledAt,
     paypalPlanId,
     paypalSubscriptionId,
+  };
+}
+
+function parseBoundedInt(value, fallback, min, max) {
+  const n = Number(value);
+  if(!Number.isFinite(n)) {
+    return fallback;
+  }
+  return Math.max(min, Math.min(max, Math.floor(n)));
+}
+
+async function applyNcpPlusForUser(env, userId, captureId, eventPayload, now) {
+  const months = parseBoundedInt(env.PAYPAL_NCP_PLUS_MONTHS || 1, 1, 1, 24);
+  const planId = String(env.PAYPAL_PLAN_ID_PLUS || 'NCP_PLUS').trim() || 'NCP_PLUS';
+  const pseudoSubscriptionId = `NCP:USER:${userId}`;
+
+  const active = await env.DB.prepare(`
+    SELECT id, current_period_end
+    FROM billing_subscriptions
+    WHERE user_id = ?
+      AND provider = 'paypal'
+      AND plan_key = 'plus'
+      AND (paypal_subscription_id = ? OR paypal_subscription_id IS NULL OR is_grant = 1)
+    ORDER BY datetime(COALESCE(current_period_end, '1970-01-01T00:00:00Z')) DESC, id DESC
+    LIMIT 1
+  `).bind(userId, pseudoSubscriptionId).first();
+
+  const nowMs = Date.now();
+  const activeEndMs = Date.parse(String(active?.current_period_end || ''));
+  const baseMs = Number.isFinite(activeEndMs) && activeEndMs > nowMs ? activeEndMs : nowMs;
+  const nextIso = new Date(baseMs + (months * 30 * 24 * 60 * 60 * 1000)).toISOString();
+  const raw = JSON.stringify({
+    source: 'paypal_ncp_capture',
+    captureId,
+    months,
+    eventType: String(eventPayload?.event_type || ''),
+    payload: eventPayload?.resource || eventPayload,
+  });
+
+  if(active) {
+    await env.DB.prepare(`
+      UPDATE billing_subscriptions
+      SET provider = 'paypal',
+          paypal_subscription_id = ?,
+          plan_key = 'plus',
+          paypal_plan_id = ?,
+          status = 'ACTIVE',
+          current_period_end = ?,
+          cancelled_at = NULL,
+          is_grant = 0,
+          granted_by_user_id = NULL,
+          raw_payload = ?,
+          updated_at = ?
+      WHERE id = ?
+    `).bind(
+      pseudoSubscriptionId,
+      planId,
+      nextIso,
+      raw,
+      now,
+      active.id,
+    ).run();
+  } else {
+    await env.DB.prepare(`
+      INSERT INTO billing_subscriptions (
+        user_id, provider, paypal_subscription_id, plan_key, paypal_plan_id, status,
+        current_period_end, started_at, cancelled_at, is_grant, granted_by_user_id,
+        raw_payload, created_at, updated_at
+      ) VALUES (?, 'paypal', ?, 'plus', ?, 'ACTIVE', ?, ?, NULL, 0, NULL, ?, ?, ?)
+    `).bind(
+      userId,
+      pseudoSubscriptionId,
+      planId,
+      nextIso,
+      now,
+      raw,
+      now,
+      now,
+    ).run();
+  }
+
+  return { months, currentPeriodEnd: nextIso };
+}
+
+async function processPayPalCaptureCompleted(env, payload, now) {
+  const resource = payload?.resource || {};
+  const captureId = String(resource?.id || '').trim();
+  const orderId = String(resource?.supplementary_data?.related_ids?.order_id || '').trim();
+  const payerEmail = lower(resource?.payer?.email_address || '');
+  const amountValue = String(resource?.amount?.value || '').trim();
+  const amountCurrency = String(resource?.amount?.currency_code || '').trim().toUpperCase();
+  const status = String(resource?.status || '').trim().toUpperCase();
+  if(!captureId) {
+    return { handled: false, reason: 'capture_id_missing' };
+  }
+  if(status && status !== 'COMPLETED') {
+    return { handled: false, reason: 'capture_not_completed' };
+  }
+
+  const inserted = await env.DB.prepare(`
+    INSERT INTO billing_paypal_captures (
+      capture_id, order_id, payer_email, user_id, amount_value, amount_currency, created_at, updated_at
+    ) VALUES (?, ?, ?, NULL, ?, ?, ?, ?)
+    ON CONFLICT(capture_id) DO NOTHING
+  `).bind(
+    captureId,
+    orderId || null,
+    payerEmail || null,
+    amountValue || null,
+    amountCurrency || null,
+    now,
+    now,
+  ).run();
+  if((inserted.meta?.changes || 0) === 0) {
+    return { handled: true, duplicateCapture: true, captureId };
+  }
+
+  const expectedCurrency = String(env.PAYPAL_NCP_PLUS_CURRENCY || '').trim().toUpperCase();
+  if(expectedCurrency && amountCurrency && amountCurrency !== expectedCurrency) {
+    return { handled: true, captureId, linked: false, reason: 'currency_mismatch', amountCurrency, expectedCurrency };
+  }
+  const expectedAmount = String(env.PAYPAL_NCP_PLUS_AMOUNT || '').trim();
+  if(expectedAmount && amountValue && amountValue !== expectedAmount) {
+    return { handled: true, captureId, linked: false, reason: 'amount_mismatch', amountValue, expectedAmount };
+  }
+
+  if(!payerEmail || !isValidEmail(payerEmail)) {
+    return { handled: true, captureId, linked: false, reason: 'payer_email_missing' };
+  }
+
+  const user = await env.DB.prepare(`
+    SELECT id
+    FROM users
+    WHERE email_lower = ?
+    LIMIT 1
+  `).bind(payerEmail).first();
+
+  if(!user) {
+    return { handled: true, captureId, linked: false, reason: 'account_not_found', payerEmail };
+  }
+
+  const applied = await applyNcpPlusForUser(env, Number(user.id), captureId, payload, now);
+  await env.DB.prepare(`
+    UPDATE billing_paypal_captures
+    SET user_id = ?, updated_at = ?
+    WHERE capture_id = ?
+  `).bind(user.id, now, captureId).run();
+
+  return {
+    handled: true,
+    captureId,
+    linked: true,
+    userId: Number(user.id),
+    months: applied.months,
+    currentPeriodEnd: applied.currentPeriodEnd,
   };
 }
 
@@ -2489,13 +2662,18 @@ async function handlePayPalWebhook(context) {
     }
   }
 
+  let ncpResult = null;
+  if(eventType === 'PAYMENT.CAPTURE.COMPLETED') {
+    ncpResult = await processPayPalCaptureCompleted(env, payload, now);
+  }
+
   await env.DB.prepare(`
     UPDATE billing_webhook_events
     SET processed_at = ?
     WHERE event_id = ?
   `).bind(now, eventId).run();
 
-  return json({ ok: true });
+  return json({ ok: true, ncp: ncpResult });
 }
 
 async function handleMySubscription(context) {

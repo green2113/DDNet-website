@@ -23,6 +23,7 @@ export default function PlanStorePage() {
         <p className="eyebrow">Billing</p>
         <h1>Subscription Plans</h1>
         <p className="lead">Choose a plan and continue to the secure PayPal subscription page.</p>
+        <p className="muted">Automatic activation works when the PayPal payer email matches your account email.</p>
       </section>
 
       <section className="plan-grid">
