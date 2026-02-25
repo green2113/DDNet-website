@@ -27,6 +27,7 @@ import iconEnvelope from '../assets/icons/icon-envelope.svg';
 import iconUser from '../assets/icons/icon-user.svg';
 import iconSiren from '../assets/icons/icon-siren.svg';
 import iconKey from '../assets/icons/icon-key.svg';
+import iconCreditCard from '../assets/icons/icon-credit-card.svg';
 
 function maskEmail(value) {
   const email = String(value || '');
@@ -1017,8 +1018,8 @@ ${t('dashboard.accessReasonLine', { reason: banReasonText || '-' })}`
   const navItems = [
     { id: 'account', label: t('dashboard.accountTitle'), icon: iconUser },
     ...(canUseInvite ? [{ id: 'invite', label: t('dashboard.inviteTitle'), icon: iconEnvelope }] : []),
-    { id: 'subscription', label: t('dashboard.subscriptionNav'), icon: iconSiren },
     { id: 'codes', label: t('dashboard.gameCodeTitle'), icon: iconKey },
+    { id: 'subscription', label: t('dashboard.subscriptionNav'), icon: iconCreditCard },
   ];
 
   const onLogout = async () => {
@@ -1081,7 +1082,7 @@ ${t('dashboard.accessReasonLine', { reason: banReasonText || '-' })}`
                   aria-disabled="true"
                   title={trailSectionLockedTooltip}
                 >
-                  <span className="dashboard-nav-icon" aria-hidden="true"><img src={iconSiren} alt="" /></span>
+                  <span className="dashboard-nav-icon" aria-hidden="true"><img src={iconCreditCard} alt="" /></span>
                   <span>{t('dashboard.subscriptionTrailNav')}</span>
                 </button>
               </Tooltip>
@@ -1091,7 +1092,7 @@ ${t('dashboard.accessReasonLine', { reason: banReasonText || '-' })}`
                 type="button"
                 onClick={() => setActiveSection('subscription-trail')}
               >
-                <span className="dashboard-nav-icon" aria-hidden="true"><img src={iconSiren} alt="" /></span>
+                <span className="dashboard-nav-icon" aria-hidden="true"><img src={iconCreditCard} alt="" /></span>
                 <span>{t('dashboard.subscriptionTrailNav')}</span>
               </button>
             )}
