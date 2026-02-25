@@ -64,14 +64,11 @@ export default function PlanStorePage() {
 
       <section className="plan-grid">
         <article className="panel plan-card">
-          <h3>{t('plans.plusName')}</h3>
-          <p className="plan-price">{t('plans.plusPrice')}</p>
+          <h3>{t('plans.starterName')}</h3>
+          <p className="plan-price">{t('plans.starterPrice')}</p>
           <ul className="plan-features">
-            <li>{t('plans.plusFeatureTrail')}</li>
-            <li>{t('plans.plusFeatureNameCooldown')}</li>
-            <li>{t('plans.plusFeatureInvite')}</li>
-            <li>{t('plans.plusFeatureIncludesStarter')}</li>
-            <li>{t('plans.plusFeatureAutoApply')}</li>
+            <li>{t('plans.starterFeatureNameCooldown')}</li>
+            <li>{t('plans.starterFeatureInvite')}</li>
           </ul>
 
           <div className="plan-actions">
@@ -91,12 +88,13 @@ export default function PlanStorePage() {
         </article>
 
         <article className="panel plan-card">
-          <h3>{t('plans.starterName')}</h3>
-          <p className="plan-price">{t('plans.starterPrice')}</p>
+          <h3>{t('plans.plusName')}</h3>
+          <p className="plan-price">{t('plans.plusPrice')}</p>
           <ul className="plan-features">
-            <li>{t('plans.starterFeatureNameCooldown')}</li>
-            <li>{t('plans.starterFeatureInvite')}</li>
-            <li>{t('plans.starterFeatureAutoApply')}</li>
+            <li>{t('plans.plusFeatureTrail')}</li>
+            <li>{t('plans.plusFeatureNameCooldown')}</li>
+            <li>{t('plans.plusFeatureInvite')}</li>
+            <li>{t('plans.plusFeatureIncludesStarter')}</li>
           </ul>
 
           <div className="plan-actions">
