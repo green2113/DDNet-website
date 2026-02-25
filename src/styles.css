@@ -310,9 +310,8 @@ h3 {
 }
 
 .dashboard-sub-nav-btn {
-  margin-left: 18px;
-  width: calc(100% - 18px);
-  font-size: 0.9rem;
+  width: 100%;
+  font-size: 0.94rem;
 }
 
 .dashboard-nav-btn.is-locked,
@@ -1337,11 +1336,6 @@ button.btn {
 
   .dashboard-nav {
     grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
-  }
-
-  .dashboard-sub-nav-btn {
-    margin-left: 0;
-    width: 100%;
   }
 
   .dashboard-codes-grid {

@@ -1310,7 +1310,6 @@ ${t('dashboard.accessReasonLine', { reason: banReasonText || '-' })}`
           {activeSection === 'subscription' ? (
             <article className="panel">
               <h3>{t('dashboard.subscriptionTitle')}</h3>
-              <p className="muted">{t('dashboard.subscriptionBody')}</p>
               <dl className="info subscription-info">
                 <dt>{t('dashboard.subscriptionCurrentPlan')}</dt>
                 <dd>{subscriptionLoading ? t('dashboard.subscriptionLoading') : currentPlanLabel}</dd>
