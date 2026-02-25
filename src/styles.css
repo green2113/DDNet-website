@@ -641,6 +641,10 @@ h3 {
   gap: 7px;
 }
 
+.trail-mode-box.is-disabled {
+  opacity: 0.72;
+}
+
 .trail-mode-label {
   margin: 0;
   color: #a4b7df;
@@ -663,6 +667,14 @@ h3 {
   gap: 10px;
   cursor: pointer;
   text-align: left;
+}
+
+.trail-mode-trigger:disabled {
+  cursor: not-allowed;
+  background: rgba(5, 9, 20, 0.84);
+  border-color: rgba(109, 129, 173, 0.32);
+  color: rgba(204, 219, 248, 0.74);
+  box-shadow: none;
 }
 
 .trail-mode-trigger:focus,
