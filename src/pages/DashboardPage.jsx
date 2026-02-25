@@ -4,8 +4,10 @@ import {
   adminBanAccount,
   adminDeletePatreonTier,
   adminGetPatreonTiers,
+  adminGetTrailSettings,
   adminSearchUsers,
   adminUnbanAccount,
+  adminUpdateTrailSettings,
   adminUpsertPatreonTier,
   getCurrentDummyGameCode,
   getCurrentGameCode,
@@ -173,6 +175,10 @@ export default function DashboardPage() {
   const [adminPatreonTiers, setAdminPatreonTiers] = useState([]);
   const [adminPatreonLoading, setAdminPatreonLoading] = useState(false);
   const [adminPatreonSubmitting, setAdminPatreonSubmitting] = useState(false);
+  const [adminTrailEnabled, setAdminTrailEnabled] = useState(false);
+  const [adminTrailMode, setAdminTrailMode] = useState(1);
+  const [adminTrailLoading, setAdminTrailLoading] = useState(false);
+  const [adminTrailSubmitting, setAdminTrailSubmitting] = useState(false);
   const adminPickerRef = useRef(null);
   const adminSearchInputRef = useRef(null);
   const adminUsersRequestIdRef = useRef(0);
@@ -200,6 +206,7 @@ export default function DashboardPage() {
   const canSaveDummyName = editingDummyName && !dummyNameCooldownActive && !savingDummyName && trimmedDummyName.length > 0 && trimmedDummyName !== currentDummyName;
   const isDummyNameInputActive = editingDummyName || showDummyFirstIssue;
   const isAdmin = Number(user?.is_admin || 0) === 1;
+  const isAdminSection = activeSection === 'admin-ban' || activeSection === 'admin-trail';
   const verifyRemainingSeconds = Math.min(600, Math.max(0, Math.ceil(verifyRemainingMs / 1000)));
   const verifyTimerText = verifyRemainingSeconds > 0
     ? `${String(Math.floor(verifyRemainingSeconds / 60)).padStart(2, '0')}:${String(verifyRemainingSeconds % 60).padStart(2, '0')}`
@@ -244,10 +251,10 @@ export default function DashboardPage() {
   };
 
   useEffect(() => {
-    if(!isAdmin && activeSection === 'admin-ban') {
+    if(!isAdmin && isAdminSection) {
       setActiveSection('account');
     }
-  }, [isAdmin, activeSection]);
+  }, [isAdmin, isAdminSection]);
 
   useEffect(() => {
     if(!isAdmin || activeSection !== 'admin-ban') {
@@ -260,6 +267,30 @@ export default function DashboardPage() {
     return () => {
       adminUsersRequestIdRef.current += 1;
     };
+  }, [isAdmin, activeSection]);
+
+  const refreshAdminTrailSettings = async () => {
+    setAdminTrailLoading(true);
+    try {
+      const result = await adminGetTrailSettings();
+      setAdminTrailEnabled(Boolean(result?.trailEnabled));
+      const modeRaw = Number(result?.trailMode || 1);
+      const normalizedMode = Number.isFinite(modeRaw) && modeRaw >= 1 && modeRaw <= 3 ? Math.floor(modeRaw) : 1;
+      setAdminTrailMode(normalizedMode);
+    } catch (err) {
+      setAdminTrailEnabled(false);
+      setAdminTrailMode(1);
+      setFeedback({ type: 'error', message: err.message });
+    } finally {
+      setAdminTrailLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if(!isAdmin || activeSection !== 'admin-trail') {
+      return;
+    }
+    refreshAdminTrailSettings();
   }, [isAdmin, activeSection]);
 
   useEffect(() => {
@@ -745,6 +776,25 @@ export default function DashboardPage() {
     }
   };
 
+  const onAdminTrailSave = async () => {
+    if(adminTrailSubmitting) {
+      return;
+    }
+    setAdminTrailSubmitting(true);
+    setFeedback(null);
+    try {
+      await adminUpdateTrailSettings({
+        enabled: adminTrailEnabled ? 1 : 0,
+        mode: adminTrailMode,
+      });
+      setFeedback({ type: 'ok', message: t('dashboard.adminTrailSaved') });
+    } catch (err) {
+      setFeedback({ type: 'error', message: err.message });
+    } finally {
+      setAdminTrailSubmitting(false);
+    }
+  };
+
   const displayCode = loadingCode
     ? '••••••••••••••••••••'
     : (!gameCode ? '-' : (revealed ? gameCode : '•'.repeat(gameCode.length)));
@@ -923,6 +973,14 @@ ${t('dashboard.accessReasonLine', { reason: banReasonText || '-' })}`
               >
                 <span className="dashboard-nav-icon" aria-hidden="true"><img src={iconSiren} alt="" /></span>
                 <span>{t('dashboard.adminBanNav')}</span>
+              </button>
+              <button
+                className={`dashboard-nav-btn${activeSection === 'admin-trail' ? ' active' : ''}`}
+                type="button"
+                onClick={() => setActiveSection('admin-trail')}
+              >
+                <span className="dashboard-nav-icon" aria-hidden="true"><img src={iconSiren} alt="" /></span>
+                <span>{t('dashboard.adminTrailNav')}</span>
               </button>
             </div>
           ) : null}
@@ -1460,6 +1518,60 @@ ${t('dashboard.accessReasonLine', { reason: banReasonText || '-' })}`
                     ))
                   )}
                 </div>
+              </div>
+            </article>
+          ) : null}
+
+          {activeSection === 'admin-trail' && isAdmin ? (
+            <article className="panel">
+              <h3>{t('dashboard.adminTrailTitle')}</h3>
+              <p className="muted">{t('dashboard.adminTrailBody')}</p>
+              <div className="admin-form-grid">
+                <label>
+                  {t('dashboard.adminTrailToggleLabel')}
+                  <div className="admin-ban-mode-toggle">
+                    <button
+                      className={`btn ghost admin-ban-mode-btn${!adminTrailEnabled ? ' active' : ''}`}
+                      type="button"
+                      aria-pressed={!adminTrailEnabled}
+                      onClick={() => setAdminTrailEnabled(false)}
+                      disabled={adminTrailLoading || adminTrailSubmitting}
+                    >
+                      {!adminTrailEnabled ? `✓ ${t('dashboard.adminTrailOff')}` : t('dashboard.adminTrailOff')}
+                    </button>
+                    <button
+                      className={`btn ghost admin-ban-mode-btn${adminTrailEnabled ? ' active' : ''}`}
+                      type="button"
+                      aria-pressed={adminTrailEnabled}
+                      onClick={() => setAdminTrailEnabled(true)}
+                      disabled={adminTrailLoading || adminTrailSubmitting}
+                    >
+                      {adminTrailEnabled ? `✓ ${t('dashboard.adminTrailOn')}` : t('dashboard.adminTrailOn')}
+                    </button>
+                  </div>
+                </label>
+                <label>
+                  {t('dashboard.adminTrailModeLabel')}
+                  <select
+                    value={String(adminTrailMode)}
+                    onChange={(event) => setAdminTrailMode(Number(event.target.value) || 1)}
+                    disabled={adminTrailLoading || adminTrailSubmitting}
+                  >
+                    <option value="1">{t('dashboard.adminTrailMode1')}</option>
+                    <option value="2">{t('dashboard.adminTrailMode2')}</option>
+                    <option value="3">{t('dashboard.adminTrailMode3')}</option>
+                  </select>
+                </label>
+              </div>
+              <div className="admin-actions">
+                <button
+                  className="btn admin-main-action"
+                  type="button"
+                  onClick={onAdminTrailSave}
+                  disabled={adminTrailLoading || adminTrailSubmitting}
+                >
+                  {adminTrailSubmitting ? t('dashboard.adminTrailSaving') : t('dashboard.adminTrailSave')}
+                </button>
               </div>
             </article>
           ) : null}

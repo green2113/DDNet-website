@@ -161,3 +161,14 @@ export async function adminDeletePatreonTier(externalTierId) {
     method: 'DELETE',
   });
 }
+
+export async function adminGetTrailSettings() {
+  return api('/api/admin/trail-settings', { method: 'GET' });
+}
+
+export async function adminUpdateTrailSettings(payload) {
+  return api('/api/admin/trail-settings', {
+    method: 'POST',
+    body: JSON.stringify(payload || {}),
+  });
+}

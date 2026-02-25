@@ -45,6 +45,10 @@ const PASSWORD_RESET_GENERIC_VERIFY_MESSAGE = 'Invalid email or reset code';
 const PATREON_OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
 const PATREON_TOKEN_REFRESH_SKEW_MS = 30 * 1000;
 const PATREON_SYNC_STALE_DEFAULT_SECONDS = 6 * 60 * 60;
+const TRAIL_MODE_MIN = 1;
+const TRAIL_MODE_MAX = 3;
+
+let s_TrailSettingsReady = false;
 
 function cookieSecure(request) {
   return new URL(request.url).protocol === 'https:';
@@ -1804,6 +1808,29 @@ async function handleUpdateDummyName(context) {
   return json({ ok: true, user, message: 'Dummy name updated' });
 }
 
+async function ensureTrailSettingsTable(env) {
+  if(s_TrailSettingsReady) {
+    return;
+  }
+
+  await env.DB.prepare(`
+    CREATE TABLE IF NOT EXISTS user_trail_settings (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL UNIQUE,
+      enabled INTEGER NOT NULL DEFAULT 0,
+      mode INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (user_id) REFERENCES users(id)
+    )
+  `).run();
+  await env.DB.prepare(`
+    CREATE INDEX IF NOT EXISTS idx_user_trail_settings_user_id
+    ON user_trail_settings(user_id)
+  `).run();
+  s_TrailSettingsReady = true;
+}
+
 function defaultGameTrailState() {
   return {
     plusActive: false,
@@ -1820,6 +1847,20 @@ async function loadGameTrailState(env, accountId) {
   }
 
   try {
+    await ensureTrailSettingsTable(env);
+
+    const trailRow = await env.DB.prepare(`
+      SELECT enabled, mode
+      FROM user_trail_settings
+      WHERE user_id = ?
+      LIMIT 1
+    `).bind(id).first();
+    const trailEnabled = Number(trailRow?.enabled || 0) === 1;
+    let trailMode = Number(trailRow?.mode || 1);
+    if(!Number.isFinite(trailMode) || trailMode < TRAIL_MODE_MIN || trailMode > TRAIL_MODE_MAX) {
+      trailMode = 1;
+    }
+
     const row = await env.DB.prepare(`
       SELECT status, current_period_end
       FROM billing_entitlements
@@ -1828,26 +1869,37 @@ async function loadGameTrailState(env, accountId) {
     `).bind(id).first();
 
     if(!row) {
-      return defaults;
+      return {
+        plusActive: false,
+        trailEnabled,
+        trailMode,
+      };
     }
 
     if(lower(row.status || '') !== 'active') {
-      return defaults;
+      return {
+        plusActive: false,
+        trailEnabled,
+        trailMode,
+      };
     }
 
     const periodEndRaw = String(row.current_period_end || '').trim();
     if(periodEndRaw) {
       const periodEndMs = Date.parse(periodEndRaw);
       if(!Number.isFinite(periodEndMs) || periodEndMs <= Date.now()) {
-        return defaults;
+        return {
+          plusActive: false,
+          trailEnabled,
+          trailMode,
+        };
       }
     }
 
-    // Web UI trail settings are not released yet, keep trail disabled by default.
     return {
       plusActive: true,
-      trailEnabled: false,
-      trailMode: 1,
+      trailEnabled,
+      trailMode,
     };
   } catch {
     // Fail closed when billing tables are missing or query errors occur.
@@ -2841,6 +2893,69 @@ async function handleAdminPatreonTierDelete(context, externalTierId) {
   return json({ ok: true, externalTierId: id, active: 0 });
 }
 
+async function handleAdminTrailSettingsGet(context) {
+  const { env } = context;
+  const auth = await requireAdmin(context);
+  if(auth.error) {
+    return auth.error;
+  }
+
+  await ensureTrailSettingsTable(env);
+
+  const row = await env.DB.prepare(`
+    SELECT enabled, mode
+    FROM user_trail_settings
+    WHERE user_id = ?
+    LIMIT 1
+  `).bind(auth.user.id).first();
+
+  let trailMode = Number(row?.mode || 1);
+  if(!Number.isFinite(trailMode) || trailMode < TRAIL_MODE_MIN || trailMode > TRAIL_MODE_MAX) {
+    trailMode = 1;
+  }
+
+  return json({
+    ok: true,
+    trailEnabled: Number(row?.enabled || 0) === 1,
+    trailMode,
+  });
+}
+
+async function handleAdminTrailSettingsSet(context) {
+  const { env, request } = context;
+  const auth = await requireAdmin(context);
+  if(auth.error) {
+    return auth.error;
+  }
+
+  await ensureTrailSettingsTable(env);
+
+  const body = await parseRequestBody(request);
+  const data = typeof body === 'string' ? {} : (body || {});
+  const trailEnabled = Number(data.enabled ? 1 : 0) === 1;
+  let trailMode = Number(data.mode === undefined ? 1 : data.mode);
+  if(!Number.isFinite(trailMode) || trailMode < TRAIL_MODE_MIN || trailMode > TRAIL_MODE_MAX) {
+    trailMode = 1;
+  }
+
+  const now = nowIso();
+  await env.DB.prepare(`
+    INSERT INTO user_trail_settings (
+      user_id, enabled, mode, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(user_id) DO UPDATE SET
+      enabled = excluded.enabled,
+      mode = excluded.mode,
+      updated_at = excluded.updated_at
+  `).bind(auth.user.id, trailEnabled ? 1 : 0, trailMode, now, now).run();
+
+  return json({
+    ok: true,
+    trailEnabled,
+    trailMode,
+  });
+}
+
 async function handleAdminBan(context) {
   const { request, env } = context;
   const auth = await requireAdmin(context);
@@ -3089,5 +3204,14 @@ export async function onRequest(context) {
     const externalTierId = decodeURIComponent(path.slice('/admin/patreon/tiers/'.length));
     return handleAdminPatreonTierDelete(context, externalTierId);
   }
+
+  if(request.method === 'GET' && path === '/admin/trail-settings') {
+    return handleAdminTrailSettingsGet(context);
+  }
+
+  if(request.method === 'POST' && path === '/admin/trail-settings') {
+    return handleAdminTrailSettingsSet(context);
+  }
+
   return json({ ok: false, message: 'API route not found' }, 404);
 }
