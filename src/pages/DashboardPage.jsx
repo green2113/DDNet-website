@@ -170,6 +170,7 @@ export default function DashboardPage() {
   const [adminSubmitting, setAdminSubmitting] = useState(false);
   const [showAdminBanConfirm, setShowAdminBanConfirm] = useState(false);
   const [adminPatreonTierId, setAdminPatreonTierId] = useState('');
+  const [adminPatreonPlanKey, setAdminPatreonPlanKey] = useState('plus');
   const [adminPatreonTierTitle, setAdminPatreonTierTitle] = useState('');
   const [adminPatreonTierActive, setAdminPatreonTierActive] = useState(true);
   const [adminPatreonTiers, setAdminPatreonTiers] = useState([]);
@@ -177,6 +178,7 @@ export default function DashboardPage() {
   const [adminPatreonSubmitting, setAdminPatreonSubmitting] = useState(false);
   const [adminTrailEnabled, setAdminTrailEnabled] = useState(false);
   const [adminTrailMode, setAdminTrailMode] = useState(1);
+  const [adminTrailBaseline, setAdminTrailBaseline] = useState(null);
   const [adminTrailLoading, setAdminTrailLoading] = useState(false);
   const [adminTrailSubmitting, setAdminTrailSubmitting] = useState(false);
   const [adminTrailMenuOpen, setAdminTrailMenuOpen] = useState(false);
@@ -226,6 +228,9 @@ export default function DashboardPage() {
   ];
   const currentTrailModeLabel = trailModeOptions.find((entry) => entry.value === adminTrailMode)?.label || trailModeOptions[0].label;
   const trailModeDisabled = !adminTrailEnabled || adminTrailLoading || adminTrailSubmitting;
+  const trailSaveDirty = Boolean(adminTrailBaseline) &&
+    (adminTrailEnabled !== Boolean(adminTrailBaseline.enabled) || adminTrailMode !== Number(adminTrailBaseline.mode));
+  const trailSaveDisabled = adminTrailLoading || adminTrailSubmitting || !trailSaveDirty;
   const refreshAdminUsers = async () => {
     const requestId = ++adminUsersRequestIdRef.current;
     setAdminUsersLoading(true);
@@ -282,13 +287,16 @@ export default function DashboardPage() {
     setAdminTrailLoading(true);
     try {
       const result = await adminGetTrailSettings();
-      setAdminTrailEnabled(Boolean(result?.trailEnabled));
+      const enabled = Boolean(result?.trailEnabled);
       const modeRaw = Number(result?.trailMode || 1);
       const normalizedMode = Number.isFinite(modeRaw) && modeRaw >= 1 && modeRaw <= 3 ? Math.floor(modeRaw) : 1;
+      setAdminTrailEnabled(enabled);
       setAdminTrailMode(normalizedMode);
+      setAdminTrailBaseline({ enabled, mode: normalizedMode });
     } catch (err) {
       setAdminTrailEnabled(false);
       setAdminTrailMode(1);
+      setAdminTrailBaseline(null);
       setFeedback({ type: 'error', message: err.message });
     } finally {
       setAdminTrailLoading(false);
@@ -782,10 +790,12 @@ export default function DashboardPage() {
     setFeedback(null);
     try {
       await adminUpsertPatreonTier({
+        planKey: adminPatreonPlanKey,
         externalTierId: tierId,
         tierTitle: String(adminPatreonTierTitle || '').trim(),
         active: adminPatreonTierActive ? 1 : 0,
       });
+      setAdminPatreonPlanKey('plus');
       setAdminPatreonTierId('');
       setAdminPatreonTierTitle('');
       setAdminPatreonTierActive(true);
@@ -826,6 +836,7 @@ export default function DashboardPage() {
         enabled: adminTrailEnabled ? 1 : 0,
         mode: adminTrailMode,
       });
+      setAdminTrailBaseline({ enabled: adminTrailEnabled, mode: adminTrailMode });
       setFeedback({ type: 'ok', message: t('dashboard.adminTrailSaved') });
     } catch (err) {
       setFeedback({ type: 'error', message: err.message });
@@ -1482,9 +1493,19 @@ ${t('dashboard.accessReasonLine', { reason: banReasonText || '-' })}`
               ) : null}
 
               <div className="dashboard-nav-divider" />
-              <h3>Patreon Plus Tier Rules</h3>
-              <p className="muted">Only active patrons in allowed tiers are treated as Plus.</p>
+              <h3>Patreon Tier Rules</h3>
+              <p className="muted">Only active patrons in allowed Starter/Plus tiers receive matching benefits.</p>
               <div className="admin-form-grid">
+                <label>
+                  Plan Key
+                  <select
+                    value={adminPatreonPlanKey}
+                    onChange={(event) => setAdminPatreonPlanKey(event.target.value === 'starter' ? 'starter' : 'plus')}
+                  >
+                    <option value="plus">Plus</option>
+                    <option value="starter">Starter</option>
+                  </select>
+                </label>
                 <label>
                   Patreon Tier ID
                   <input
@@ -1520,6 +1541,7 @@ ${t('dashboard.accessReasonLine', { reason: banReasonText || '-' })}`
 
               <div className="admin-tier-list">
                 <div className="admin-tier-list-header">
+                  <span>Plan</span>
                   <span>Tier ID</span>
                   <span>Title</span>
                   <span>Status</span>
@@ -1533,6 +1555,7 @@ ${t('dashboard.accessReasonLine', { reason: banReasonText || '-' })}`
                   ) : (
                     adminPatreonTiers.map((tier) => (
                       <div className="admin-tier-row" key={tier.external_tier_id}>
+                        <span>{String(tier.plan_key || '-').toUpperCase()}</span>
                         <span>{tier.external_tier_id}</span>
                         <span>{tier.tier_title || '-'}</span>
                         <span className={Number(tier.active || 0) === 1 ? 'status-text status-normal' : 'status-text status-temporary'}>
@@ -1623,7 +1646,7 @@ ${t('dashboard.accessReasonLine', { reason: banReasonText || '-' })}`
                   className="btn admin-main-action"
                   type="button"
                   onClick={onAdminTrailSave}
-                  disabled={adminTrailLoading || adminTrailSubmitting}
+                  disabled={trailSaveDisabled}
                 >
                   {adminTrailSubmitting ? t('dashboard.adminTrailSaving') : t('dashboard.adminTrailSave')}
                 </button>

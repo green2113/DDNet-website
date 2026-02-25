@@ -27,8 +27,13 @@ const AUTH_COOKIE = 'ddnet_auth';
 const SESSION_MAX_AGE_DEFAULT = 30 * 24 * 60 * 60;
 const SESSION_MAX_AGE_MIN = 5 * 60;
 const SESSION_MAX_AGE_MAX = 90 * 24 * 60 * 60;
-const NAME_CHANGE_COOLDOWN_DAYS = 10;
-const NAME_CHANGE_COOLDOWN_MS = NAME_CHANGE_COOLDOWN_DAYS * 24 * 60 * 60 * 1000;
+const DAY_MS = 24 * 60 * 60 * 1000;
+const NAME_CHANGE_COOLDOWN_DAYS_DEFAULT = 10;
+const NAME_CHANGE_COOLDOWN_DAYS_STARTER = 3;
+const NAME_CHANGE_COOLDOWN_DAYS_PLUS = 1;
+const NAME_CHANGE_COOLDOWN_MS_DEFAULT = NAME_CHANGE_COOLDOWN_DAYS_DEFAULT * DAY_MS;
+const INVITE_QUOTA_STARTER = 10;
+const INVITE_QUOTA_PLUS = 20;
 const EMAIL_VERIFY_CODE_TTL_MS = 10 * 60 * 1000;
 const EMAIL_VERIFY_RESEND_COOLDOWN_MS = 60 * 1000;
 const PASSWORD_RESET_CODE_TTL_MS = 10 * 60 * 1000;
@@ -468,6 +473,34 @@ async function ensureUsersSessionVersionColumn(env) {
   return await hasUsersColumn(env, 'session_version');
 }
 
+async function ensureUsersInviteQuotaBaseColumn(env) {
+  if(!(await hasUsersColumn(env, 'invite_quota_base'))) {
+    try {
+      await env.DB.prepare(`
+        ALTER TABLE users ADD COLUMN invite_quota_base INTEGER
+      `).run();
+    } catch(err) {
+      const message = String(err?.message || err).toLowerCase();
+      if(!message.includes('duplicate column')) {
+        throw err;
+      }
+    }
+  }
+
+  const hasColumn = await hasUsersColumn(env, 'invite_quota_base');
+  if(!hasColumn) {
+    return false;
+  }
+
+  await env.DB.prepare(`
+    UPDATE users
+    SET invite_quota_base = invite_quota
+    WHERE invite_quota_base IS NULL
+  `).run();
+
+  return true;
+}
+
 async function getUserSessionVersion(env, userId) {
   const hasSessionVersion = await ensureUsersSessionVersionColumn(env);
   if(!hasSessionVersion) {
@@ -718,6 +751,7 @@ async function handleRegister(context) {
   const signupIp = getClientIp(request);
   const inviteQuotaDefault = Number(env.INVITE_DEFAULT_QUOTA || 1);
   const supportsPlainGameCode = await hasGameCodePlainColumn(env);
+  const hasInviteQuotaBase = await ensureUsersInviteQuotaBaseColumn(env);
   const hasEmailVerifyColumns = await hasUsersColumn(env, 'email_verified')
     && await hasUsersColumn(env, 'email_verify_code_hash')
     && await hasUsersColumn(env, 'email_verify_expires_at')
@@ -766,6 +800,7 @@ async function handleRegister(context) {
             email_verified_at,
             invite_code,
             invite_quota,
+            ${hasInviteQuotaBase ? 'invite_quota_base,' : ''}
             invite_used,
             inviter_id,
             country_signup,
@@ -773,7 +808,7 @@ async function handleRegister(context) {
             game_login_code_plain,
             game_login_code_rotated_at,
             created_at
-          ) VALUES (?, ?, ?, ?, ?, 0, NULL, NULL, NULL, NULL, ?, ?, 0, ?, ?, ?, ?, ?, ?)
+          ) VALUES (?, ?, ?, ?, ?, 0, NULL, NULL, NULL, NULL, ?, ?, ${hasInviteQuotaBase ? '?, ' : ''}0, ?, ?, ?, ?, ?, ?)
         `).bind(
           username,
           lower(username),
@@ -782,6 +817,7 @@ async function handleRegister(context) {
           passwordHash,
           inviteCode,
           inviteQuota,
+          ...(hasInviteQuotaBase ? [inviteQuota] : []),
           inviter ? inviter.id : null,
           country,
             pendingGameCodeHash,
@@ -803,13 +839,14 @@ async function handleRegister(context) {
             email_verified_at,
             invite_code,
             invite_quota,
+            ${hasInviteQuotaBase ? 'invite_quota_base,' : ''}
             invite_used,
             inviter_id,
             country_signup,
             game_login_code_hash,
             game_login_code_rotated_at,
             created_at
-          ) VALUES (?, ?, ?, ?, ?, 0, NULL, NULL, NULL, NULL, ?, ?, 0, ?, ?, ?, ?, ?)
+          ) VALUES (?, ?, ?, ?, ?, 0, NULL, NULL, NULL, NULL, ?, ?, ${hasInviteQuotaBase ? '?, ' : ''}0, ?, ?, ?, ?, ?)
         `).bind(
           username,
           lower(username),
@@ -818,6 +855,7 @@ async function handleRegister(context) {
           passwordHash,
           inviteCode,
           inviteQuota,
+          ...(hasInviteQuotaBase ? [inviteQuota] : []),
           inviter ? inviter.id : null,
           country,
             pendingGameCodeHash,
@@ -1501,7 +1539,9 @@ async function handleUpdateProfileName(context) {
     }, 429);
   }
 
-  const nextAllowedAt = new Date(Date.now() + NAME_CHANGE_COOLDOWN_MS).toISOString();
+  const planFlags = await loadPlanActivityFlags(env, result.user.id);
+  const benefitValues = resolvePlanBenefitValues(planFlags);
+  const nextAllowedAt = new Date(Date.now() + benefitValues.nameCooldownDays * DAY_MS).toISOString();
 
   const updated = await env.DB.prepare(`
     UPDATE users
@@ -1794,7 +1834,7 @@ async function handleUpdateDummyName(context) {
     }, 429);
   }
 
-  const nextAllowedAt = new Date(Date.now() + NAME_CHANGE_COOLDOWN_MS).toISOString();
+  const nextAllowedAt = new Date(Date.now() + NAME_CHANGE_COOLDOWN_MS_DEFAULT).toISOString();
 
   const updated = await env.DB.prepare(`
     UPDATE users
@@ -1831,6 +1871,150 @@ async function ensureTrailSettingsTable(env) {
   s_TrailSettingsReady = true;
 }
 
+function entitlementRowIsActive(row) {
+  if(!row) {
+    return false;
+  }
+  if(lower(row.status || '') !== 'active') {
+    return false;
+  }
+
+  const periodEndRaw = String(row.current_period_end || '').trim();
+  if(!periodEndRaw) {
+    return true;
+  }
+
+  const periodEndMs = Date.parse(periodEndRaw);
+  return Number.isFinite(periodEndMs) && periodEndMs > Date.now();
+}
+
+async function loadPlanActivityFlags(env, userId) {
+  const id = Number(userId);
+  if(!Number.isFinite(id) || id <= 0) {
+    return { starterActive: false, plusActive: false };
+  }
+
+  try {
+    const rows = await env.DB.prepare(`
+      SELECT plan_key, status, current_period_end
+      FROM billing_entitlements
+      WHERE user_id = ? AND plan_key IN ('starter', 'plus')
+    `).bind(id).all();
+
+    let starterActive = false;
+    let plusActive = false;
+
+    for(const row of rows?.results || []) {
+      const planKey = lower(row?.plan_key || '');
+      const isActive = entitlementRowIsActive(row);
+      if(planKey === 'starter' && isActive) {
+        starterActive = true;
+      } else if(planKey === 'plus' && isActive) {
+        plusActive = true;
+      }
+    }
+
+    if(plusActive) {
+      starterActive = true;
+    }
+
+    return { starterActive, plusActive };
+  } catch {
+    return { starterActive: false, plusActive: false };
+  }
+}
+
+function resolvePlanBenefitValues(planFlags) {
+  const plusActive = !!planFlags?.plusActive;
+  const starterActive = plusActive || !!planFlags?.starterActive;
+
+  if(plusActive) {
+    return {
+      starterActive: true,
+      plusActive: true,
+      inviteQuotaTarget: INVITE_QUOTA_PLUS,
+      nameCooldownDays: NAME_CHANGE_COOLDOWN_DAYS_PLUS,
+    };
+  }
+  if(starterActive) {
+    return {
+      starterActive: true,
+      plusActive: false,
+      inviteQuotaTarget: INVITE_QUOTA_STARTER,
+      nameCooldownDays: NAME_CHANGE_COOLDOWN_DAYS_STARTER,
+    };
+  }
+  return {
+    starterActive: false,
+    plusActive: false,
+    inviteQuotaTarget: null,
+    nameCooldownDays: NAME_CHANGE_COOLDOWN_DAYS_DEFAULT,
+  };
+}
+
+async function applyPlanBenefits(env, userId, planFlags) {
+  const id = Number(userId);
+  if(!Number.isFinite(id) || id <= 0) {
+    return;
+  }
+
+  const normalized = resolvePlanBenefitValues(planFlags);
+  await ensureUsersInviteQuotaBaseColumn(env);
+
+  const row = await env.DB.prepare(`
+    SELECT invite_quota, invite_quota_base, name_change_available_at
+    FROM users
+    WHERE id = ?
+    LIMIT 1
+  `).bind(id).first();
+  if(!row) {
+    return;
+  }
+
+  const currentQuota = Number(row.invite_quota || 0);
+  const baseRaw = Number(row.invite_quota_base);
+  const fallbackBase = Number.isFinite(currentQuota) ? Math.max(0, Math.floor(currentQuota)) : 0;
+  const baseQuota = Number.isFinite(baseRaw) ? Math.max(0, Math.floor(baseRaw)) : fallbackBase;
+  const targetQuota = normalized.inviteQuotaTarget === null
+    ? baseQuota
+    : Math.max(baseQuota, normalized.inviteQuotaTarget);
+
+  if(!Number.isFinite(baseRaw) || baseRaw < 0) {
+    await env.DB.prepare(`
+      UPDATE users
+      SET invite_quota_base = ?
+      WHERE id = ?
+    `).bind(baseQuota, id).run();
+  }
+
+  if(!Number.isFinite(currentQuota) || Math.floor(currentQuota) !== targetQuota) {
+    await env.DB.prepare(`
+      UPDATE users
+      SET invite_quota = ?
+      WHERE id = ?
+    `).bind(targetQuota, id).run();
+  }
+
+  if(normalized.nameCooldownDays >= NAME_CHANGE_COOLDOWN_DAYS_DEFAULT) {
+    return;
+  }
+
+  const currentNextAllowedRaw = String(row.name_change_available_at || '').trim();
+  const currentNextAllowedMs = currentNextAllowedRaw ? Date.parse(currentNextAllowedRaw) : NaN;
+  if(!Number.isFinite(currentNextAllowedMs) || currentNextAllowedMs <= Date.now()) {
+    return;
+  }
+
+  const targetNextAllowedMs = Date.now() + normalized.nameCooldownDays * DAY_MS;
+  if(currentNextAllowedMs > targetNextAllowedMs) {
+    await env.DB.prepare(`
+      UPDATE users
+      SET name_change_available_at = ?
+      WHERE id = ?
+    `).bind(new Date(targetNextAllowedMs).toISOString(), id).run();
+  }
+}
+
 function defaultGameTrailState() {
   return {
     plusActive: false,
@@ -1861,43 +2045,10 @@ async function loadGameTrailState(env, accountId) {
       trailMode = 1;
     }
 
-    const row = await env.DB.prepare(`
-      SELECT status, current_period_end
-      FROM billing_entitlements
-      WHERE user_id = ? AND plan_key = 'plus'
-      LIMIT 1
-    `).bind(id).first();
-
-    if(!row) {
-      return {
-        plusActive: false,
-        trailEnabled,
-        trailMode,
-      };
-    }
-
-    if(lower(row.status || '') !== 'active') {
-      return {
-        plusActive: false,
-        trailEnabled,
-        trailMode,
-      };
-    }
-
-    const periodEndRaw = String(row.current_period_end || '').trim();
-    if(periodEndRaw) {
-      const periodEndMs = Date.parse(periodEndRaw);
-      if(!Number.isFinite(periodEndMs) || periodEndMs <= Date.now()) {
-        return {
-          plusActive: false,
-          trailEnabled,
-          trailMode,
-        };
-      }
-    }
+    const planFlags = await loadPlanActivityFlags(env, id);
 
     return {
-      plusActive: true,
+      plusActive: planFlags.plusActive,
       trailEnabled,
       trailMode,
     };
@@ -2386,12 +2537,17 @@ function parsePatreonIdentity(payload, campaignId) {
   };
 }
 
-async function loadAllowedPlusTierIds(env) {
+async function loadAllowedTierIds(env, planKey) {
+  const normalizedPlanKey = lower(planKey || '');
+  if(normalizedPlanKey !== 'plus' && normalizedPlanKey !== 'starter') {
+    return new Set();
+  }
+
   const rows = await env.DB.prepare(`
     SELECT external_tier_id
     FROM billing_tier_rules
-    WHERE provider = 'patreon' AND plan_key = 'plus' AND active = 1
-  `).all();
+    WHERE provider = 'patreon' AND plan_key = ? AND active = 1
+  `).bind(normalizedPlanKey).all();
   const out = new Set();
   for(const row of rows?.results || []) {
     const tierId = String(row?.external_tier_id || '').trim();
@@ -2402,12 +2558,17 @@ async function loadAllowedPlusTierIds(env) {
   return out;
 }
 
-async function upsertPlusEntitlement(env, userId, providerRef, status, currentPeriodEnd, rawPayload) {
+async function upsertEntitlement(env, userId, planKey, providerRef, status, currentPeriodEnd, rawPayload) {
+  const normalizedPlanKey = lower(planKey || '');
+  if(normalizedPlanKey !== 'plus' && normalizedPlanKey !== 'starter') {
+    throw new Error(`Unsupported plan key: ${planKey}`);
+  }
+
   const now = nowIso();
   await env.DB.prepare(`
     INSERT INTO billing_entitlements (
       user_id, plan_key, provider, provider_ref, status, current_period_end, raw_payload, created_at, updated_at
-    ) VALUES (?, 'plus', 'patreon', ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, 'patreon', ?, ?, ?, ?, ?, ?)
     ON CONFLICT(user_id, plan_key) DO UPDATE SET
       provider = excluded.provider,
       provider_ref = excluded.provider_ref,
@@ -2417,6 +2578,7 @@ async function upsertPlusEntitlement(env, userId, providerRef, status, currentPe
       updated_at = excluded.updated_at
   `).bind(
     userId,
+    normalizedPlanKey,
     providerRef,
     status,
     currentPeriodEnd || null,
@@ -2443,9 +2605,12 @@ async function syncPatreonConnection(env, userId, accessToken, refreshToken, tok
     throw new Error('This Patreon account is already linked to another user');
   }
 
-  const allowedTierIds = await loadAllowedPlusTierIds(env);
-  const hasAllowedTier = parsed.tierIds.some((tierId) => allowedTierIds.has(tierId));
-  const entitlementStatus = parsed.activePatron && hasAllowedTier ? 'ACTIVE' : 'INACTIVE';
+  const allowedStarterTierIds = await loadAllowedTierIds(env, 'starter');
+  const allowedPlusTierIds = await loadAllowedTierIds(env, 'plus');
+  const hasStarterTier = parsed.tierIds.some((tierId) => allowedStarterTierIds.has(tierId));
+  const hasPlusTier = parsed.tierIds.some((tierId) => allowedPlusTierIds.has(tierId));
+  const plusActive = parsed.activePatron && hasPlusTier;
+  const starterActive = parsed.activePatron && (hasStarterTier || hasPlusTier);
   const now = nowIso();
 
   await env.DB.prepare(`
@@ -2475,26 +2640,31 @@ async function syncPatreonConnection(env, userId, accessToken, refreshToken, tok
     now,
   ).run();
 
-  await upsertPlusEntitlement(
-    env,
-    userId,
-    parsed.patreonUserId,
-    entitlementStatus,
-    parsed.currentPeriodEnd || null,
-    {
-      source,
-      activePatron: parsed.activePatron,
-      tierIds: parsed.tierIds,
-      allowedTierIds: Array.from(allowedTierIds),
-      identity: identityPayload,
-    },
-  );
+  await upsertEntitlement(env, userId, 'starter', parsed.patreonUserId, starterActive ? 'ACTIVE' : 'INACTIVE', parsed.currentPeriodEnd || null, {
+    source,
+    activePatron: parsed.activePatron,
+    tierIds: parsed.tierIds,
+    allowedTierIds: Array.from(allowedStarterTierIds),
+    includesPlusTier: hasPlusTier,
+    identity: identityPayload,
+  });
+
+  await upsertEntitlement(env, userId, 'plus', parsed.patreonUserId, plusActive ? 'ACTIVE' : 'INACTIVE', parsed.currentPeriodEnd || null, {
+    source,
+    activePatron: parsed.activePatron,
+    tierIds: parsed.tierIds,
+    allowedTierIds: Array.from(allowedPlusTierIds),
+    identity: identityPayload,
+  });
+
+  await applyPlanBenefits(env, userId, { starterActive, plusActive });
 
   return {
     patreonUserId: parsed.patreonUserId,
     activePatron: parsed.activePatron,
     tierIds: parsed.tierIds,
-    entitlementStatus,
+    starterActive,
+    plusActive,
     currentPeriodEnd: parsed.currentPeriodEnd || null,
   };
 }
@@ -2536,13 +2706,17 @@ async function syncPatreonForUserFromStoredConnection(env, request, userId) {
   return syncPatreonConnection(env, userId, accessToken, refreshToken, tokenExpiresAt, scope, identity, 'stale_sync');
 }
 
-async function loadPlusSubscription(env, userId) {
+async function loadSubscriptionByPlanKey(env, userId, planKey) {
+  const normalizedPlanKey = lower(planKey || '');
+  if(normalizedPlanKey !== 'plus' && normalizedPlanKey !== 'starter') {
+    return null;
+  }
   const row = await env.DB.prepare(`
     SELECT plan_key, provider, provider_ref, status, current_period_end, updated_at
     FROM billing_entitlements
-    WHERE user_id = ? AND plan_key = 'plus'
+    WHERE user_id = ? AND plan_key = ?
     LIMIT 1
-  `).bind(userId).first();
+  `).bind(userId, normalizedPlanKey).first();
   return row || null;
 }
 
@@ -2690,19 +2864,25 @@ async function handlePatreonDisconnect(context) {
     WHERE user_id = ?
   `).bind(auth.user.id).run();
 
-  const now = nowIso();
-  await env.DB.prepare(`
-    INSERT INTO billing_entitlements (
-      user_id, plan_key, provider, provider_ref, status, current_period_end, raw_payload, created_at, updated_at
-    ) VALUES (?, 'plus', 'patreon', NULL, 'INACTIVE', NULL, ?, ?, ?)
-    ON CONFLICT(user_id, plan_key) DO UPDATE SET
-      provider = 'patreon',
-      provider_ref = NULL,
-      status = 'INACTIVE',
-      current_period_end = NULL,
-      raw_payload = excluded.raw_payload,
-      updated_at = excluded.updated_at
-  `).bind(auth.user.id, JSON.stringify({ source: 'disconnect' }), now, now).run();
+  await upsertEntitlement(
+    env,
+    auth.user.id,
+    'starter',
+    null,
+    'INACTIVE',
+    null,
+    { source: 'disconnect' },
+  );
+  await upsertEntitlement(
+    env,
+    auth.user.id,
+    'plus',
+    null,
+    'INACTIVE',
+    null,
+    { source: 'disconnect' },
+  );
+  await applyPlanBenefits(env, auth.user.id, { starterActive: false, plusActive: false });
 
   return json({ ok: true, disconnected: true });
 }
@@ -2746,13 +2926,29 @@ async function handleMySubscription(context) {
     WHERE user_id = ?
     LIMIT 1
   `).bind(auth.user.id).first();
-  const subscription = await loadPlusSubscription(env, auth.user.id);
+  const subscription = await loadSubscriptionByPlanKey(env, auth.user.id, 'plus');
+  const starterSubscription = await loadSubscriptionByPlanKey(env, auth.user.id, 'starter');
+  const planFlags = await loadPlanActivityFlags(env, auth.user.id);
+  const benefits = resolvePlanBenefitValues(planFlags);
+  const inviteQuotaRow = await env.DB.prepare(`
+    SELECT invite_quota
+    FROM users
+    WHERE id = ?
+    LIMIT 1
+  `).bind(auth.user.id).first();
 
   return json({
     ok: true,
     patreonConnected: !!latestConnection,
     connection: latestConnection || null,
     subscription,
+    starterSubscription,
+    benefits: {
+      starterActive: benefits.starterActive,
+      plusActive: benefits.plusActive,
+      inviteQuota: Number(inviteQuotaRow?.invite_quota || 0),
+      nameCooldownDays: benefits.nameCooldownDays,
+    },
   });
 }
 
@@ -2829,10 +3025,10 @@ async function handleAdminPatreonTiers(context) {
   await ensurePatreonTables(env);
 
   const rows = await env.DB.prepare(`
-    SELECT external_tier_id, tier_title, active, created_at, updated_at
+    SELECT plan_key, external_tier_id, tier_title, active, created_at, updated_at
     FROM billing_tier_rules
-    WHERE provider = 'patreon' AND plan_key = 'plus'
-    ORDER BY active DESC, updated_at DESC
+    WHERE provider = 'patreon' AND plan_key IN ('starter', 'plus')
+    ORDER BY active DESC, plan_key ASC, updated_at DESC
   `).all();
   return json({ ok: true, tiers: rows?.results || [] });
 }
@@ -2847,10 +3043,14 @@ async function handleAdminPatreonTierUpsert(context) {
 
   const body = await parseRequestBody(request);
   const data = typeof body === 'string' ? {} : (body || {});
+  const planKey = lower(data.planKey || 'plus');
   const externalTierId = String(data.externalTierId || '').trim();
   const tierTitle = String(data.tierTitle || '').trim();
   const active = Number(data.active === undefined ? 1 : data.active ? 1 : 0) ? 1 : 0;
 
+  if(planKey !== 'plus' && planKey !== 'starter') {
+    return json({ ok: false, message: 'planKey must be plus or starter' }, 400);
+  }
   if(!externalTierId) {
     return json({ ok: false, message: 'externalTierId is required' }, 400);
   }
@@ -2859,14 +3059,15 @@ async function handleAdminPatreonTierUpsert(context) {
   await env.DB.prepare(`
     INSERT INTO billing_tier_rules (
       provider, plan_key, external_tier_id, tier_title, active, created_by_user_id, created_at, updated_at
-    ) VALUES ('patreon', 'plus', ?, ?, ?, ?, ?, ?)
+    ) VALUES ('patreon', ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(external_tier_id) DO UPDATE SET
+      plan_key = excluded.plan_key,
       tier_title = excluded.tier_title,
       active = excluded.active,
       updated_at = excluded.updated_at
-  `).bind(externalTierId, tierTitle || null, active, auth.user.id, now, now).run();
+  `).bind(planKey, externalTierId, tierTitle || null, active, auth.user.id, now, now).run();
 
-  return json({ ok: true, externalTierId, tierTitle, active });
+  return json({ ok: true, planKey, externalTierId, tierTitle, active });
 }
 
 async function handleAdminPatreonTierDelete(context, externalTierId) {
@@ -2885,7 +3086,7 @@ async function handleAdminPatreonTierDelete(context, externalTierId) {
   const updated = await env.DB.prepare(`
     UPDATE billing_tier_rules
     SET active = 0, updated_at = ?
-    WHERE provider = 'patreon' AND plan_key = 'plus' AND external_tier_id = ?
+    WHERE provider = 'patreon' AND external_tier_id = ?
   `).bind(nowIso(), id).run();
   if((updated.meta?.changes || 0) !== 1) {
     return json({ ok: false, message: 'Tier not found' }, 404);
