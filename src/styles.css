@@ -461,6 +461,65 @@ h3 {
   font-size: 0.9rem;
 }
 
+.plan-meta {
+  display: grid;
+  gap: 4px;
+}
+
+.plan-meta p {
+  margin: 0;
+}
+
+.plan-actions {
+  display: grid;
+  gap: 8px;
+}
+
+.admin-tier-list {
+  margin-top: 10px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  overflow: hidden;
+  background: rgba(8, 14, 32, 0.55);
+}
+
+.admin-tier-list-header,
+.admin-tier-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr) 110px 110px;
+  gap: 10px;
+  align-items: center;
+  text-align: center;
+  padding: 9px 10px;
+}
+
+.admin-tier-list-header {
+  border-bottom: 1px solid var(--line);
+  color: #b3c5ea;
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
+.admin-tier-list-body {
+  max-height: 220px;
+  overflow: auto;
+}
+
+.admin-tier-row {
+  border-bottom: 1px solid rgba(145, 173, 226, 0.14);
+}
+
+.admin-tier-row:last-child {
+  border-bottom: 0;
+}
+
+.admin-tier-row > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .admin-selected-user {
   margin-top: -4px;
 }
@@ -1067,6 +1126,14 @@ button.btn {
   .admin-user-list-header,
   .admin-user-row {
     grid-template-columns: 54px minmax(0, 1fr) minmax(0, 1fr) 110px;
+  }
+
+  .admin-tier-list-header,
+  .admin-tier-row {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 94px 94px;
+    gap: 8px;
+    padding: 8px;
+    font-size: 0.82rem;
   }
 
   .code-line {

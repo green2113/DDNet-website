@@ -21,6 +21,7 @@ import {
   verifyPassword,
   verifySessionToken,
 } from '../_lib/utils.js';
+import { hmacMd5Hex } from '../_lib/patreon.js';
 
 const AUTH_COOKIE = 'ddnet_auth';
 const SESSION_MAX_AGE_DEFAULT = 30 * 24 * 60 * 60;
@@ -41,6 +42,9 @@ const RESET_VERIFY_BLOCK_MS = 10 * 60 * 1000;
 const TRUE_VALUES = ['1', 'true', 'yes', 'on'];
 const PASSWORD_RESET_GENERIC_REQUEST_MESSAGE = 'If the account exists, a reset code was sent.';
 const PASSWORD_RESET_GENERIC_VERIFY_MESSAGE = 'Invalid email or reset code';
+const PATREON_OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
+const PATREON_TOKEN_REFRESH_SKEW_MS = 30 * 1000;
+const PATREON_SYNC_STALE_DEFAULT_SECONDS = 6 * 60 * 60;
 
 function cookieSecure(request) {
   return new URL(request.url).protocol === 'https:';
@@ -581,375 +585,6 @@ async function requireAdmin(context) {
     return { error: json({ ok: false, message: 'Admin privileges required' }, 403) };
   }
   return result;
-}
-
-function maskConfigValue(value, { head = 6, tail = 4 } = {}) {
-  const raw = String(value || '').trim();
-  if(!raw) {
-    return '';
-  }
-  if(raw.length <= head + tail) {
-    return `${raw.slice(0, 2)}***`;
-  }
-  return `${raw.slice(0, head)}...${raw.slice(-tail)}`;
-}
-
-async function handleDebugPayPalConfig(context) {
-  const { env } = context;
-  const auth = await requireAdmin(context);
-  if(auth.error) {
-    return auth.error;
-  }
-
-  const apiBase = String(env.PAYPAL_API_BASE || '').trim();
-  const clientId = String(env.PAYPAL_CLIENT_ID || '').trim();
-  const clientSecret = String(env.PAYPAL_CLIENT_SECRET || '').trim();
-  const planId = String(env.PAYPAL_PLAN_ID_PLUS || '').trim();
-  const webhookId = String(env.PAYPAL_WEBHOOK_ID || '').trim();
-  const viteClientId = String(env.VITE_PAYPAL_CLIENT_ID || '').trim();
-  const vitePlanId = String(env.VITE_PAYPAL_PLAN_ID_PLUS || '').trim();
-
-  return json({
-    ok: true,
-    config: {
-      apiBase,
-      mode: apiBase.includes('sandbox') ? 'sandbox' : (apiBase.includes('api-m.paypal.com') ? 'live' : 'unknown'),
-      clientIdMasked: maskConfigValue(clientId),
-      clientSecretConfigured: clientSecret.length > 0,
-      planId,
-      webhookIdMasked: maskConfigValue(webhookId),
-      viteClientIdMasked: maskConfigValue(viteClientId),
-      vitePlanId,
-      planMatch: !!planId && !!vitePlanId && planId === vitePlanId,
-      clientIdMatch: !!clientId && !!viteClientId && clientId === viteClientId,
-      hasAllRequired: !!apiBase && !!clientId && !!clientSecret && !!planId && !!webhookId && !!viteClientId && !!vitePlanId,
-    },
-  });
-}
-
-function normalizeSubscriptionStatus(input) {
-  const value = String(input || '').toUpperCase();
-  const allowed = new Set(['APPROVAL_PENDING', 'ACTIVE', 'SUSPENDED', 'CANCELLED', 'EXPIRED']);
-  return allowed.has(value) ? value : 'APPROVAL_PENDING';
-}
-
-async function ensureBillingTables(env) {
-  await env.DB.prepare(`
-    CREATE TABLE IF NOT EXISTS billing_subscriptions (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      user_id INTEGER NOT NULL,
-      provider TEXT NOT NULL,
-      paypal_subscription_id TEXT UNIQUE,
-      plan_key TEXT NOT NULL,
-      paypal_plan_id TEXT NOT NULL,
-      status TEXT NOT NULL,
-      current_period_end TEXT,
-      started_at TEXT,
-      cancelled_at TEXT,
-      is_grant INTEGER NOT NULL DEFAULT 0,
-      granted_by_user_id INTEGER,
-      raw_payload TEXT,
-      created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL
-    )
-  `).run();
-  await env.DB.prepare(`
-    CREATE INDEX IF NOT EXISTS idx_billing_subscriptions_user_id
-    ON billing_subscriptions(user_id)
-  `).run();
-  await env.DB.prepare(`
-    CREATE INDEX IF NOT EXISTS idx_billing_subscriptions_status
-    ON billing_subscriptions(status)
-  `).run();
-  await env.DB.prepare(`
-    CREATE INDEX IF NOT EXISTS idx_billing_subscriptions_plan_key
-    ON billing_subscriptions(plan_key)
-  `).run();
-
-  await env.DB.prepare(`
-    CREATE TABLE IF NOT EXISTS billing_webhook_events (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      provider TEXT NOT NULL,
-      event_id TEXT NOT NULL UNIQUE,
-      event_type TEXT NOT NULL,
-      resource_id TEXT,
-      received_at TEXT NOT NULL,
-      processed_at TEXT,
-      raw_payload TEXT NOT NULL
-    )
-  `).run();
-  await env.DB.prepare(`
-    CREATE INDEX IF NOT EXISTS idx_billing_webhook_events_provider_type
-    ON billing_webhook_events(provider, event_type)
-  `).run();
-
-  await env.DB.prepare(`
-    CREATE TABLE IF NOT EXISTS billing_paypal_captures (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      capture_id TEXT NOT NULL UNIQUE,
-      order_id TEXT,
-      payer_email TEXT,
-      user_id INTEGER,
-      amount_value TEXT,
-      amount_currency TEXT,
-      created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL
-    )
-  `).run();
-  await env.DB.prepare(`
-    CREATE INDEX IF NOT EXISTS idx_billing_paypal_captures_user_id
-    ON billing_paypal_captures(user_id)
-  `).run();
-}
-
-async function getPayPalAccessToken(env) {
-  const clientId = String(env.PAYPAL_CLIENT_ID || '').trim();
-  const clientSecret = String(env.PAYPAL_CLIENT_SECRET || '').trim();
-  const apiBase = String(env.PAYPAL_API_BASE || '').trim();
-  if(!clientId || !clientSecret || !apiBase) {
-    throw new Error('PayPal environment is not configured');
-  }
-
-  const auth = btoa(`${clientId}:${clientSecret}`);
-  const response = await fetch(`${apiBase}/v1/oauth2/token`, {
-    method: 'POST',
-    headers: {
-      authorization: `Basic ${auth}`,
-      'content-type': 'application/x-www-form-urlencoded',
-      accept: 'application/json',
-    },
-    body: 'grant_type=client_credentials',
-  });
-
-  const payload = await response.json().catch(() => ({}));
-  if(!response.ok || !payload.access_token) {
-    throw new Error(`PayPal OAuth failed (${response.status})`);
-  }
-  return payload.access_token;
-}
-
-async function fetchPayPalSubscription(env, subscriptionId) {
-  const apiBase = String(env.PAYPAL_API_BASE || '').trim();
-  const accessToken = await getPayPalAccessToken(env);
-  const response = await fetch(`${apiBase}/v1/billing/subscriptions/${encodeURIComponent(subscriptionId)}`, {
-    method: 'GET',
-    headers: {
-      authorization: `Bearer ${accessToken}`,
-      accept: 'application/json',
-    },
-  });
-  const payload = await response.json().catch(() => ({}));
-  if(!response.ok) {
-    throw new Error(`PayPal subscription lookup failed (${response.status})`);
-  }
-  return payload;
-}
-
-async function verifyPayPalWebhook(env, request, rawBodyText, webhookEvent) {
-  const apiBase = String(env.PAYPAL_API_BASE || '').trim();
-  const webhookId = String(env.PAYPAL_WEBHOOK_ID || '').trim();
-  if(!apiBase || !webhookId) {
-    throw new Error('PayPal webhook environment is not configured');
-  }
-
-  const accessToken = await getPayPalAccessToken(env);
-  const response = await fetch(`${apiBase}/v1/notifications/verify-webhook-signature`, {
-    method: 'POST',
-    headers: {
-      authorization: `Bearer ${accessToken}`,
-      'content-type': 'application/json',
-      accept: 'application/json',
-    },
-    body: JSON.stringify({
-      auth_algo: request.headers.get('paypal-auth-algo') || '',
-      cert_url: request.headers.get('paypal-cert-url') || '',
-      transmission_id: request.headers.get('paypal-transmission-id') || '',
-      transmission_sig: request.headers.get('paypal-transmission-sig') || '',
-      transmission_time: request.headers.get('paypal-transmission-time') || '',
-      webhook_id: webhookId,
-      webhook_event: webhookEvent,
-      webhook_event_raw: rawBodyText,
-    }),
-  });
-  const payload = await response.json().catch(() => ({}));
-  if(!response.ok) {
-    throw new Error(`PayPal webhook verification failed (${response.status})`);
-  }
-  return String(payload.verification_status || '').toUpperCase() === 'SUCCESS';
-}
-
-function extractSubscriptionFromPayPalPayload(payload) {
-  const status = normalizeSubscriptionStatus(payload?.status);
-  const currentPeriodEnd = String(payload?.billing_info?.next_billing_time || '').trim() || null;
-  const startedAt = String(payload?.start_time || payload?.create_time || '').trim() || null;
-  const cancelledAt = status === 'CANCELLED' || status === 'EXPIRED'
-    ? (String(payload?.status_update_time || '').trim() || nowIso())
-    : null;
-  const paypalPlanId = String(payload?.plan_id || '').trim();
-  const paypalSubscriptionId = String(payload?.id || '').trim();
-  return {
-    status,
-    currentPeriodEnd,
-    startedAt,
-    cancelledAt,
-    paypalPlanId,
-    paypalSubscriptionId,
-  };
-}
-
-function parseBoundedInt(value, fallback, min, max) {
-  const n = Number(value);
-  if(!Number.isFinite(n)) {
-    return fallback;
-  }
-  return Math.max(min, Math.min(max, Math.floor(n)));
-}
-
-async function applyNcpPlusForUser(env, userId, captureId, eventPayload, now) {
-  const months = parseBoundedInt(env.PAYPAL_NCP_PLUS_MONTHS || 1, 1, 1, 24);
-  const planId = String(env.PAYPAL_PLAN_ID_PLUS || 'NCP_PLUS').trim() || 'NCP_PLUS';
-  const pseudoSubscriptionId = `NCP:USER:${userId}`;
-
-  const active = await env.DB.prepare(`
-    SELECT id, current_period_end
-    FROM billing_subscriptions
-    WHERE user_id = ?
-      AND provider = 'paypal'
-      AND plan_key = 'plus'
-      AND (paypal_subscription_id = ? OR paypal_subscription_id IS NULL OR is_grant = 1)
-    ORDER BY datetime(COALESCE(current_period_end, '1970-01-01T00:00:00Z')) DESC, id DESC
-    LIMIT 1
-  `).bind(userId, pseudoSubscriptionId).first();
-
-  const nowMs = Date.now();
-  const activeEndMs = Date.parse(String(active?.current_period_end || ''));
-  const baseMs = Number.isFinite(activeEndMs) && activeEndMs > nowMs ? activeEndMs : nowMs;
-  const nextIso = new Date(baseMs + (months * 30 * 24 * 60 * 60 * 1000)).toISOString();
-  const raw = JSON.stringify({
-    source: 'paypal_ncp_capture',
-    captureId,
-    months,
-    eventType: String(eventPayload?.event_type || ''),
-    payload: eventPayload?.resource || eventPayload,
-  });
-
-  if(active) {
-    await env.DB.prepare(`
-      UPDATE billing_subscriptions
-      SET provider = 'paypal',
-          paypal_subscription_id = ?,
-          plan_key = 'plus',
-          paypal_plan_id = ?,
-          status = 'ACTIVE',
-          current_period_end = ?,
-          cancelled_at = NULL,
-          is_grant = 0,
-          granted_by_user_id = NULL,
-          raw_payload = ?,
-          updated_at = ?
-      WHERE id = ?
-    `).bind(
-      pseudoSubscriptionId,
-      planId,
-      nextIso,
-      raw,
-      now,
-      active.id,
-    ).run();
-  } else {
-    await env.DB.prepare(`
-      INSERT INTO billing_subscriptions (
-        user_id, provider, paypal_subscription_id, plan_key, paypal_plan_id, status,
-        current_period_end, started_at, cancelled_at, is_grant, granted_by_user_id,
-        raw_payload, created_at, updated_at
-      ) VALUES (?, 'paypal', ?, 'plus', ?, 'ACTIVE', ?, ?, NULL, 0, NULL, ?, ?, ?)
-    `).bind(
-      userId,
-      pseudoSubscriptionId,
-      planId,
-      nextIso,
-      now,
-      raw,
-      now,
-      now,
-    ).run();
-  }
-
-  return { months, currentPeriodEnd: nextIso };
-}
-
-async function processPayPalCaptureCompleted(env, payload, now) {
-  const resource = payload?.resource || {};
-  const captureId = String(resource?.id || '').trim();
-  const orderId = String(resource?.supplementary_data?.related_ids?.order_id || '').trim();
-  const payerEmail = lower(resource?.payer?.email_address || '');
-  const amountValue = String(resource?.amount?.value || '').trim();
-  const amountCurrency = String(resource?.amount?.currency_code || '').trim().toUpperCase();
-  const status = String(resource?.status || '').trim().toUpperCase();
-  if(!captureId) {
-    return { handled: false, reason: 'capture_id_missing' };
-  }
-  if(status && status !== 'COMPLETED') {
-    return { handled: false, reason: 'capture_not_completed' };
-  }
-
-  const inserted = await env.DB.prepare(`
-    INSERT INTO billing_paypal_captures (
-      capture_id, order_id, payer_email, user_id, amount_value, amount_currency, created_at, updated_at
-    ) VALUES (?, ?, ?, NULL, ?, ?, ?, ?)
-    ON CONFLICT(capture_id) DO NOTHING
-  `).bind(
-    captureId,
-    orderId || null,
-    payerEmail || null,
-    amountValue || null,
-    amountCurrency || null,
-    now,
-    now,
-  ).run();
-  if((inserted.meta?.changes || 0) === 0) {
-    return { handled: true, duplicateCapture: true, captureId };
-  }
-
-  const expectedCurrency = String(env.PAYPAL_NCP_PLUS_CURRENCY || '').trim().toUpperCase();
-  if(expectedCurrency && amountCurrency && amountCurrency !== expectedCurrency) {
-    return { handled: true, captureId, linked: false, reason: 'currency_mismatch', amountCurrency, expectedCurrency };
-  }
-  const expectedAmount = String(env.PAYPAL_NCP_PLUS_AMOUNT || '').trim();
-  if(expectedAmount && amountValue && amountValue !== expectedAmount) {
-    return { handled: true, captureId, linked: false, reason: 'amount_mismatch', amountValue, expectedAmount };
-  }
-
-  if(!payerEmail || !isValidEmail(payerEmail)) {
-    return { handled: true, captureId, linked: false, reason: 'payer_email_missing' };
-  }
-
-  const user = await env.DB.prepare(`
-    SELECT id
-    FROM users
-    WHERE email_lower = ?
-    LIMIT 1
-  `).bind(payerEmail).first();
-
-  if(!user) {
-    return { handled: true, captureId, linked: false, reason: 'account_not_found', payerEmail };
-  }
-
-  const applied = await applyNcpPlusForUser(env, Number(user.id), captureId, payload, now);
-  await env.DB.prepare(`
-    UPDATE billing_paypal_captures
-    SET user_id = ?, updated_at = ?
-    WHERE capture_id = ?
-  `).bind(user.id, now, captureId).run();
-
-  return {
-    handled: true,
-    captureId,
-    linked: true,
-    userId: Number(user.id),
-    months: applied.months,
-    currentPeriodEnd: applied.currentPeriodEnd,
-  };
 }
 
 async function allocateInviteCode(env) {
@@ -2389,6 +2024,759 @@ async function handleGameAccountStatus(context) {
   });
 }
 
+function parseBoundedInt(raw, fallback, min, max) {
+  const value = Number(raw);
+  if(!Number.isFinite(value)) {
+    return fallback;
+  }
+  return Math.max(min, Math.min(max, Math.floor(value)));
+}
+
+function patreonScopes(env) {
+  const value = String(env.PATREON_OAUTH_SCOPES || '').trim();
+  return value || 'identity identity.memberships';
+}
+
+function patreonRedirectUri(env, request) {
+  const configured = String(env.PATREON_REDIRECT_URI || '').trim();
+  if(configured) {
+    return configured;
+  }
+  const origin = new URL(request.url).origin;
+  return `${origin}/api/billing/patreon/callback`;
+}
+
+function plansPageUrl(request, queryValue = '') {
+  const origin = new URL(request.url).origin;
+  if(!queryValue) {
+    return `${origin}/billing/plans`;
+  }
+  return `${origin}/billing/plans?patreon=${encodeURIComponent(queryValue)}`;
+}
+
+async function ensurePatreonTables(env) {
+  await env.DB.prepare(`
+    CREATE TABLE IF NOT EXISTS patreon_connections (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL UNIQUE,
+      patreon_user_id TEXT NOT NULL UNIQUE,
+      access_token TEXT NOT NULL,
+      refresh_token TEXT,
+      token_expires_at TEXT,
+      scope TEXT,
+      last_sync_at TEXT,
+      last_sync_status TEXT,
+      last_sync_error TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (user_id) REFERENCES users(id)
+    )
+  `).run();
+  await env.DB.prepare(`
+    CREATE INDEX IF NOT EXISTS idx_patreon_connections_user_id
+    ON patreon_connections(user_id)
+  `).run();
+  await env.DB.prepare(`
+    CREATE INDEX IF NOT EXISTS idx_patreon_connections_patreon_user_id
+    ON patreon_connections(patreon_user_id)
+  `).run();
+
+  await env.DB.prepare(`
+    CREATE TABLE IF NOT EXISTS billing_entitlements (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      plan_key TEXT NOT NULL,
+      provider TEXT NOT NULL,
+      provider_ref TEXT,
+      status TEXT NOT NULL,
+      current_period_end TEXT,
+      raw_payload TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE(user_id, plan_key),
+      FOREIGN KEY (user_id) REFERENCES users(id)
+    )
+  `).run();
+  await env.DB.prepare(`
+    CREATE INDEX IF NOT EXISTS idx_billing_entitlements_plan_status
+    ON billing_entitlements(plan_key, status)
+  `).run();
+  await env.DB.prepare(`
+    CREATE INDEX IF NOT EXISTS idx_billing_entitlements_provider
+    ON billing_entitlements(provider)
+  `).run();
+
+  await env.DB.prepare(`
+    CREATE TABLE IF NOT EXISTS billing_tier_rules (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      provider TEXT NOT NULL,
+      plan_key TEXT NOT NULL,
+      external_tier_id TEXT NOT NULL UNIQUE,
+      tier_title TEXT,
+      active INTEGER NOT NULL DEFAULT 1,
+      created_by_user_id INTEGER,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (created_by_user_id) REFERENCES users(id)
+    )
+  `).run();
+  await env.DB.prepare(`
+    CREATE INDEX IF NOT EXISTS idx_billing_tier_rules_provider_plan_active
+    ON billing_tier_rules(provider, plan_key, active)
+  `).run();
+
+  await env.DB.prepare(`
+    CREATE TABLE IF NOT EXISTS patreon_oauth_states (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      state_token TEXT NOT NULL UNIQUE,
+      user_id INTEGER NOT NULL,
+      expires_at TEXT NOT NULL,
+      used_at TEXT,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY (user_id) REFERENCES users(id)
+    )
+  `).run();
+  await env.DB.prepare(`
+    CREATE INDEX IF NOT EXISTS idx_patreon_oauth_states_user_expires
+    ON patreon_oauth_states(user_id, expires_at)
+  `).run();
+
+  await env.DB.prepare(`
+    CREATE TABLE IF NOT EXISTS billing_webhook_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      provider TEXT NOT NULL,
+      event_id TEXT NOT NULL UNIQUE,
+      event_type TEXT NOT NULL,
+      resource_id TEXT,
+      received_at TEXT NOT NULL,
+      processed_at TEXT,
+      raw_payload TEXT NOT NULL
+    )
+  `).run();
+  await env.DB.prepare(`
+    CREATE INDEX IF NOT EXISTS idx_billing_webhook_events_provider_type
+    ON billing_webhook_events(provider, event_type)
+  `).run();
+}
+
+async function createPatreonOAuthState(env, userId) {
+  const now = nowIso();
+  const expiresAt = new Date(Date.now() + PATREON_OAUTH_STATE_TTL_MS).toISOString();
+  const stateToken = `${randomCode(18)}${randomCode(18)}`;
+  await env.DB.prepare(`
+    INSERT INTO patreon_oauth_states (state_token, user_id, expires_at, used_at, created_at)
+    VALUES (?, ?, ?, NULL, ?)
+  `).bind(stateToken, userId, expiresAt, now).run();
+  return stateToken;
+}
+
+async function exchangePatreonToken(env, request, params) {
+  const clientId = String(env.PATREON_CLIENT_ID || '').trim();
+  const clientSecret = String(env.PATREON_CLIENT_SECRET || '').trim();
+  if(!clientId || !clientSecret) {
+    throw new Error('Patreon OAuth credentials are not configured');
+  }
+
+  const body = new URLSearchParams({
+    client_id: clientId,
+    client_secret: clientSecret,
+    redirect_uri: patreonRedirectUri(env, request),
+    ...params,
+  });
+  const response = await fetch('https://www.patreon.com/api/oauth2/token', {
+    method: 'POST',
+    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    body: body.toString(),
+  });
+  const payload = await response.json().catch(() => ({}));
+  if(!response.ok) {
+    throw new Error(String(payload?.error_description || payload?.error || `Patreon token exchange failed (${response.status})`));
+  }
+  return payload;
+}
+
+async function fetchPatreonIdentity(accessToken) {
+  const response = await fetch('https://www.patreon.com/api/oauth2/v2/identity?include=memberships,memberships.currently_entitled_tiers,memberships.campaign', {
+    headers: {
+      authorization: `Bearer ${accessToken}`,
+      accept: 'application/json',
+    },
+  });
+  const payload = await response.json().catch(() => ({}));
+  if(!response.ok) {
+    throw new Error(String(payload?.errors?.[0]?.detail || `Patreon identity fetch failed (${response.status})`));
+  }
+  return payload;
+}
+
+function parsePatreonIdentity(payload, campaignId) {
+  const included = Array.isArray(payload?.included) ? payload.included : [];
+  const campaignFilter = String(campaignId || '').trim();
+  const memberMap = new Map();
+
+  for(const item of included) {
+    if(String(item?.type || '') === 'member' && String(item?.id || '')) {
+      memberMap.set(String(item.id), item);
+    }
+  }
+
+  const refs = Array.isArray(payload?.data?.relationships?.memberships?.data)
+    ? payload.data.relationships.memberships.data
+    : [];
+
+  let memberships = refs
+    .map((ref) => memberMap.get(String(ref?.id || '')))
+    .filter(Boolean);
+  if(memberships.length === 0 && String(payload?.data?.type || '') === 'member') {
+    memberships = [payload.data];
+  }
+
+  if(campaignFilter) {
+    memberships = memberships.filter((member) => {
+      const campaignRef = String(member?.relationships?.campaign?.data?.id || '');
+      return campaignRef === campaignFilter;
+    });
+  }
+
+  const tierIds = new Set();
+  let activePatron = false;
+  let currentPeriodEnd = null;
+
+  for(const member of memberships) {
+    const patronStatus = lower(member?.attributes?.patron_status || '');
+    if(patronStatus === 'active_patron') {
+      activePatron = true;
+    }
+    const nextChargeDateRaw = String(member?.attributes?.next_charge_date || '').trim();
+    if(nextChargeDateRaw) {
+      currentPeriodEnd = nextChargeDateRaw;
+    }
+    const tierRefs = Array.isArray(member?.relationships?.currently_entitled_tiers?.data)
+      ? member.relationships.currently_entitled_tiers.data
+      : [];
+    for(const tierRef of tierRefs) {
+      const tierId = String(tierRef?.id || '').trim();
+      if(tierId) {
+        tierIds.add(tierId);
+      }
+    }
+  }
+
+  return {
+    patreonUserId: String(payload?.data?.id || '').trim(),
+    activePatron,
+    tierIds: Array.from(tierIds),
+    currentPeriodEnd,
+  };
+}
+
+async function loadAllowedPlusTierIds(env) {
+  const rows = await env.DB.prepare(`
+    SELECT external_tier_id
+    FROM billing_tier_rules
+    WHERE provider = 'patreon' AND plan_key = 'plus' AND active = 1
+  `).all();
+  const out = new Set();
+  for(const row of rows?.results || []) {
+    const tierId = String(row?.external_tier_id || '').trim();
+    if(tierId) {
+      out.add(tierId);
+    }
+  }
+  return out;
+}
+
+async function upsertPlusEntitlement(env, userId, providerRef, status, currentPeriodEnd, rawPayload) {
+  const now = nowIso();
+  await env.DB.prepare(`
+    INSERT INTO billing_entitlements (
+      user_id, plan_key, provider, provider_ref, status, current_period_end, raw_payload, created_at, updated_at
+    ) VALUES (?, 'plus', 'patreon', ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(user_id, plan_key) DO UPDATE SET
+      provider = excluded.provider,
+      provider_ref = excluded.provider_ref,
+      status = excluded.status,
+      current_period_end = excluded.current_period_end,
+      raw_payload = excluded.raw_payload,
+      updated_at = excluded.updated_at
+  `).bind(
+    userId,
+    providerRef,
+    status,
+    currentPeriodEnd || null,
+    JSON.stringify(rawPayload || {}),
+    now,
+    now,
+  ).run();
+}
+
+async function syncPatreonConnection(env, userId, accessToken, refreshToken, tokenExpiresAt, scope, identityPayload, source = 'manual') {
+  const campaignId = String(env.PATREON_CAMPAIGN_ID || '').trim();
+  const parsed = parsePatreonIdentity(identityPayload, campaignId);
+  if(!parsed.patreonUserId) {
+    throw new Error('Patreon identity payload is missing user id');
+  }
+
+  const duplicate = await env.DB.prepare(`
+    SELECT user_id
+    FROM patreon_connections
+    WHERE patreon_user_id = ? AND user_id != ?
+    LIMIT 1
+  `).bind(parsed.patreonUserId, userId).first();
+  if(duplicate) {
+    throw new Error('This Patreon account is already linked to another user');
+  }
+
+  const allowedTierIds = await loadAllowedPlusTierIds(env);
+  const hasAllowedTier = parsed.tierIds.some((tierId) => allowedTierIds.has(tierId));
+  const entitlementStatus = parsed.activePatron && hasAllowedTier ? 'ACTIVE' : 'INACTIVE';
+  const now = nowIso();
+
+  await env.DB.prepare(`
+    INSERT INTO patreon_connections (
+      user_id, patreon_user_id, access_token, refresh_token, token_expires_at, scope,
+      last_sync_at, last_sync_status, last_sync_error, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, 'ok', NULL, ?, ?)
+    ON CONFLICT(user_id) DO UPDATE SET
+      patreon_user_id = excluded.patreon_user_id,
+      access_token = excluded.access_token,
+      refresh_token = excluded.refresh_token,
+      token_expires_at = excluded.token_expires_at,
+      scope = excluded.scope,
+      last_sync_at = excluded.last_sync_at,
+      last_sync_status = excluded.last_sync_status,
+      last_sync_error = excluded.last_sync_error,
+      updated_at = excluded.updated_at
+  `).bind(
+    userId,
+    parsed.patreonUserId,
+    accessToken,
+    refreshToken || null,
+    tokenExpiresAt || null,
+    scope || null,
+    now,
+    now,
+    now,
+  ).run();
+
+  await upsertPlusEntitlement(
+    env,
+    userId,
+    parsed.patreonUserId,
+    entitlementStatus,
+    parsed.currentPeriodEnd || null,
+    {
+      source,
+      activePatron: parsed.activePatron,
+      tierIds: parsed.tierIds,
+      allowedTierIds: Array.from(allowedTierIds),
+      identity: identityPayload,
+    },
+  );
+
+  return {
+    patreonUserId: parsed.patreonUserId,
+    activePatron: parsed.activePatron,
+    tierIds: parsed.tierIds,
+    entitlementStatus,
+    currentPeriodEnd: parsed.currentPeriodEnd || null,
+  };
+}
+
+async function syncPatreonForUserFromStoredConnection(env, request, userId) {
+  const row = await env.DB.prepare(`
+    SELECT user_id, access_token, refresh_token, token_expires_at, scope
+    FROM patreon_connections
+    WHERE user_id = ?
+    LIMIT 1
+  `).bind(userId).first();
+  if(!row) {
+    return null;
+  }
+
+  let accessToken = String(row.access_token || '');
+  let refreshToken = String(row.refresh_token || '');
+  let scope = String(row.scope || '');
+  let tokenExpiresAt = String(row.token_expires_at || '');
+  const expiresAtMs = tokenExpiresAt ? Date.parse(tokenExpiresAt) : NaN;
+  const shouldRefresh = refreshToken && Number.isFinite(expiresAtMs) && expiresAtMs <= (Date.now() + PATREON_TOKEN_REFRESH_SKEW_MS);
+
+  if(shouldRefresh) {
+    const refreshed = await exchangePatreonToken(env, request, {
+      grant_type: 'refresh_token',
+      refresh_token: refreshToken,
+    });
+    accessToken = String(refreshed?.access_token || '').trim();
+    refreshToken = String(refreshed?.refresh_token || refreshToken).trim();
+    scope = String(refreshed?.scope || scope).trim();
+    if(!accessToken) {
+      throw new Error('Patreon refresh returned no access token');
+    }
+    const expiresIn = parseBoundedInt(refreshed?.expires_in, 0, 0, 60 * 60 * 24 * 365);
+    tokenExpiresAt = expiresIn > 0 ? new Date(Date.now() + expiresIn * 1000).toISOString() : null;
+  }
+
+  const identity = await fetchPatreonIdentity(accessToken);
+  return syncPatreonConnection(env, userId, accessToken, refreshToken, tokenExpiresAt, scope, identity, 'stale_sync');
+}
+
+async function loadPlusSubscription(env, userId) {
+  const row = await env.DB.prepare(`
+    SELECT plan_key, provider, provider_ref, status, current_period_end, updated_at
+    FROM billing_entitlements
+    WHERE user_id = ? AND plan_key = 'plus'
+    LIMIT 1
+  `).bind(userId).first();
+  return row || null;
+}
+
+function extractPatreonUserIdFromWebhook(payload) {
+  const directUserId = String(payload?.data?.relationships?.user?.data?.id || '').trim();
+  if(directUserId) {
+    return directUserId;
+  }
+
+  const included = Array.isArray(payload?.included) ? payload.included : [];
+  for(const item of included) {
+    if(String(item?.type || '') === 'user' && String(item?.id || '')) {
+      return String(item.id);
+    }
+  }
+  return '';
+}
+
+function patreonWebhookType(payload) {
+  const attr = payload?.data?.attributes || {};
+  const candidate = String(attr.type || attr.event_type || attr.action || payload?.type || payload?.event_type || 'unknown').trim();
+  return candidate || 'unknown';
+}
+
+function verifyPatreonWebhookSignature(secret, rawBodyText, signatureHeader) {
+  const expected = hmacMd5Hex(secret, rawBodyText);
+  const rawProvided = String(signatureHeader || '').trim().toLowerCase();
+  const provided = rawProvided.includes('=') ? rawProvided.split('=').pop() : rawProvided;
+  if(!provided) {
+    return false;
+  }
+  return timingSafeEqual(expected, provided);
+}
+
+async function markPatreonConnectionSyncError(env, userId, errorMessage) {
+  await env.DB.prepare(`
+    UPDATE patreon_connections
+    SET last_sync_at = ?, last_sync_status = 'error', last_sync_error = ?, updated_at = ?
+    WHERE user_id = ?
+  `).bind(nowIso(), String(errorMessage || 'sync failed'), nowIso(), userId).run();
+}
+
+async function handlePatreonStart(context) {
+  const { env, request } = context;
+  const auth = await currentUser(context);
+  if(auth.error) {
+    return auth.error;
+  }
+
+  await ensurePatreonTables(env);
+  const clientId = String(env.PATREON_CLIENT_ID || '').trim();
+  if(!clientId) {
+    return json({ ok: false, message: 'PATREON_CLIENT_ID is not configured' }, 500);
+  }
+
+  const state = await createPatreonOAuthState(env, auth.user.id);
+  const params = new URLSearchParams({
+    response_type: 'code',
+    client_id: clientId,
+    redirect_uri: patreonRedirectUri(env, request),
+    scope: patreonScopes(env),
+    state,
+  });
+  return Response.redirect(`https://www.patreon.com/oauth2/authorize?${params.toString()}`, 302);
+}
+
+async function handlePatreonCallback(context) {
+  const { env, request } = context;
+  await ensurePatreonTables(env);
+  const url = new URL(request.url);
+  const state = String(url.searchParams.get('state') || '').trim();
+  const code = String(url.searchParams.get('code') || '').trim();
+  const errorFromPatreon = String(url.searchParams.get('error') || '').trim();
+
+  if(errorFromPatreon) {
+    return Response.redirect(plansPageUrl(request, 'error'), 302);
+  }
+  if(!state || !code) {
+    return Response.redirect(plansPageUrl(request, 'error'), 302);
+  }
+
+  const row = await env.DB.prepare(`
+    SELECT id, user_id, expires_at, used_at
+    FROM patreon_oauth_states
+    WHERE state_token = ?
+    LIMIT 1
+  `).bind(state).first();
+  if(!row) {
+    return Response.redirect(plansPageUrl(request, 'error'), 302);
+  }
+  if(String(row.used_at || '').trim()) {
+    return Response.redirect(plansPageUrl(request, 'error'), 302);
+  }
+  const expiresAtMs = Date.parse(String(row.expires_at || ''));
+  if(!Number.isFinite(expiresAtMs) || expiresAtMs <= Date.now()) {
+    return Response.redirect(plansPageUrl(request, 'error'), 302);
+  }
+
+  await env.DB.prepare(`
+    UPDATE patreon_oauth_states
+    SET used_at = ?
+    WHERE id = ? AND used_at IS NULL
+  `).bind(nowIso(), row.id).run();
+
+  try {
+    const tokenPayload = await exchangePatreonToken(env, request, {
+      grant_type: 'authorization_code',
+      code,
+    });
+    const accessToken = String(tokenPayload?.access_token || '').trim();
+    const refreshToken = String(tokenPayload?.refresh_token || '').trim();
+    const scope = String(tokenPayload?.scope || '').trim();
+    const expiresIn = parseBoundedInt(tokenPayload?.expires_in, 0, 0, 60 * 60 * 24 * 365);
+    const tokenExpiresAt = expiresIn > 0 ? new Date(Date.now() + expiresIn * 1000).toISOString() : null;
+    if(!accessToken) {
+      return Response.redirect(plansPageUrl(request, 'error'), 302);
+    }
+    const identity = await fetchPatreonIdentity(accessToken);
+    await syncPatreonConnection(
+      env,
+      Number(row.user_id),
+      accessToken,
+      refreshToken,
+      tokenExpiresAt,
+      scope,
+      identity,
+      'oauth_callback',
+    );
+    return Response.redirect(plansPageUrl(request, 'linked'), 302);
+  } catch {
+    return Response.redirect(plansPageUrl(request, 'error'), 302);
+  }
+}
+
+async function handlePatreonDisconnect(context) {
+  const { env } = context;
+  const auth = await currentUser(context);
+  if(auth.error) {
+    return auth.error;
+  }
+  await ensurePatreonTables(env);
+
+  await env.DB.prepare(`
+    DELETE FROM patreon_connections
+    WHERE user_id = ?
+  `).bind(auth.user.id).run();
+
+  const now = nowIso();
+  await env.DB.prepare(`
+    INSERT INTO billing_entitlements (
+      user_id, plan_key, provider, provider_ref, status, current_period_end, raw_payload, created_at, updated_at
+    ) VALUES (?, 'plus', 'patreon', NULL, 'INACTIVE', NULL, ?, ?, ?)
+    ON CONFLICT(user_id, plan_key) DO UPDATE SET
+      provider = 'patreon',
+      provider_ref = NULL,
+      status = 'INACTIVE',
+      current_period_end = NULL,
+      raw_payload = excluded.raw_payload,
+      updated_at = excluded.updated_at
+  `).bind(auth.user.id, JSON.stringify({ source: 'disconnect' }), now, now).run();
+
+  return json({ ok: true, disconnected: true });
+}
+
+async function handleMySubscription(context) {
+  const { env, request } = context;
+  const auth = await currentUser(context);
+  if(auth.error) {
+    return auth.error;
+  }
+  await ensurePatreonTables(env);
+
+  const connection = await env.DB.prepare(`
+    SELECT user_id, patreon_user_id, last_sync_at, last_sync_status, last_sync_error
+    FROM patreon_connections
+    WHERE user_id = ?
+    LIMIT 1
+  `).bind(auth.user.id).first();
+
+  const staleSeconds = parseBoundedInt(
+    env.PATREON_SYNC_STALE_SECONDS,
+    PATREON_SYNC_STALE_DEFAULT_SECONDS,
+    60,
+    7 * 24 * 60 * 60,
+  );
+  const staleCutoffMs = Date.now() - staleSeconds * 1000;
+  const lastSyncMs = connection?.last_sync_at ? Date.parse(String(connection.last_sync_at || '')) : NaN;
+  const shouldSync = !!connection && (!Number.isFinite(lastSyncMs) || lastSyncMs < staleCutoffMs);
+
+  if(shouldSync) {
+    try {
+      await syncPatreonForUserFromStoredConnection(env, request, auth.user.id);
+    } catch(err) {
+      await markPatreonConnectionSyncError(env, auth.user.id, String(err?.message || 'sync failed'));
+    }
+  }
+
+  const latestConnection = await env.DB.prepare(`
+    SELECT patreon_user_id, last_sync_at, last_sync_status, last_sync_error
+    FROM patreon_connections
+    WHERE user_id = ?
+    LIMIT 1
+  `).bind(auth.user.id).first();
+  const subscription = await loadPlusSubscription(env, auth.user.id);
+
+  return json({
+    ok: true,
+    patreonConnected: !!latestConnection,
+    connection: latestConnection || null,
+    subscription,
+  });
+}
+
+async function handlePatreonWebhook(context) {
+  const { env, request } = context;
+  await ensurePatreonTables(env);
+
+  const secret = String(env.PATREON_WEBHOOK_SECRET || '').trim();
+  if(!secret) {
+    return json({ ok: false, message: 'PATREON_WEBHOOK_SECRET is not configured' }, 500);
+  }
+
+  const rawBodyText = await request.text();
+  const signatureHeader = request.headers.get('X-Patreon-Signature') || request.headers.get('x-patreon-signature') || '';
+  if(!verifyPatreonWebhookSignature(secret, rawBodyText, signatureHeader)) {
+    return json({ ok: false, message: 'Invalid Patreon webhook signature' }, 401);
+  }
+
+  let payload = {};
+  try {
+    payload = JSON.parse(rawBodyText || '{}');
+  } catch {
+    return json({ ok: false, message: 'Invalid webhook payload' }, 400);
+  }
+  const eventType = patreonWebhookType(payload);
+  const resourceId = String(payload?.data?.id || '').trim() || null;
+  const eventId = await sha256Hex(`${eventType}:${rawBodyText}`);
+  const now = nowIso();
+
+  const insertEvent = await env.DB.prepare(`
+    INSERT INTO billing_webhook_events (
+      provider, event_id, event_type, resource_id, received_at, processed_at, raw_payload
+    ) VALUES ('patreon', ?, ?, ?, ?, NULL, ?)
+    ON CONFLICT(event_id) DO NOTHING
+  `).bind(eventId, eventType, resourceId, now, rawBodyText).run();
+
+  if((insertEvent.meta?.changes || 0) === 0) {
+    return json({ ok: true, duplicate: true });
+  }
+
+  const patreonUserId = extractPatreonUserIdFromWebhook(payload);
+  if(patreonUserId) {
+    const connection = await env.DB.prepare(`
+      SELECT user_id
+      FROM patreon_connections
+      WHERE patreon_user_id = ?
+      LIMIT 1
+    `).bind(patreonUserId).first();
+
+    if(connection) {
+      try {
+        await syncPatreonForUserFromStoredConnection(env, request, Number(connection.user_id));
+      } catch(err) {
+        await markPatreonConnectionSyncError(env, Number(connection.user_id), String(err?.message || 'sync failed'));
+      }
+    }
+  }
+
+  await env.DB.prepare(`
+    UPDATE billing_webhook_events
+    SET processed_at = ?
+    WHERE event_id = ?
+  `).bind(nowIso(), eventId).run();
+
+  return json({ ok: true });
+}
+
+async function handleAdminPatreonTiers(context) {
+  const { env } = context;
+  const auth = await requireAdmin(context);
+  if(auth.error) {
+    return auth.error;
+  }
+  await ensurePatreonTables(env);
+
+  const rows = await env.DB.prepare(`
+    SELECT external_tier_id, tier_title, active, created_at, updated_at
+    FROM billing_tier_rules
+    WHERE provider = 'patreon' AND plan_key = 'plus'
+    ORDER BY active DESC, updated_at DESC
+  `).all();
+  return json({ ok: true, tiers: rows?.results || [] });
+}
+
+async function handleAdminPatreonTierUpsert(context) {
+  const { env, request } = context;
+  const auth = await requireAdmin(context);
+  if(auth.error) {
+    return auth.error;
+  }
+  await ensurePatreonTables(env);
+
+  const body = await parseRequestBody(request);
+  const data = typeof body === 'string' ? {} : (body || {});
+  const externalTierId = String(data.externalTierId || '').trim();
+  const tierTitle = String(data.tierTitle || '').trim();
+  const active = Number(data.active === undefined ? 1 : data.active ? 1 : 0) ? 1 : 0;
+
+  if(!externalTierId) {
+    return json({ ok: false, message: 'externalTierId is required' }, 400);
+  }
+
+  const now = nowIso();
+  await env.DB.prepare(`
+    INSERT INTO billing_tier_rules (
+      provider, plan_key, external_tier_id, tier_title, active, created_by_user_id, created_at, updated_at
+    ) VALUES ('patreon', 'plus', ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(external_tier_id) DO UPDATE SET
+      tier_title = excluded.tier_title,
+      active = excluded.active,
+      updated_at = excluded.updated_at
+  `).bind(externalTierId, tierTitle || null, active, auth.user.id, now, now).run();
+
+  return json({ ok: true, externalTierId, tierTitle, active });
+}
+
+async function handleAdminPatreonTierDelete(context, externalTierId) {
+  const { env } = context;
+  const auth = await requireAdmin(context);
+  if(auth.error) {
+    return auth.error;
+  }
+  await ensurePatreonTables(env);
+
+  const id = String(externalTierId || '').trim();
+  if(!id) {
+    return json({ ok: false, message: 'externalTierId is required' }, 400);
+  }
+
+  const updated = await env.DB.prepare(`
+    UPDATE billing_tier_rules
+    SET active = 0, updated_at = ?
+    WHERE provider = 'patreon' AND plan_key = 'plus' AND external_tier_id = ?
+  `).bind(nowIso(), id).run();
+  if((updated.meta?.changes || 0) !== 1) {
+    return json({ ok: false, message: 'Tier not found' }, 404);
+  }
+  return json({ ok: true, externalTierId: id, active: 0 });
+}
+
 async function handleAdminBan(context) {
   const { request, env } = context;
   const auth = await requireAdmin(context);
@@ -2499,294 +2887,6 @@ async function handleAdminUsers(context) {
   return json({ ok: true, users: rows?.results || [] });
 }
 
-async function handlePayPalActivate(context) {
-  const { request, env } = context;
-  const auth = await currentUser(context);
-  if(auth.error) {
-    return auth.error;
-  }
-  if(!isEmailVerified(auth.user)) {
-    return emailVerificationRequiredResponse();
-  }
-
-  await ensureBillingTables(env);
-
-  const body = await parseRequestBody(request);
-  const data = typeof body === 'string' ? {} : (body || {});
-  const subscriptionId = String(data.subscriptionId || '').trim();
-  const planId = String(data.planId || '').trim();
-  const allowedPlanId = String(env.PAYPAL_PLAN_ID_PLUS || 'P-14V362713R263544HNGO3P5I').trim();
-  if(!subscriptionId) {
-    return json({ ok: false, message: 'subscriptionId is required' }, 400);
-  }
-  if(!allowedPlanId) {
-    return json({ ok: false, message: 'PAYPAL_PLAN_ID_PLUS is not configured' }, 500);
-  }
-  if(planId !== allowedPlanId) {
-    return json({ ok: false, message: 'Invalid plan id' }, 400);
-  }
-
-  let paypalPayload;
-  try {
-    paypalPayload = await fetchPayPalSubscription(env, subscriptionId);
-  } catch(err) {
-    return json({ ok: false, message: String(err?.message || 'PayPal lookup failed') }, 502);
-  }
-
-  const normalized = extractSubscriptionFromPayPalPayload(paypalPayload);
-  if(normalized.paypalPlanId !== allowedPlanId) {
-    return json({ ok: false, message: 'PayPal plan mismatch' }, 400);
-  }
-  if(normalized.paypalSubscriptionId !== subscriptionId) {
-    return json({ ok: false, message: 'PayPal subscription mismatch' }, 400);
-  }
-
-  const existing = await env.DB.prepare(`
-    SELECT id, user_id
-    FROM billing_subscriptions
-    WHERE paypal_subscription_id = ?
-    LIMIT 1
-  `).bind(subscriptionId).first();
-  if(existing && Number(existing.user_id || 0) !== Number(auth.user.id || 0)) {
-    return json({ ok: false, message: 'This subscription is already linked to another account' }, 409);
-  }
-
-  const now = nowIso();
-  await env.DB.prepare(`
-    INSERT INTO billing_subscriptions (
-      user_id, provider, paypal_subscription_id, plan_key, paypal_plan_id, status,
-      current_period_end, started_at, cancelled_at, is_grant, granted_by_user_id,
-      raw_payload, created_at, updated_at
-    ) VALUES (?, 'paypal', ?, 'plus', ?, ?, ?, ?, ?, 0, NULL, ?, ?, ?)
-    ON CONFLICT(paypal_subscription_id) DO UPDATE SET
-      user_id = excluded.user_id,
-      plan_key = excluded.plan_key,
-      paypal_plan_id = excluded.paypal_plan_id,
-      status = excluded.status,
-      current_period_end = excluded.current_period_end,
-      started_at = COALESCE(excluded.started_at, billing_subscriptions.started_at),
-      cancelled_at = excluded.cancelled_at,
-      raw_payload = excluded.raw_payload,
-      updated_at = excluded.updated_at
-  `).bind(
-    auth.user.id,
-    subscriptionId,
-    normalized.paypalPlanId,
-    normalized.status,
-    normalized.currentPeriodEnd,
-    normalized.startedAt,
-    normalized.cancelledAt,
-    JSON.stringify(paypalPayload),
-    now,
-    now,
-  ).run();
-
-  return json({
-    ok: true,
-    subscription: {
-      status: normalized.status,
-      planKey: 'plus',
-      currentPeriodEnd: normalized.currentPeriodEnd,
-    },
-  });
-}
-
-async function handlePayPalWebhook(context) {
-  const { request, env } = context;
-  await ensureBillingTables(env);
-
-  const rawBodyText = await request.text();
-  let payload;
-  try {
-    payload = JSON.parse(rawBodyText || '{}');
-  } catch {
-    return json({ ok: false, message: 'Invalid JSON payload' }, 400);
-  }
-
-  let verified = false;
-  try {
-    verified = await verifyPayPalWebhook(env, request, rawBodyText, payload);
-  } catch(err) {
-    return json({ ok: false, message: String(err?.message || 'Webhook verification failed') }, 502);
-  }
-  if(!verified) {
-    return json({ ok: false, message: 'Invalid PayPal webhook signature' }, 401);
-  }
-
-  const eventId = String(payload.id || '').trim();
-  const eventType = String(payload.event_type || '').trim();
-  const resourceId = String(payload?.resource?.id || '').trim();
-  if(!eventId || !eventType) {
-    return json({ ok: false, message: 'Missing webhook event id/type' }, 400);
-  }
-
-  const now = nowIso();
-  const inserted = await env.DB.prepare(`
-    INSERT INTO billing_webhook_events (
-      provider, event_id, event_type, resource_id, received_at, processed_at, raw_payload
-    ) VALUES ('paypal', ?, ?, ?, ?, NULL, ?)
-    ON CONFLICT(event_id) DO NOTHING
-  `).bind(eventId, eventType, resourceId || null, now, rawBodyText).run();
-  if((inserted.meta?.changes || 0) === 0) {
-    return json({ ok: true, duplicate: true });
-  }
-
-  const handledEventTypes = new Set([
-    'BILLING.SUBSCRIPTION.ACTIVATED',
-    'BILLING.SUBSCRIPTION.UPDATED',
-    'BILLING.SUBSCRIPTION.CANCELLED',
-    'BILLING.SUBSCRIPTION.SUSPENDED',
-    'BILLING.SUBSCRIPTION.EXPIRED',
-  ]);
-
-  if(handledEventTypes.has(eventType) && resourceId) {
-    const normalized = extractSubscriptionFromPayPalPayload(payload.resource || {});
-    const allowedPlanId = String(env.PAYPAL_PLAN_ID_PLUS || '').trim();
-    if(normalized.paypalPlanId === allowedPlanId) {
-      await env.DB.prepare(`
-        UPDATE billing_subscriptions
-        SET status = ?,
-            current_period_end = COALESCE(?, current_period_end),
-            cancelled_at = ?,
-            raw_payload = ?,
-            updated_at = ?
-        WHERE paypal_subscription_id = ?
-      `).bind(
-        normalized.status,
-        normalized.currentPeriodEnd,
-        normalized.cancelledAt,
-        JSON.stringify(payload.resource || payload),
-        now,
-        resourceId,
-      ).run();
-    }
-  }
-
-  let ncpResult = null;
-  if(eventType === 'PAYMENT.CAPTURE.COMPLETED') {
-    ncpResult = await processPayPalCaptureCompleted(env, payload, now);
-  }
-
-  await env.DB.prepare(`
-    UPDATE billing_webhook_events
-    SET processed_at = ?
-    WHERE event_id = ?
-  `).bind(now, eventId).run();
-
-  return json({ ok: true, ncp: ncpResult });
-}
-
-async function handleMySubscription(context) {
-  const auth = await currentUser(context);
-  if(auth.error) {
-    return auth.error;
-  }
-  await ensureBillingTables(context.env);
-
-  const row = await context.env.DB.prepare(`
-    SELECT id, user_id, provider, paypal_subscription_id, plan_key, paypal_plan_id, status,
-           current_period_end, started_at, cancelled_at, is_grant, granted_by_user_id, updated_at
-    FROM billing_subscriptions
-    WHERE user_id = ?
-    ORDER BY
-      CASE WHEN status = 'ACTIVE' THEN 0 ELSE 1 END,
-      datetime(COALESCE(current_period_end, '1970-01-01T00:00:00Z')) DESC,
-      id DESC
-    LIMIT 1
-  `).bind(auth.user.id).first();
-
-  return json({
-    ok: true,
-    subscription: row || null,
-  });
-}
-
-async function handleAdminSubscriptionGrant(context) {
-  const { request, env } = context;
-  const auth = await requireAdmin(context);
-  if(auth.error) {
-    return auth.error;
-  }
-  await ensureBillingTables(env);
-
-  const body = await parseRequestBody(request);
-  const data = typeof body === 'string' ? {} : (body || {});
-  const accountId = Number(data.accountId || 0);
-  const monthsRaw = Number(data.months || 1);
-  const reason = String(data.reason || '').trim();
-  if(!Number.isFinite(accountId) || accountId <= 0) {
-    return json({ ok: false, message: 'Invalid account id' }, 400);
-  }
-  const months = Math.max(1, Math.min(12, Math.floor(monthsRaw)));
-
-  const account = await env.DB.prepare(`SELECT id FROM users WHERE id = ? LIMIT 1`).bind(accountId).first();
-  if(!account) {
-    return json({ ok: false, message: 'Account not found' }, 404);
-  }
-
-  const active = await env.DB.prepare(`
-    SELECT id, current_period_end
-    FROM billing_subscriptions
-    WHERE user_id = ? AND is_grant = 1 AND status = 'ACTIVE'
-    ORDER BY id DESC
-    LIMIT 1
-  `).bind(accountId).first();
-
-  const nowMs = Date.now();
-  const activeEndMs = Date.parse(String(active?.current_period_end || ''));
-  const baseMs = Number.isFinite(activeEndMs) && activeEndMs > nowMs ? activeEndMs : nowMs;
-  const nextMs = baseMs + (months * 30 * 24 * 60 * 60 * 1000);
-  const nextIso = new Date(nextMs).toISOString();
-  const now = nowIso();
-  const planId = String(env.PAYPAL_PLAN_ID_PLUS || '').trim();
-  if(!planId) {
-    return json({ ok: false, message: 'PAYPAL_PLAN_ID_PLUS is not configured' }, 500);
-  }
-
-  if(active) {
-    await env.DB.prepare(`
-      UPDATE billing_subscriptions
-      SET plan_key = 'plus',
-          paypal_plan_id = ?,
-          status = 'ACTIVE',
-          current_period_end = ?,
-          updated_at = ?,
-          raw_payload = ?
-      WHERE id = ?
-    `).bind(
-      planId,
-      nextIso,
-      now,
-      JSON.stringify({ source: 'admin_grant_extend', reason, months }),
-      active.id,
-    ).run();
-  } else {
-    await env.DB.prepare(`
-      INSERT INTO billing_subscriptions (
-        user_id, provider, paypal_subscription_id, plan_key, paypal_plan_id, status,
-        current_period_end, started_at, cancelled_at, is_grant, granted_by_user_id,
-        raw_payload, created_at, updated_at
-      ) VALUES (?, 'paypal', NULL, 'plus', ?, 'ACTIVE', ?, ?, NULL, 1, ?, ?, ?, ?)
-    `).bind(
-      accountId,
-      planId,
-      nextIso,
-      now,
-      auth.user.id,
-      JSON.stringify({ source: 'admin_grant_create', reason, months }),
-      now,
-      now,
-    ).run();
-  }
-
-  return json({
-    ok: true,
-    accountId,
-    months,
-    currentPeriodEnd: nextIso,
-  });
-}
-
 export async function onRequest(context) {
   const { request } = context;
   const url = new URL(request.url);
@@ -2881,6 +2981,26 @@ export async function onRequest(context) {
     return handleGameAccountStatus(context);
   }
 
+  if(request.method === 'GET' && path === '/billing/patreon/start') {
+    return handlePatreonStart(context);
+  }
+
+  if(request.method === 'GET' && path === '/billing/patreon/callback') {
+    return handlePatreonCallback(context);
+  }
+
+  if(request.method === 'POST' && path === '/billing/patreon/webhook') {
+    return handlePatreonWebhook(context);
+  }
+
+  if(request.method === 'POST' && path === '/billing/patreon/disconnect') {
+    return handlePatreonDisconnect(context);
+  }
+
+  if(request.method === 'GET' && path === '/billing/subscription/me') {
+    return handleMySubscription(context);
+  }
+
   if(request.method === 'POST' && path === '/admin/ban') {
     return handleAdminBan(context);
   }
@@ -2892,25 +3012,18 @@ export async function onRequest(context) {
   if(request.method === 'GET' && path === '/admin/users') {
     return handleAdminUsers(context);
   }
-  if(request.method === 'GET' && path === '/debug/paypal-config') {
-    return handleDebugPayPalConfig(context);
+
+  if(request.method === 'GET' && path === '/admin/patreon/tiers') {
+    return handleAdminPatreonTiers(context);
   }
 
-  if(request.method === 'POST' && path === '/billing/paypal/activate') {
-    return handlePayPalActivate(context);
+  if(request.method === 'POST' && path === '/admin/patreon/tiers') {
+    return handleAdminPatreonTierUpsert(context);
   }
 
-  if(request.method === 'POST' && path === '/billing/paypal/webhook') {
-    return handlePayPalWebhook(context);
+  if(request.method === 'DELETE' && path.startsWith('/admin/patreon/tiers/')) {
+    const externalTierId = decodeURIComponent(path.slice('/admin/patreon/tiers/'.length));
+    return handleAdminPatreonTierDelete(context, externalTierId);
   }
-
-  if(request.method === 'GET' && path === '/billing/subscription/me') {
-    return handleMySubscription(context);
-  }
-
-  if(request.method === 'POST' && path === '/admin/subscription/grant') {
-    return handleAdminSubscriptionGrant(context);
-  }
-
   return json({ ok: false, message: 'API route not found' }, 404);
 }

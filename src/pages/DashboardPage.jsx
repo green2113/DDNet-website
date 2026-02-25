@@ -1,6 +1,21 @@
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { adminBanAccount, adminSearchUsers, adminUnbanAccount, getCurrentDummyGameCode, getCurrentGameCode, resendEmailVerification, rotateDummyGameCode, rotateGameCode, updateDummyProfileName, updateProfileName, verifyEmailCode } from '../lib/api';
+import {
+  adminBanAccount,
+  adminDeletePatreonTier,
+  adminGetPatreonTiers,
+  adminSearchUsers,
+  adminUnbanAccount,
+  adminUpsertPatreonTier,
+  getCurrentDummyGameCode,
+  getCurrentGameCode,
+  resendEmailVerification,
+  rotateDummyGameCode,
+  rotateGameCode,
+  updateDummyProfileName,
+  updateProfileName,
+  verifyEmailCode,
+} from '../lib/api';
 import { useAuth } from '../components/AuthProvider';
 import { useI18n } from '../components/I18nProvider';
 import { Feedback, TopBar } from '../components/Layout';
@@ -152,6 +167,12 @@ export default function DashboardPage() {
   const [adminReasonCustom, setAdminReasonCustom] = useState('');
   const [adminSubmitting, setAdminSubmitting] = useState(false);
   const [showAdminBanConfirm, setShowAdminBanConfirm] = useState(false);
+  const [adminPatreonTierId, setAdminPatreonTierId] = useState('');
+  const [adminPatreonTierTitle, setAdminPatreonTierTitle] = useState('');
+  const [adminPatreonTierActive, setAdminPatreonTierActive] = useState(true);
+  const [adminPatreonTiers, setAdminPatreonTiers] = useState([]);
+  const [adminPatreonLoading, setAdminPatreonLoading] = useState(false);
+  const [adminPatreonSubmitting, setAdminPatreonSubmitting] = useState(false);
   const adminPickerRef = useRef(null);
   const adminSearchInputRef = useRef(null);
   const adminUsersRequestIdRef = useRef(0);
@@ -209,6 +230,19 @@ export default function DashboardPage() {
     }
   };
 
+  const refreshAdminPatreonTiers = async () => {
+    setAdminPatreonLoading(true);
+    try {
+      const result = await adminGetPatreonTiers();
+      setAdminPatreonTiers(Array.isArray(result?.tiers) ? result.tiers : []);
+    } catch (err) {
+      setAdminPatreonTiers([]);
+      setFeedback({ type: 'error', message: err.message });
+    } finally {
+      setAdminPatreonLoading(false);
+    }
+  };
+
   useEffect(() => {
     if(!isAdmin && activeSection === 'admin-ban') {
       setActiveSection('account');
@@ -222,6 +256,7 @@ export default function DashboardPage() {
       return undefined;
     }
     refreshAdminUsers();
+    refreshAdminPatreonTiers();
     return () => {
       adminUsersRequestIdRef.current += 1;
     };
@@ -664,6 +699,49 @@ export default function DashboardPage() {
       setFeedback({ type: 'error', message: err.message });
     } finally {
       setAdminSubmitting(false);
+    }
+  };
+
+  const onAdminPatreonTierSave = async () => {
+    const tierId = String(adminPatreonTierId || '').trim();
+    if(!tierId) {
+      setFeedback({ type: 'error', message: 'Tier ID is required.' });
+      return;
+    }
+    setAdminPatreonSubmitting(true);
+    setFeedback(null);
+    try {
+      await adminUpsertPatreonTier({
+        externalTierId: tierId,
+        tierTitle: String(adminPatreonTierTitle || '').trim(),
+        active: adminPatreonTierActive ? 1 : 0,
+      });
+      setAdminPatreonTierId('');
+      setAdminPatreonTierTitle('');
+      setAdminPatreonTierActive(true);
+      await refreshAdminPatreonTiers();
+      setFeedback({ type: 'ok', message: 'Patreon tier saved.' });
+    } catch (err) {
+      setFeedback({ type: 'error', message: err.message });
+    } finally {
+      setAdminPatreonSubmitting(false);
+    }
+  };
+
+  const onAdminPatreonTierDisable = async (tierId) => {
+    if(!tierId || adminPatreonSubmitting) {
+      return;
+    }
+    setAdminPatreonSubmitting(true);
+    setFeedback(null);
+    try {
+      await adminDeletePatreonTier(tierId);
+      await refreshAdminPatreonTiers();
+      setFeedback({ type: 'ok', message: 'Patreon tier disabled.' });
+    } catch (err) {
+      setFeedback({ type: 'error', message: err.message });
+    } finally {
+      setAdminPatreonSubmitting(false);
     }
   };
 
@@ -1306,6 +1384,83 @@ ${t('dashboard.accessReasonLine', { reason: banReasonText || '-' })}`
                   </button>
                 </div>
               ) : null}
+
+              <div className="dashboard-nav-divider" />
+              <h3>Patreon Plus Tier Rules</h3>
+              <p className="muted">Only active patrons in allowed tiers are treated as Plus.</p>
+              <div className="admin-form-grid">
+                <label>
+                  Patreon Tier ID
+                  <input
+                    value={adminPatreonTierId}
+                    onChange={(event) => setAdminPatreonTierId(event.target.value)}
+                    placeholder="e.g. 12345678"
+                  />
+                </label>
+                <label>
+                  Tier Title (optional)
+                  <input
+                    value={adminPatreonTierTitle}
+                    onChange={(event) => setAdminPatreonTierTitle(event.target.value)}
+                    placeholder="e.g. Ravion Plus"
+                  />
+                </label>
+                <label>
+                  Active
+                  <select
+                    value={adminPatreonTierActive ? '1' : '0'}
+                    onChange={(event) => setAdminPatreonTierActive(event.target.value === '1')}
+                  >
+                    <option value="1">Enabled</option>
+                    <option value="0">Disabled</option>
+                  </select>
+                </label>
+              </div>
+              <div className="admin-actions">
+                <button className="btn admin-main-action" type="button" onClick={onAdminPatreonTierSave} disabled={adminPatreonSubmitting}>
+                  Save Patreon Tier
+                </button>
+              </div>
+
+              <div className="admin-tier-list">
+                <div className="admin-tier-list-header">
+                  <span>Tier ID</span>
+                  <span>Title</span>
+                  <span>Status</span>
+                  <span>Action</span>
+                </div>
+                <div className="admin-tier-list-body">
+                  {adminPatreonLoading ? (
+                    <div className="admin-user-list-empty">Loading tiers...</div>
+                  ) : adminPatreonTiers.length === 0 ? (
+                    <div className="admin-user-list-empty">No Patreon tier rules yet.</div>
+                  ) : (
+                    adminPatreonTiers.map((tier) => (
+                      <div className="admin-tier-row" key={tier.external_tier_id}>
+                        <span>{tier.external_tier_id}</span>
+                        <span>{tier.tier_title || '-'}</span>
+                        <span className={Number(tier.active || 0) === 1 ? 'status-text status-normal' : 'status-text status-temporary'}>
+                          {Number(tier.active || 0) === 1 ? 'Enabled' : 'Disabled'}
+                        </span>
+                        <span>
+                          {Number(tier.active || 0) === 1 ? (
+                            <button
+                              className="btn ghost"
+                              type="button"
+                              onClick={() => onAdminPatreonTierDisable(tier.external_tier_id)}
+                              disabled={adminPatreonSubmitting}
+                            >
+                              Disable
+                            </button>
+                          ) : (
+                            <span className="muted">-</span>
+                          )}
+                        </span>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
             </article>
           ) : null}
 

@@ -10,3 +10,7 @@
 .read migrations/0010_user_admin_flag.sql
 .read migrations/0011_billing_subscriptions.sql
 .read migrations/0012_billing_webhook_events.sql
+.read migrations/0013_patreon_connections.sql
+.read migrations/0014_billing_entitlements.sql
+.read migrations/0015_billing_tier_rules.sql
+.read migrations/0016_patreon_oauth_states.sql

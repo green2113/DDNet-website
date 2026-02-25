@@ -133,20 +133,31 @@ export async function adminSearchUsers(query = '') {
   return api(`/api/admin/users?q=${q}`, { method: 'GET' });
 }
 
-export async function activatePaypalSubscription(payload) {
-  return api('/api/billing/paypal/activate', {
-    method: 'POST',
-    body: JSON.stringify(payload),
-  });
+export async function startPatreonConnect() {
+  window.location.assign('/api/billing/patreon/start');
+}
+
+export async function disconnectPatreon() {
+  return api('/api/billing/patreon/disconnect', { method: 'POST' });
 }
 
 export async function getMySubscription() {
   return api('/api/billing/subscription/me', { method: 'GET' });
 }
 
-export async function adminGrantSubscription(payload) {
-  return api('/api/admin/subscription/grant', {
+export async function adminGetPatreonTiers() {
+  return api('/api/admin/patreon/tiers', { method: 'GET' });
+}
+
+export async function adminUpsertPatreonTier(payload) {
+  return api('/api/admin/patreon/tiers', {
     method: 'POST',
     body: JSON.stringify(payload),
+  });
+}
+
+export async function adminDeletePatreonTier(externalTierId) {
+  return api(`/api/admin/patreon/tiers/${encodeURIComponent(String(externalTierId || ''))}`, {
+    method: 'DELETE',
   });
 }
