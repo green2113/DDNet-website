@@ -4,16 +4,17 @@ import {
   adminBanAccount,
   adminDeletePatreonTier,
   adminGetPatreonTiers,
-  adminGetTrailSettings,
   adminSearchUsers,
   adminUnbanAccount,
-  adminUpdateTrailSettings,
   adminUpsertPatreonTier,
+  getMySubscription,
+  getTrailSettings,
   getCurrentDummyGameCode,
   getCurrentGameCode,
   resendEmailVerification,
   rotateDummyGameCode,
   rotateGameCode,
+  updateTrailSettings,
   updateDummyProfileName,
   updateProfileName,
   verifyEmailCode,
@@ -176,6 +177,8 @@ export default function DashboardPage() {
   const [adminPatreonTiers, setAdminPatreonTiers] = useState([]);
   const [adminPatreonLoading, setAdminPatreonLoading] = useState(false);
   const [adminPatreonSubmitting, setAdminPatreonSubmitting] = useState(false);
+  const [subscriptionInfo, setSubscriptionInfo] = useState(null);
+  const [subscriptionLoading, setSubscriptionLoading] = useState(false);
   const [adminTrailEnabled, setAdminTrailEnabled] = useState(false);
   const [adminTrailMode, setAdminTrailMode] = useState(1);
   const [adminTrailBaseline, setAdminTrailBaseline] = useState(null);
@@ -210,7 +213,26 @@ export default function DashboardPage() {
   const canSaveDummyName = editingDummyName && !dummyNameCooldownActive && !savingDummyName && trimmedDummyName.length > 0 && trimmedDummyName !== currentDummyName;
   const isDummyNameInputActive = editingDummyName || showDummyFirstIssue;
   const isAdmin = Number(user?.is_admin || 0) === 1;
-  const isAdminSection = activeSection === 'admin-ban' || activeSection === 'admin-trail';
+  const isAdminSection = activeSection === 'admin-ban';
+  const plusActive = Boolean(subscriptionInfo?.benefits?.plusActive);
+  const starterActive = plusActive || Boolean(subscriptionInfo?.benefits?.starterActive);
+  const trailFeatureLocked = !plusActive;
+  const plusSubscription = subscriptionInfo?.subscription || null;
+  const starterSubscription = subscriptionInfo?.starterSubscription || null;
+  const activeSubscription = plusActive ? plusSubscription : (starterActive ? starterSubscription : null);
+  const currentPlanLabel = plusActive
+    ? t('dashboard.subscriptionPlanPlus')
+    : starterActive
+      ? t('dashboard.subscriptionPlanStarter')
+      : t('dashboard.subscriptionPlanNone');
+  const currentPeriodEndRaw = String(activeSubscription?.current_period_end || '');
+  const currentPeriodEndMs = currentPeriodEndRaw ? Date.parse(currentPeriodEndRaw) : NaN;
+  const hasCurrentPeriodEnd = Number.isFinite(currentPeriodEndMs) && currentPeriodEndMs > 0;
+  const remainingDays = hasCurrentPeriodEnd ? Math.max(0, Math.ceil((currentPeriodEndMs - Date.now()) / (24 * 60 * 60 * 1000))) : 0;
+  const trailSectionLockedTooltip = t('dashboard.subscriptionTrailLockedTooltip');
+  const billingPageUrl = typeof window !== 'undefined'
+    ? `${window.location.origin}/billing/plans`
+    : '/billing/plans';
   const verifyRemainingSeconds = Math.min(600, Math.max(0, Math.ceil(verifyRemainingMs / 1000)));
   const verifyTimerText = verifyRemainingSeconds > 0
     ? `${String(Math.floor(verifyRemainingSeconds / 60)).padStart(2, '0')}:${String(verifyRemainingSeconds % 60).padStart(2, '0')}`
@@ -222,15 +244,15 @@ export default function DashboardPage() {
     ? adminReasonCustom.trim()
     : adminReasonPreset;
   const trailModeOptions = [
-    { value: 1, label: t('dashboard.adminTrailMode1') },
-    { value: 2, label: t('dashboard.adminTrailMode2') },
-    { value: 3, label: t('dashboard.adminTrailMode3') },
+    { value: 1, label: t('dashboard.subscriptionTrailMode1') },
+    { value: 2, label: t('dashboard.subscriptionTrailMode2') },
+    { value: 3, label: t('dashboard.subscriptionTrailMode3') },
   ];
   const currentTrailModeLabel = trailModeOptions.find((entry) => entry.value === adminTrailMode)?.label || trailModeOptions[0].label;
-  const trailModeDisabled = !adminTrailEnabled || adminTrailLoading || adminTrailSubmitting;
+  const trailModeDisabled = trailFeatureLocked || !adminTrailEnabled || adminTrailLoading || adminTrailSubmitting;
   const trailSaveDirty = Boolean(adminTrailBaseline) &&
     (adminTrailEnabled !== Boolean(adminTrailBaseline.enabled) || adminTrailMode !== Number(adminTrailBaseline.mode));
-  const trailSaveDisabled = adminTrailLoading || adminTrailSubmitting || !trailSaveDirty;
+  const trailSaveDisabled = trailFeatureLocked || adminTrailLoading || adminTrailSubmitting || !trailSaveDirty;
   const refreshAdminUsers = async () => {
     const requestId = ++adminUsersRequestIdRef.current;
     setAdminUsersLoading(true);
@@ -264,11 +286,46 @@ export default function DashboardPage() {
     }
   };
 
+  const refreshSubscriptionInfo = async ({ silent = false } = {}) => {
+    if(!silent) {
+      setSubscriptionLoading(true);
+    }
+    try {
+      const result = await getMySubscription();
+      setSubscriptionInfo(result || null);
+    } catch (err) {
+      if(!silent) {
+        setFeedback({ type: 'error', message: err.message });
+      }
+    } finally {
+      if(!silent) {
+        setSubscriptionLoading(false);
+      }
+    }
+  };
+
   useEffect(() => {
     if(!isAdmin && isAdminSection) {
       setActiveSection('account');
     }
   }, [isAdmin, isAdminSection]);
+
+  useEffect(() => {
+    refreshSubscriptionInfo({ silent: true });
+  }, []);
+
+  useEffect(() => {
+    if(activeSection !== 'subscription' && activeSection !== 'subscription-trail') {
+      return;
+    }
+    refreshSubscriptionInfo();
+  }, [activeSection]);
+
+  useEffect(() => {
+    if(!plusActive && activeSection === 'subscription-trail') {
+      setActiveSection('subscription');
+    }
+  }, [plusActive, activeSection]);
 
   useEffect(() => {
     if(!isAdmin || activeSection !== 'admin-ban') {
@@ -283,10 +340,10 @@ export default function DashboardPage() {
     };
   }, [isAdmin, activeSection]);
 
-  const refreshAdminTrailSettings = async () => {
+  const refreshTrailSettings = async () => {
     setAdminTrailLoading(true);
     try {
-      const result = await adminGetTrailSettings();
+      const result = await getTrailSettings();
       const enabled = Boolean(result?.trailEnabled);
       const modeRaw = Number(result?.trailMode || 1);
       const normalizedMode = Number.isFinite(modeRaw) && modeRaw >= 1 && modeRaw <= 3 ? Math.floor(modeRaw) : 1;
@@ -304,12 +361,12 @@ export default function DashboardPage() {
   };
 
   useEffect(() => {
-    if(!isAdmin || activeSection !== 'admin-trail') {
+    if(activeSection !== 'subscription-trail') {
       setAdminTrailMenuOpen(false);
       return;
     }
-    refreshAdminTrailSettings();
-  }, [isAdmin, activeSection]);
+    refreshTrailSettings();
+  }, [activeSection]);
 
   useEffect(() => {
     if(!adminTrailMenuOpen) {
@@ -829,15 +886,19 @@ export default function DashboardPage() {
     if(adminTrailSubmitting) {
       return;
     }
+    if(trailFeatureLocked) {
+      setFeedback({ type: 'error', message: trailSectionLockedTooltip });
+      return;
+    }
     setAdminTrailSubmitting(true);
     setFeedback(null);
     try {
-      await adminUpdateTrailSettings({
+      await updateTrailSettings({
         enabled: adminTrailEnabled ? 1 : 0,
         mode: adminTrailMode,
       });
       setAdminTrailBaseline({ enabled: adminTrailEnabled, mode: adminTrailMode });
-      setFeedback({ type: 'ok', message: t('dashboard.adminTrailSaved') });
+      setFeedback({ type: 'ok', message: t('dashboard.subscriptionTrailSaved') });
     } catch (err) {
       setFeedback({ type: 'error', message: err.message });
     } finally {
@@ -956,6 +1017,7 @@ ${t('dashboard.accessReasonLine', { reason: banReasonText || '-' })}`
   const navItems = [
     { id: 'account', label: t('dashboard.accountTitle'), icon: iconUser },
     ...(canUseInvite ? [{ id: 'invite', label: t('dashboard.inviteTitle'), icon: iconEnvelope }] : []),
+    { id: 'subscription', label: t('dashboard.subscriptionNav'), icon: iconSiren },
     { id: 'codes', label: t('dashboard.gameCodeTitle'), icon: iconKey },
   ];
 
@@ -1010,6 +1072,29 @@ ${t('dashboard.accessReasonLine', { reason: banReasonText || '-' })}`
                 <span>{item.label}</span>
               </button>
             ))}
+            {trailFeatureLocked ? (
+              <Tooltip label={trailSectionLockedTooltip}>
+                <button
+                  className={`dashboard-nav-btn dashboard-sub-nav-btn${activeSection === 'subscription-trail' ? ' active' : ''} is-locked`}
+                  type="button"
+                  onClick={() => {}}
+                  aria-disabled="true"
+                  title={trailSectionLockedTooltip}
+                >
+                  <span className="dashboard-nav-icon" aria-hidden="true"><img src={iconSiren} alt="" /></span>
+                  <span>{t('dashboard.subscriptionTrailNav')}</span>
+                </button>
+              </Tooltip>
+            ) : (
+              <button
+                className={`dashboard-nav-btn dashboard-sub-nav-btn${activeSection === 'subscription-trail' ? ' active' : ''}`}
+                type="button"
+                onClick={() => setActiveSection('subscription-trail')}
+              >
+                <span className="dashboard-nav-icon" aria-hidden="true"><img src={iconSiren} alt="" /></span>
+                <span>{t('dashboard.subscriptionTrailNav')}</span>
+              </button>
+            )}
           </nav>
           {isAdmin ? (
             <div className="dashboard-admin-nav">
@@ -1022,14 +1107,6 @@ ${t('dashboard.accessReasonLine', { reason: banReasonText || '-' })}`
               >
                 <span className="dashboard-nav-icon" aria-hidden="true"><img src={iconSiren} alt="" /></span>
                 <span>{t('dashboard.adminBanNav')}</span>
-              </button>
-              <button
-                className={`dashboard-nav-btn${activeSection === 'admin-trail' ? ' active' : ''}`}
-                type="button"
-                onClick={() => setActiveSection('admin-trail')}
-              >
-                <span className="dashboard-nav-icon" aria-hidden="true"><img src={iconSiren} alt="" /></span>
-                <span>{t('dashboard.adminTrailNav')}</span>
               </button>
             </div>
           ) : null}
@@ -1227,6 +1304,39 @@ ${t('dashboard.accessReasonLine', { reason: banReasonText || '-' })}`
             <dt>{t('dashboard.rowAccess')}</dt>
             <dd><span className={`${accessStatusClass} preserve-lines`}>{accessStatusText}</span></dd>
           </dl>
+            </article>
+          ) : null}
+
+          {activeSection === 'subscription' ? (
+            <article className="panel">
+              <h3>{t('dashboard.subscriptionTitle')}</h3>
+              <p className="muted">{t('dashboard.subscriptionBody')}</p>
+              <dl className="info subscription-info">
+                <dt>{t('dashboard.subscriptionCurrentPlan')}</dt>
+                <dd>{subscriptionLoading ? t('dashboard.subscriptionLoading') : currentPlanLabel}</dd>
+                <dt>{t('dashboard.subscriptionPeriodEnd')}</dt>
+                <dd>
+                  {subscriptionLoading
+                    ? t('dashboard.subscriptionLoading')
+                    : hasCurrentPeriodEnd
+                      ? formatDateTimePrecise(currentPeriodEndMs, locale)
+                      : '-'}
+                </dd>
+                <dt>{t('dashboard.subscriptionRemainingDays')}</dt>
+                <dd>
+                  {subscriptionLoading
+                    ? t('dashboard.subscriptionLoading')
+                    : hasCurrentPeriodEnd
+                      ? t('dashboard.subscriptionRemainingDaysValue', { days: remainingDays })
+                      : '-'}
+                </dd>
+                <dt>{t('dashboard.subscriptionPlanPage')}</dt>
+                <dd>
+                  <a className="mini-link" href={billingPageUrl}>
+                    {billingPageUrl}
+                  </a>
+                </dd>
+              </dl>
             </article>
           ) : null}
 
@@ -1583,14 +1693,14 @@ ${t('dashboard.accessReasonLine', { reason: banReasonText || '-' })}`
             </article>
           ) : null}
 
-          {activeSection === 'admin-trail' && isAdmin ? (
+          {activeSection === 'subscription-trail' ? (
             <article className="panel">
-              <h3>{t('dashboard.adminTrailTitle')}</h3>
-              <p className="muted">{t('dashboard.adminTrailBody')}</p>
+              <h3>{t('dashboard.subscriptionTrailTitle')}</h3>
+              <p className="muted">{t('dashboard.subscriptionTrailBody')}</p>
               <div className="trail-setting-card">
                 <div className="trail-toggle-row">
                   <div>
-                    <p className="trail-toggle-title">{t('dashboard.adminTrailToggleLabel')}</p>
+                    <p className="trail-toggle-title">{t('dashboard.subscriptionTrailToggleLabel')}</p>
                   </div>
                   <button
                     className={`trail-toggle${adminTrailEnabled ? ' is-on' : ''}`}
@@ -1598,14 +1708,14 @@ ${t('dashboard.accessReasonLine', { reason: banReasonText || '-' })}`
                     role="switch"
                     aria-checked={adminTrailEnabled}
                     onClick={() => setAdminTrailEnabled((prev) => !prev)}
-                    disabled={adminTrailLoading || adminTrailSubmitting}
+                    disabled={trailFeatureLocked || adminTrailLoading || adminTrailSubmitting}
                   >
                     <span className="trail-toggle-knob" />
                   </button>
                 </div>
 
                 <div className={`trail-mode-box${trailModeDisabled ? ' is-disabled' : ''}`} ref={adminTrailMenuRef}>
-                  <p className="trail-mode-label">{t('dashboard.adminTrailModeLabel')}</p>
+                  <p className="trail-mode-label">{t('dashboard.subscriptionTrailModeLabel')}</p>
                   <button
                     className={`trail-mode-trigger${adminTrailMenuOpen ? ' is-open' : ''}`}
                     type="button"
@@ -1648,7 +1758,7 @@ ${t('dashboard.accessReasonLine', { reason: banReasonText || '-' })}`
                   onClick={onAdminTrailSave}
                   disabled={trailSaveDisabled}
                 >
-                  {adminTrailSubmitting ? t('dashboard.adminTrailSaving') : t('dashboard.adminTrailSave')}
+                  {adminTrailSubmitting ? t('dashboard.subscriptionTrailSaving') : t('dashboard.subscriptionTrailSave')}
                 </button>
               </div>
             </article>

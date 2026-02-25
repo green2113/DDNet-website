@@ -172,3 +172,14 @@ export async function adminUpdateTrailSettings(payload) {
     body: JSON.stringify(payload || {}),
   });
 }
+
+export async function getTrailSettings() {
+  return api('/api/me/trail-settings', { method: 'GET' });
+}
+
+export async function updateTrailSettings(payload) {
+  return api('/api/me/trail-settings', {
+    method: 'POST',
+    body: JSON.stringify(payload || {}),
+  });
+}

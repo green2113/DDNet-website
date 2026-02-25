@@ -309,6 +309,21 @@ h3 {
   color: #f2f6ff;
 }
 
+.dashboard-sub-nav-btn {
+  margin-left: 18px;
+  width: calc(100% - 18px);
+  font-size: 0.9rem;
+}
+
+.dashboard-nav-btn.is-locked,
+.dashboard-nav-btn.is-locked:hover {
+  opacity: 0.64;
+  background: rgba(8, 13, 30, 0.46);
+  border-color: rgba(120, 142, 189, 0.24);
+  color: #a5b6dc;
+  cursor: not-allowed;
+}
+
 .dashboard-admin-nav {
   margin-top: 12px;
 }
@@ -983,6 +998,11 @@ button.btn {
   padding-top: 1px;
 }
 
+.subscription-info .mini-link {
+  margin: 0;
+  word-break: break-all;
+}
+
 .name-inline {
   display: flex;
   align-items: flex-start;
@@ -1317,6 +1337,11 @@ button.btn {
 
   .dashboard-nav {
     grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  }
+
+  .dashboard-sub-nav-btn {
+    margin-left: 0;
+    width: 100%;
   }
 
   .dashboard-codes-grid {

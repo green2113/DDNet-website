@@ -3157,6 +3157,78 @@ async function handleAdminTrailSettingsSet(context) {
   });
 }
 
+async function handleMyTrailSettingsGet(context) {
+  const { env } = context;
+  const auth = await currentUser(context);
+  if(auth.error) {
+    return auth.error;
+  }
+
+  await ensureTrailSettingsTable(env);
+
+  const row = await env.DB.prepare(`
+    SELECT enabled, mode
+    FROM user_trail_settings
+    WHERE user_id = ?
+    LIMIT 1
+  `).bind(auth.user.id).first();
+
+  let trailMode = Number(row?.mode || 1);
+  if(!Number.isFinite(trailMode) || trailMode < TRAIL_MODE_MIN || trailMode > TRAIL_MODE_MAX) {
+    trailMode = 1;
+  }
+
+  const planFlags = await loadPlanActivityFlags(env, auth.user.id);
+
+  return json({
+    ok: true,
+    plusActive: !!planFlags.plusActive,
+    trailEnabled: Number(row?.enabled || 0) === 1,
+    trailMode,
+  });
+}
+
+async function handleMyTrailSettingsSet(context) {
+  const { env, request } = context;
+  const auth = await currentUser(context);
+  if(auth.error) {
+    return auth.error;
+  }
+
+  const planFlags = await loadPlanActivityFlags(env, auth.user.id);
+  if(!planFlags.plusActive) {
+    return json({ ok: false, message: 'Plus subscription is required to use trail settings.' }, 403);
+  }
+
+  await ensureTrailSettingsTable(env);
+
+  const body = await parseRequestBody(request);
+  const data = typeof body === 'string' ? {} : (body || {});
+  const trailEnabled = Number(data.enabled ? 1 : 0) === 1;
+  let trailMode = Number(data.mode === undefined ? 1 : data.mode);
+  if(!Number.isFinite(trailMode) || trailMode < TRAIL_MODE_MIN || trailMode > TRAIL_MODE_MAX) {
+    trailMode = 1;
+  }
+
+  const now = nowIso();
+  await env.DB.prepare(`
+    INSERT INTO user_trail_settings (
+      user_id, enabled, mode, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(user_id) DO UPDATE SET
+      enabled = excluded.enabled,
+      mode = excluded.mode,
+      updated_at = excluded.updated_at
+  `).bind(auth.user.id, trailEnabled ? 1 : 0, trailMode, now, now).run();
+
+  return json({
+    ok: true,
+    plusActive: true,
+    trailEnabled,
+    trailMode,
+  });
+}
+
 async function handleAdminBan(context) {
   const { request, env } = context;
   const auth = await requireAdmin(context);
@@ -3379,6 +3451,14 @@ export async function onRequest(context) {
 
   if(request.method === 'GET' && path === '/billing/subscription/me') {
     return handleMySubscription(context);
+  }
+
+  if(request.method === 'GET' && path === '/me/trail-settings') {
+    return handleMyTrailSettingsGet(context);
+  }
+
+  if(request.method === 'POST' && path === '/me/trail-settings') {
+    return handleMyTrailSettingsSet(context);
   }
 
   if(request.method === 'POST' && path === '/admin/ban') {

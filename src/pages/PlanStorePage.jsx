@@ -1,10 +1,12 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { TopBar } from '../components/Layout';
+import { useI18n } from '../components/I18nProvider';
 import { getMySubscription } from '../lib/api';
 
 export default function PlanStorePage() {
   const location = useLocation();
+  const { t } = useI18n();
   const [feedback, setFeedback] = useState('');
   const [patreonConnected, setPatreonConnected] = useState(false);
 
@@ -13,11 +15,11 @@ export default function PlanStorePage() {
 
   useEffect(() => {
     if(queryResult === 'error') {
-      setFeedback('Patreon link failed. Please try again.');
+      setFeedback(t('plans.feedbackLinkFailed'));
     } else {
       setFeedback('');
     }
-  }, [queryResult]);
+  }, [queryResult, t]);
 
   const refreshStatus = async () => {
     try {
@@ -39,12 +41,12 @@ export default function PlanStorePage() {
 
   return (
     <main className="shell">
-      <TopBar right={<Link className="btn ghost" to="/dashboard">Dashboard</Link>} />
+      <TopBar right={<Link className="btn ghost" to="/dashboard">{t('common.dashboard')}</Link>} />
 
       <section className="hero">
-        <p className="eyebrow">Billing</p>
-        <h1>Subscription Plans</h1>
-        <p className="lead">모든 구독 플랜은 Patreon에서 결제 및 관리됩니다.</p>
+        <p className="eyebrow">{t('plans.eyebrow')}</p>
+        <h1>{t('plans.title')}</h1>
+        <p className="lead">{t('plans.lead')}</p>
       </section>
 
       {showLinkedBanner ? (
@@ -54,7 +56,7 @@ export default function PlanStorePage() {
               <path fill="currentColor" d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2Zm-1.15 14.55-3.5-3.5 1.4-1.4 2.1 2.1 4.35-4.35 1.4 1.4Z" />
             </svg>
           </span>
-          <span>페트리온 연결됨</span>
+          <span>{t('plans.linkedBanner')}</span>
         </section>
       ) : null}
 
@@ -62,53 +64,53 @@ export default function PlanStorePage() {
 
       <section className="plan-grid">
         <article className="panel plan-card">
-          <h3>Ravion Plus</h3>
-          <p className="plan-price">$2.99 / month</p>
+          <h3>{t('plans.plusName')}</h3>
+          <p className="plan-price">{t('plans.plusPrice')}</p>
           <ul className="plan-features">
-            <li>3종 트레일 사용 가능</li>
-            <li>이름 변경 쿨타임 감소 (10일 → 1일)</li>
-            <li>초대 코드 발급 제한 증가 (기본값 → 20회)</li>
-            <li>Ravion Starter의 모든 혜택 포함</li>
-            <li>Patreon 허용 티어 + 활성 구독 시 자동 적용</li>
+            <li>{t('plans.plusFeatureTrail')}</li>
+            <li>{t('plans.plusFeatureNameCooldown')}</li>
+            <li>{t('plans.plusFeatureInvite')}</li>
+            <li>{t('plans.plusFeatureIncludesStarter')}</li>
+            <li>{t('plans.plusFeatureAutoApply')}</li>
           </ul>
 
           <div className="plan-actions">
             {!patreonConnected ? (
               <button className="btn block" type="button" onClick={onConnect}>
-                Connect Patreon
+                {t('plans.connectPatreon')}
               </button>
             ) : null}
             {joinUrl ? (
               <a className="btn block ghost" href={joinUrl} target="_blank" rel="noreferrer">
-                Open Patreon Join Page
+                {t('plans.openPatreonJoin')}
               </a>
             ) : (
-              <button className="btn block ghost" type="button" disabled>Set `VITE_PATREON_JOIN_URL`</button>
+              <button className="btn block ghost" type="button" disabled>{t('plans.setJoinUrl')}</button>
             )}
           </div>
         </article>
 
         <article className="panel plan-card">
-          <h3>Ravion Starter</h3>
-          <p className="plan-price">$1.99 / month</p>
+          <h3>{t('plans.starterName')}</h3>
+          <p className="plan-price">{t('plans.starterPrice')}</p>
           <ul className="plan-features">
-            <li>이름 변경 쿨타임 감소 (10일 → 3일)</li>
-            <li>초대 코드 발급 제한 증가 (3회 → 10회)</li>
-            <li>Patreon 허용 티어 + 활성 구독 시 자동 적용</li>
+            <li>{t('plans.starterFeatureNameCooldown')}</li>
+            <li>{t('plans.starterFeatureInvite')}</li>
+            <li>{t('plans.starterFeatureAutoApply')}</li>
           </ul>
 
           <div className="plan-actions">
             {!patreonConnected ? (
               <button className="btn block" type="button" onClick={onConnect}>
-                Connect Patreon
+                {t('plans.connectPatreon')}
               </button>
             ) : null}
             {joinUrl ? (
               <a className="btn block ghost" href={joinUrl} target="_blank" rel="noreferrer">
-                Open Patreon Join Page
+                {t('plans.openPatreonJoin')}
               </a>
             ) : (
-              <button className="btn block ghost" type="button" disabled>Set `VITE_PATREON_JOIN_URL`</button>
+              <button className="btn block ghost" type="button" disabled>{t('plans.setJoinUrl')}</button>
             )}
           </div>
         </article>
