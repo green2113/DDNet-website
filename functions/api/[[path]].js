@@ -2511,9 +2511,6 @@ function parsePatreonIdentity(payload, campaignId) {
 
   for(const member of memberships) {
     const patronStatus = lower(member?.attributes?.patron_status || '');
-    if(patronStatus === 'active_patron') {
-      activePatron = true;
-    }
     const nextChargeDateRaw = String(member?.attributes?.next_charge_date || '').trim();
     if(nextChargeDateRaw) {
       currentPeriodEnd = nextChargeDateRaw;
@@ -2521,6 +2518,13 @@ function parsePatreonIdentity(payload, campaignId) {
     const tierRefs = Array.isArray(member?.relationships?.currently_entitled_tiers?.data)
       ? member.relationships.currently_entitled_tiers.data
       : [];
+    if(patronStatus === 'active_patron') {
+      activePatron = true;
+    } else if(!patronStatus && tierRefs.length > 0) {
+      // Some Patreon responses omit patron_status while still returning entitled tiers.
+      // In that case, treat the membership as active and let tier rules decide eligibility.
+      activePatron = true;
+    }
     for(const tierRef of tierRefs) {
       const tierId = String(tierRef?.id || '').trim();
       if(tierId) {
