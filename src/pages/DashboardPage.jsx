@@ -179,7 +179,9 @@ export default function DashboardPage() {
   const [adminTrailMode, setAdminTrailMode] = useState(1);
   const [adminTrailLoading, setAdminTrailLoading] = useState(false);
   const [adminTrailSubmitting, setAdminTrailSubmitting] = useState(false);
+  const [adminTrailMenuOpen, setAdminTrailMenuOpen] = useState(false);
   const adminPickerRef = useRef(null);
+  const adminTrailMenuRef = useRef(null);
   const adminSearchInputRef = useRef(null);
   const adminUsersRequestIdRef = useRef(0);
 
@@ -217,6 +219,11 @@ export default function DashboardPage() {
   const adminReasonValue = adminReasonPreset === 'custom'
     ? adminReasonCustom.trim()
     : adminReasonPreset;
+  const trailModeOptions = [
+    { value: 1, label: t('dashboard.adminTrailMode1') },
+    { value: 2, label: t('dashboard.adminTrailMode2') },
+    { value: 3, label: t('dashboard.adminTrailMode3') },
+  ];
   const refreshAdminUsers = async () => {
     const requestId = ++adminUsersRequestIdRef.current;
     setAdminUsersLoading(true);
@@ -288,10 +295,34 @@ export default function DashboardPage() {
 
   useEffect(() => {
     if(!isAdmin || activeSection !== 'admin-trail') {
+      setAdminTrailMenuOpen(false);
       return;
     }
     refreshAdminTrailSettings();
   }, [isAdmin, activeSection]);
+
+  useEffect(() => {
+    if(!adminTrailMenuOpen) {
+      return undefined;
+    }
+    const onMouseDown = (event) => {
+      if(!adminTrailMenuRef.current || adminTrailMenuRef.current.contains(event.target)) {
+        return;
+      }
+      setAdminTrailMenuOpen(false);
+    };
+    const onKeyDown = (event) => {
+      if(event.key === 'Escape') {
+        setAdminTrailMenuOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', onMouseDown);
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', onMouseDown);
+      document.removeEventListener('keydown', onKeyDown);
+    };
+  }, [adminTrailMenuOpen]);
 
   useEffect(() => {
     if(!isAdmin || activeSection !== 'admin-ban' || !adminPickerOpen) {
@@ -794,6 +825,7 @@ export default function DashboardPage() {
       setAdminTrailSubmitting(false);
     }
   };
+  const currentTrailModeLabel = trailModeOptions.find((entry) => entry.value === adminTrailMode)?.label || trailModeOptions[0].label;
 
   const displayCode = loadingCode
     ? '••••••••••••••••••••'
@@ -1526,42 +1558,57 @@ ${t('dashboard.accessReasonLine', { reason: banReasonText || '-' })}`
             <article className="panel">
               <h3>{t('dashboard.adminTrailTitle')}</h3>
               <p className="muted">{t('dashboard.adminTrailBody')}</p>
-              <div className="admin-form-grid">
-                <label>
-                  {t('dashboard.adminTrailToggleLabel')}
-                  <div className="admin-ban-mode-toggle">
-                    <button
-                      className={`btn ghost admin-ban-mode-btn${!adminTrailEnabled ? ' active' : ''}`}
-                      type="button"
-                      aria-pressed={!adminTrailEnabled}
-                      onClick={() => setAdminTrailEnabled(false)}
-                      disabled={adminTrailLoading || adminTrailSubmitting}
-                    >
-                      {!adminTrailEnabled ? `✓ ${t('dashboard.adminTrailOff')}` : t('dashboard.adminTrailOff')}
-                    </button>
-                    <button
-                      className={`btn ghost admin-ban-mode-btn${adminTrailEnabled ? ' active' : ''}`}
-                      type="button"
-                      aria-pressed={adminTrailEnabled}
-                      onClick={() => setAdminTrailEnabled(true)}
-                      disabled={adminTrailLoading || adminTrailSubmitting}
-                    >
-                      {adminTrailEnabled ? `✓ ${t('dashboard.adminTrailOn')}` : t('dashboard.adminTrailOn')}
-                    </button>
+              <div className="trail-setting-card">
+                <div className="trail-toggle-row">
+                  <div>
+                    <p className="trail-toggle-title">{t('dashboard.adminTrailToggleLabel')}</p>
+                    <p className="trail-toggle-subtitle">
+                      {adminTrailEnabled ? t('dashboard.adminTrailOn') : t('dashboard.adminTrailOff')}
+                    </p>
                   </div>
-                </label>
-                <label>
-                  {t('dashboard.adminTrailModeLabel')}
-                  <select
-                    value={String(adminTrailMode)}
-                    onChange={(event) => setAdminTrailMode(Number(event.target.value) || 1)}
+                  <button
+                    className={`trail-toggle${adminTrailEnabled ? ' is-on' : ''}`}
+                    type="button"
+                    role="switch"
+                    aria-checked={adminTrailEnabled}
+                    onClick={() => setAdminTrailEnabled((prev) => !prev)}
                     disabled={adminTrailLoading || adminTrailSubmitting}
                   >
-                    <option value="1">{t('dashboard.adminTrailMode1')}</option>
-                    <option value="2">{t('dashboard.adminTrailMode2')}</option>
-                    <option value="3">{t('dashboard.adminTrailMode3')}</option>
-                  </select>
-                </label>
+                    <span className="trail-toggle-knob" />
+                  </button>
+                </div>
+
+                <div className="trail-mode-box" ref={adminTrailMenuRef}>
+                  <p className="trail-mode-label">{t('dashboard.adminTrailModeLabel')}</p>
+                  <button
+                    className={`trail-mode-trigger${adminTrailMenuOpen ? ' is-open' : ''}`}
+                    type="button"
+                    onClick={() => setAdminTrailMenuOpen((prev) => !prev)}
+                    disabled={adminTrailLoading || adminTrailSubmitting}
+                    aria-expanded={adminTrailMenuOpen}
+                  >
+                    <span>{currentTrailModeLabel}</span>
+                    <span className="trail-mode-caret">⌄</span>
+                  </button>
+                  {adminTrailMenuOpen ? (
+                    <div className="trail-mode-list" role="listbox">
+                      {trailModeOptions.map((option) => (
+                        <button
+                          key={option.value}
+                          className={`trail-mode-option${adminTrailMode === option.value ? ' is-selected' : ''}`}
+                          type="button"
+                          onClick={() => {
+                            setAdminTrailMode(option.value);
+                            setAdminTrailMenuOpen(false);
+                          }}
+                        >
+                          <span>{option.label}</span>
+                          {adminTrailMode === option.value ? <span className="trail-mode-check">✓</span> : null}
+                        </button>
+                      ))}
+                    </div>
+                  ) : null}
+                </div>
               </div>
               <div className="admin-actions">
                 <button

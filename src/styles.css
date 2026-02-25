@@ -573,6 +573,173 @@ h3 {
   width: 100%;
 }
 
+.trail-setting-card {
+  margin-top: 10px;
+  display: grid;
+  gap: 14px;
+  border: 1px solid rgba(145, 173, 226, 0.22);
+  border-radius: 14px;
+  background: linear-gradient(180deg, rgba(24, 35, 68, 0.7), rgba(13, 20, 42, 0.74));
+  padding: 12px;
+}
+
+.trail-toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.trail-toggle-title {
+  margin: 0;
+  font-size: 0.98rem;
+  font-weight: 700;
+  color: #e9f1ff;
+}
+
+.trail-toggle-subtitle {
+  margin: 4px 0 0;
+  color: #9eb2de;
+  font-size: 0.88rem;
+}
+
+.trail-toggle {
+  position: relative;
+  width: 52px;
+  height: 30px;
+  border: 1px solid rgba(134, 157, 205, 0.45);
+  border-radius: 999px;
+  background: rgba(29, 42, 74, 0.9);
+  cursor: pointer;
+  transition: background-color 160ms ease, border-color 160ms ease, box-shadow 160ms ease;
+}
+
+.trail-toggle.is-on {
+  background: linear-gradient(135deg, rgba(96, 136, 255, 0.95), rgba(128, 157, 255, 0.92));
+  border-color: rgba(171, 192, 255, 0.8);
+  box-shadow: 0 0 0 3px rgba(112, 144, 255, 0.2);
+}
+
+.trail-toggle-knob {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: #f7fbff;
+  transition: transform 160ms ease;
+}
+
+.trail-toggle.is-on .trail-toggle-knob {
+  transform: translateX(22px);
+}
+
+.trail-mode-box {
+  position: relative;
+  display: grid;
+  gap: 7px;
+}
+
+.trail-mode-label {
+  margin: 0;
+  color: #a4b7df;
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.trail-mode-trigger {
+  width: 100%;
+  background: rgba(8, 14, 32, 0.72);
+  border: 1px solid var(--line);
+  color: var(--text);
+  border-radius: 12px;
+  padding: 11px 12px;
+  outline: none;
+  font-family: inherit;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.trail-mode-trigger:focus,
+.trail-mode-trigger.is-open {
+  border-color: #91a9ff;
+  box-shadow: 0 0 0 3px rgba(79, 124, 255, 0.22);
+}
+
+.trail-mode-caret {
+  opacity: 0.9;
+  font-size: 1rem;
+  transform: translateY(-1px);
+}
+
+.trail-mode-trigger.is-open .trail-mode-caret {
+  transform: translateY(-1px) rotate(180deg);
+}
+
+.trail-mode-list {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: calc(100% + 6px);
+  z-index: 20;
+  border: 1px solid rgba(145, 173, 226, 0.3);
+  border-radius: 12px;
+  background: linear-gradient(180deg, rgba(19, 29, 58, 0.98), rgba(9, 15, 33, 0.98));
+  box-shadow: 0 16px 30px rgba(2, 8, 23, 0.45);
+  overflow: hidden;
+  animation: trail-mode-drop-in 140ms ease-out;
+}
+
+.trail-mode-option {
+  width: 100%;
+  border: 0;
+  border-bottom: 1px solid rgba(145, 173, 226, 0.15);
+  background: transparent;
+  color: #e4edff;
+  text-align: left;
+  padding: 10px 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  font: inherit;
+  cursor: pointer;
+}
+
+.trail-mode-option:last-child {
+  border-bottom: 0;
+}
+
+.trail-mode-option:hover {
+  background: rgba(79, 124, 255, 0.18);
+}
+
+.trail-mode-option.is-selected {
+  background: rgba(79, 124, 255, 0.3);
+  color: #f0f5ff;
+}
+
+.trail-mode-check {
+  color: #7fb2ff;
+  font-weight: 700;
+}
+
+@keyframes trail-mode-drop-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px) scaleY(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scaleY(1);
+  }
+}
+
 .feature p {
   margin: 0;
   color: var(--muted);
