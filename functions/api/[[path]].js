@@ -1804,9 +1804,61 @@ async function handleUpdateDummyName(context) {
   return json({ ok: true, user, message: 'Dummy name updated' });
 }
 
+function defaultGameTrailState() {
+  return {
+    plusActive: false,
+    trailEnabled: false,
+    trailMode: 1,
+  };
+}
+
+async function loadGameTrailState(env, accountId) {
+  const defaults = defaultGameTrailState();
+  const id = Number(accountId);
+  if(!Number.isFinite(id) || id <= 0) {
+    return defaults;
+  }
+
+  try {
+    const row = await env.DB.prepare(`
+      SELECT status, current_period_end
+      FROM billing_entitlements
+      WHERE user_id = ? AND plan_key = 'plus'
+      LIMIT 1
+    `).bind(id).first();
+
+    if(!row) {
+      return defaults;
+    }
+
+    if(lower(row.status || '') !== 'active') {
+      return defaults;
+    }
+
+    const periodEndRaw = String(row.current_period_end || '').trim();
+    if(periodEndRaw) {
+      const periodEndMs = Date.parse(periodEndRaw);
+      if(!Number.isFinite(periodEndMs) || periodEndMs <= Date.now()) {
+        return defaults;
+      }
+    }
+
+    // Web UI trail settings are not released yet, keep trail disabled by default.
+    return {
+      plusActive: true,
+      trailEnabled: false,
+      trailMode: 1,
+    };
+  } catch {
+    // Fail closed when billing tables are missing or query errors occur.
+    return defaults;
+  }
+}
+
 async function handleGameVerify(context) {
 	const { request, env } = context;
 	const key = request.headers.get('X-Game-Server-Key') || '';
+  const defaults = defaultGameTrailState();
 
   if(!env.GAME_SERVER_API_KEY || !timingSafeEqual(key, env.GAME_SERVER_API_KEY)) {
     return json({ ok: false, message: 'Unauthorized game server key' }, 401);
@@ -1824,7 +1876,7 @@ async function handleGameVerify(context) {
 
   const code = normalizeCode(rawCode);
   if(code.length < 8 || code.length > 64) {
-    return json({ ok: false, message: 'Invalid code format' });
+    return json({ ok: false, message: 'Invalid code format', ...defaults });
   }
 
   const hasDummyHash = await hasUsersColumn(env, 'dummy_login_code_hash');
@@ -1880,10 +1932,16 @@ async function handleGameVerify(context) {
   }
 
   if(!user) {
-    return json({ ok: false, message: 'Code not found' });
+    return json({ ok: false, message: 'Code not found', ...defaults });
   }
+  const trailState = await loadGameTrailState(env, user.id);
   if(Number(user.email_verified || 0) !== 1) {
-    return json({ ok: false, code: 'ACCOUNT_UNVERIFIED', message: 'Account email is not verified.' });
+    return json({
+      ok: false,
+      code: 'ACCOUNT_UNVERIFIED',
+      message: 'Account email is not verified.',
+      ...trailState,
+    });
   }
 
   const now = Date.now();
@@ -1906,6 +1964,7 @@ async function handleGameVerify(context) {
       banReason: String(user.ban_reason || ''),
       remainingSeconds,
       dummyCode: matchedDummyCode,
+      ...trailState,
     });
   }
 
@@ -1915,6 +1974,7 @@ async function handleGameVerify(context) {
     name: matchedDummyCode && String(user.dummy_name || '').trim() ? String(user.dummy_name).trim() : user.username,
     username: matchedDummyCode && String(user.dummy_name || '').trim() ? String(user.dummy_name).trim() : user.username,
     dummyCode: matchedDummyCode,
+    ...trailState,
   });
 }
 
@@ -2004,6 +2064,7 @@ async function handleGameAccountStatus(context) {
   if(!user) {
     return json({ ok: false, message: 'Account not found' }, 404);
   }
+  const trailState = await loadGameTrailState(env, accountId);
 
   const now = Date.now();
   const permanent = Number(user.ban_is_permanent || 0) !== 0;
@@ -2021,6 +2082,9 @@ async function handleGameAccountStatus(context) {
     banUntil: banUntilRaw,
     banReason: String(user.ban_reason || ''),
     remainingSeconds,
+    plusActive: trailState.plusActive,
+    trailEnabled: trailState.trailEnabled,
+    trailMode: trailState.trailMode,
   });
 }
 
