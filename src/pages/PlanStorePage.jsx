@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { TopBar } from '../components/Layout';
-import { disconnectPatreon, getMySubscription } from '../lib/api';
+import { getMySubscription } from '../lib/api';
 
 function formatDate(value) {
   const text = String(value || '').trim();
@@ -18,7 +18,6 @@ function formatDate(value) {
 export default function PlanStorePage() {
   const location = useLocation();
   const [loading, setLoading] = useState(true);
-  const [busy, setBusy] = useState(false);
   const [feedback, setFeedback] = useState('');
   const [subscription, setSubscription] = useState(null);
   const [patreonConnected, setPatreonConnected] = useState(false);
@@ -27,10 +26,10 @@ export default function PlanStorePage() {
   const queryResult = useMemo(() => new URLSearchParams(location.search).get('patreon') || '', [location.search]);
 
   useEffect(() => {
-    if(queryResult === 'linked') {
-      setFeedback('Patreon account linked successfully.');
-    } else if(queryResult === 'error') {
+    if(queryResult === 'error') {
       setFeedback('Patreon link failed. Please try again.');
+    } else {
+      setFeedback('');
     }
   }, [queryResult]);
 
@@ -55,21 +54,8 @@ export default function PlanStorePage() {
     window.location.assign('/api/billing/patreon/start');
   };
 
-  const onDisconnect = async () => {
-    setBusy(true);
-    setFeedback('');
-    try {
-      await disconnectPatreon();
-      await refreshStatus();
-      setFeedback('Patreon account disconnected.');
-    } catch (err) {
-      setFeedback(err.message);
-    } finally {
-      setBusy(false);
-    }
-  };
-
   const subscriptionStatus = String(subscription?.status || 'INACTIVE');
+  const showLinkedBanner = queryResult === 'linked' && patreonConnected;
 
   return (
     <main className="shell">
@@ -81,7 +67,18 @@ export default function PlanStorePage() {
         <p className="lead">Ravion Plus is managed via Patreon.</p>
       </section>
 
-      {feedback ? <section className="result info">{feedback}</section> : null}
+      {showLinkedBanner ? (
+        <section className="patreon-linked-banner" role="status" aria-live="polite">
+          <span className="patreon-linked-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="16" height="16">
+              <path fill="currentColor" d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2Zm-1.15 14.55-3.5-3.5 1.4-1.4 2.1 2.1 4.35-4.35 1.4 1.4Z" />
+            </svg>
+          </span>
+          <span>페트리온 연결됨</span>
+        </section>
+      ) : null}
+
+      {feedback ? <section className="result error">{feedback}</section> : null}
 
       <section className="plan-grid">
         <article className="panel plan-card">
@@ -94,15 +91,16 @@ export default function PlanStorePage() {
           </ul>
 
           <div className="plan-meta">
-            <p><strong>Patreon linked:</strong> {patreonConnected ? 'Yes' : 'No'}</p>
             <p><strong>Plan status:</strong> {loading ? 'Loading...' : subscriptionStatus}</p>
             <p><strong>Current period end:</strong> {loading ? 'Loading...' : formatDate(subscription?.current_period_end)}</p>
           </div>
 
           <div className="plan-actions">
-            <button className="btn block" type="button" onClick={onConnect} disabled={busy}>
-              Connect Patreon
-            </button>
+            {!patreonConnected ? (
+              <button className="btn block" type="button" onClick={onConnect}>
+                Connect Patreon
+              </button>
+            ) : null}
             {joinUrl ? (
               <a className="btn block ghost" href={joinUrl} target="_blank" rel="noreferrer">
                 Open Patreon Join Page
@@ -110,11 +108,6 @@ export default function PlanStorePage() {
             ) : (
               <button className="btn block ghost" type="button" disabled>Set `VITE_PATREON_JOIN_URL`</button>
             )}
-            {patreonConnected ? (
-              <button className="btn block ghost" type="button" onClick={onDisconnect} disabled={busy}>
-                Disconnect Patreon
-              </button>
-            ) : null}
           </div>
         </article>
       </section>
