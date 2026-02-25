@@ -3,12 +3,14 @@ import { TopBar } from '../components/Layout';
 
 export default function PlanStorePage() {
   const plusPlanId = String(import.meta.env.VITE_PAYPAL_PLAN_ID_PLUS || 'P-14V362713R263544HNGO3P5I').trim();
+  const plusPaymentUrl = String(import.meta.env.VITE_PAYPAL_NCP_PLUS_URL || 'https://www.paypal.com/ncp/payment/VAKVWHUDLD2BS').trim();
   const plans = [
     {
       key: 'plus',
       name: 'Ravion Plus',
       price: '$4.99 / month',
       planId: plusPlanId,
+      paymentUrl: plusPaymentUrl,
       features: ['Basic supporter badge', 'Priority queue', 'Monthly perks'],
     },
   ];
@@ -31,7 +33,11 @@ export default function PlanStorePage() {
             <ul className="plan-features">
               {plan.features.map((feature) => <li key={feature}>{feature}</li>)}
             </ul>
-            {plan.planId ? (
+            {plan.paymentUrl ? (
+              <a className="btn block" href={plan.paymentUrl} target="_blank" rel="noreferrer">
+                Continue with PayPal
+              </a>
+            ) : plan.planId ? (
               <Link className="btn block" to={`/billing/subscribe?plan=${encodeURIComponent(plan.planId)}&name=${encodeURIComponent(plan.name)}`}>
                 Continue with PayPal
               </Link>
@@ -40,7 +46,13 @@ export default function PlanStorePage() {
                 Plan ID required
               </button>
             )}
-            {plan.planId ? <p className="muted mono-mini">Plan ID: {plan.planId}</p> : <p className="muted mono-mini">Set `VITE_PAYPAL_PLAN_ID_PLUS`.</p>}
+            {plan.paymentUrl ? (
+              <p className="muted mono-mini">Checkout URL: configured</p>
+            ) : plan.planId ? (
+              <p className="muted mono-mini">Plan ID: {plan.planId}</p>
+            ) : (
+              <p className="muted mono-mini">Set `VITE_PAYPAL_PLAN_ID_PLUS`.</p>
+            )}
           </article>
         ))}
       </section>
