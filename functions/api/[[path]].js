@@ -1977,7 +1977,7 @@ async function applyPlanBenefits(env, userId, planFlags) {
   const baseQuota = Number.isFinite(baseRaw) ? Math.max(0, Math.floor(baseRaw)) : fallbackBase;
   const targetQuota = normalized.inviteQuotaTarget === null
     ? baseQuota
-    : Math.max(baseQuota, normalized.inviteQuotaTarget);
+    : Math.max(0, Math.floor(normalized.inviteQuotaTarget));
 
   if(!Number.isFinite(baseRaw) || baseRaw < 0) {
     await env.DB.prepare(`
