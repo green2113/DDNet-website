@@ -583,6 +583,50 @@ async function requireAdmin(context) {
   return result;
 }
 
+function maskConfigValue(value, { head = 6, tail = 4 } = {}) {
+  const raw = String(value || '').trim();
+  if(!raw) {
+    return '';
+  }
+  if(raw.length <= head + tail) {
+    return `${raw.slice(0, 2)}***`;
+  }
+  return `${raw.slice(0, head)}...${raw.slice(-tail)}`;
+}
+
+async function handleDebugPayPalConfig(context) {
+  const { env } = context;
+  const auth = await requireAdmin(context);
+  if(auth.error) {
+    return auth.error;
+  }
+
+  const apiBase = String(env.PAYPAL_API_BASE || '').trim();
+  const clientId = String(env.PAYPAL_CLIENT_ID || '').trim();
+  const clientSecret = String(env.PAYPAL_CLIENT_SECRET || '').trim();
+  const planId = String(env.PAYPAL_PLAN_ID_PLUS || '').trim();
+  const webhookId = String(env.PAYPAL_WEBHOOK_ID || '').trim();
+  const viteClientId = String(env.VITE_PAYPAL_CLIENT_ID || '').trim();
+  const vitePlanId = String(env.VITE_PAYPAL_PLAN_ID_PLUS || '').trim();
+
+  return json({
+    ok: true,
+    config: {
+      apiBase,
+      mode: apiBase.includes('sandbox') ? 'sandbox' : (apiBase.includes('api-m.paypal.com') ? 'live' : 'unknown'),
+      clientIdMasked: maskConfigValue(clientId),
+      clientSecretConfigured: clientSecret.length > 0,
+      planId,
+      webhookIdMasked: maskConfigValue(webhookId),
+      viteClientIdMasked: maskConfigValue(viteClientId),
+      vitePlanId,
+      planMatch: !!planId && !!vitePlanId && planId === vitePlanId,
+      clientIdMatch: !!clientId && !!viteClientId && clientId === viteClientId,
+      hasAllRequired: !!apiBase && !!clientId && !!clientSecret && !!planId && !!webhookId && !!viteClientId && !!vitePlanId,
+    },
+  });
+}
+
 function normalizeSubscriptionStatus(input) {
   const value = String(input || '').toUpperCase();
   const allowed = new Set(['APPROVAL_PENDING', 'ACTIVE', 'SUSPENDED', 'CANCELLED', 'EXPIRED']);
@@ -1179,7 +1223,18 @@ async function handleEmailResend(context) {
     }
   }
 
-  const issued = await issueEmailVerificationCode(env, result.user.id, String(result.user.email || ''), { bypassCooldown: false });
+  let issued;
+  try {
+    issued = await issueEmailVerificationCode(env, result.user.id, String(result.user.email || ''), { bypassCooldown: false });
+  } catch(err) {
+    const message = String(err?.message || 'Verification email send failed');
+    console.error('email resend failed', message);
+    return json({
+      ok: false,
+      code: 'EMAIL_SEND_FAILED',
+      message,
+    }, 502);
+  }
   if(issued.cooldown) {
     return json({
       ok: false,
@@ -2658,6 +2713,9 @@ export async function onRequest(context) {
 
   if(request.method === 'GET' && path === '/admin/users') {
     return handleAdminUsers(context);
+  }
+  if(request.method === 'GET' && path === '/debug/paypal-config') {
+    return handleDebugPayPalConfig(context);
   }
 
   if(request.method === 'POST' && path === '/billing/paypal/activate') {

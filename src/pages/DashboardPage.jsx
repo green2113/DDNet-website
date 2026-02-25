@@ -310,6 +310,7 @@ export default function DashboardPage() {
         if(Number.isFinite(nextDeadline) && nextDeadline > Date.now()) {
           setVerifyDeadlineMs(nextDeadline);
         }
+        setFeedback({ type: 'error', message: err?.message || 'Verification email send failed' });
       }
     };
     autoSend();
