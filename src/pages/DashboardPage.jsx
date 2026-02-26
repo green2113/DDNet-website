@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import {
   adminBanAccount,
   adminDeletePatreonTier,
+  adminGrantSubscriptionMonths,
   adminGetPatreonTiers,
   adminSearchUsers,
   adminUnbanAccount,
@@ -171,6 +172,11 @@ export default function DashboardPage() {
   const [adminReasonCustom, setAdminReasonCustom] = useState('');
   const [adminSubmitting, setAdminSubmitting] = useState(false);
   const [showAdminBanConfirm, setShowAdminBanConfirm] = useState(false);
+  const [adminGrantPlanKey, setAdminGrantPlanKey] = useState('starter');
+  const [adminGrantMonths, setAdminGrantMonths] = useState('1');
+  const [adminGrantReason, setAdminGrantReason] = useState('');
+  const [adminGrantSubmitting, setAdminGrantSubmitting] = useState(false);
+  const [showAdminGrantConfirm, setShowAdminGrantConfirm] = useState(false);
   const [adminPatreonTierId, setAdminPatreonTierId] = useState('');
   const [adminPatreonPlanKey, setAdminPatreonPlanKey] = useState('plus');
   const [adminPatreonTierTitle, setAdminPatreonTierTitle] = useState('');
@@ -213,8 +219,10 @@ export default function DashboardPage() {
   const canSaveName = editingName && !savingName && trimmedName.length > 0 && trimmedName !== currentName;
   const canSaveDummyName = editingDummyName && !dummyNameCooldownActive && !savingDummyName && trimmedDummyName.length > 0 && trimmedDummyName !== currentDummyName;
   const isDummyNameInputActive = editingDummyName || showDummyFirstIssue;
-  const isAdmin = Number(user?.is_admin || 0) === 1;
-  const isAdminSection = activeSection === 'admin-ban';
+  const adminLevel = Number(user?.is_admin || 0);
+  const isManager = Number.isFinite(adminLevel) && adminLevel >= 1;
+  const isOperator = Number.isFinite(adminLevel) && adminLevel >= 2;
+  const isAdminSection = activeSection === 'admin-ban' || activeSection === 'admin-plan-grant';
   const plusActive = Boolean(subscriptionInfo?.benefits?.plusActive);
   const starterActive = plusActive || Boolean(subscriptionInfo?.benefits?.starterActive);
   const subscriptionStateLoading = subscriptionLoading;
@@ -244,6 +252,8 @@ export default function DashboardPage() {
   const parsedMinutes = Number(adminMinutes);
   const temporaryMinutesValid = Number.isInteger(parsedMinutes) && parsedMinutes >= 1 && parsedMinutes <= 1440;
   const adminMinutesNum = adminBanMode === 'permanent' ? 0 : parsedMinutes;
+  const parsedGrantMonths = Number(adminGrantMonths);
+  const grantMonthsValid = Number.isInteger(parsedGrantMonths) && parsedGrantMonths >= 1 && parsedGrantMonths <= 24;
   const adminReasonValue = adminReasonPreset === 'custom'
     ? adminReasonCustom.trim()
     : adminReasonPreset;
@@ -309,10 +319,16 @@ export default function DashboardPage() {
   };
 
   useEffect(() => {
-    if(!isAdmin && isAdminSection) {
+    if(!isManager && isAdminSection) {
       setActiveSection('account');
     }
-  }, [isAdmin, isAdminSection]);
+  }, [isManager, isAdminSection]);
+
+  useEffect(() => {
+    if(!isOperator && activeSection === 'admin-plan-grant') {
+      setActiveSection(isManager ? 'admin-ban' : 'account');
+    }
+  }, [isOperator, isManager, activeSection]);
 
   useEffect(() => {
     refreshSubscriptionInfo();
@@ -332,17 +348,19 @@ export default function DashboardPage() {
   }, [plusActive, activeSection]);
 
   useEffect(() => {
-    if(!isAdmin || activeSection !== 'admin-ban') {
+    if(!isManager || (activeSection !== 'admin-ban' && activeSection !== 'admin-plan-grant')) {
       setAdminPickerOpen(false);
       adminUsersRequestIdRef.current += 1;
       return undefined;
     }
     refreshAdminUsers();
-    refreshAdminPatreonTiers();
+    if(isOperator && activeSection === 'admin-ban') {
+      refreshAdminPatreonTiers();
+    }
     return () => {
       adminUsersRequestIdRef.current += 1;
     };
-  }, [isAdmin, activeSection]);
+  }, [isManager, isOperator, activeSection]);
 
   const refreshTrailSettings = async () => {
     setAdminTrailLoading(true);
@@ -402,14 +420,20 @@ export default function DashboardPage() {
   }, [trailModeDisabled, adminTrailMenuOpen]);
 
   useEffect(() => {
-    if(!isAdmin || activeSection !== 'admin-ban' || !adminPickerOpen) {
+    if(!isManager || (activeSection !== 'admin-ban' && activeSection !== 'admin-plan-grant') || !adminPickerOpen) {
       return;
     }
     refreshAdminUsers();
-  }, [isAdmin, activeSection, adminPickerOpen]);
+  }, [isManager, activeSection, adminPickerOpen]);
 
   useEffect(() => {
     setAdminBanMode('temporary');
+  }, [adminSelectedUser?.id, activeSection]);
+
+  useEffect(() => {
+    setAdminGrantPlanKey('starter');
+    setAdminGrantMonths('1');
+    setAdminGrantReason('');
   }, [adminSelectedUser?.id, activeSection]);
 
   useEffect(() => {
@@ -841,6 +865,65 @@ export default function DashboardPage() {
     }
   };
 
+  const onOpenAdminGrantConfirm = () => {
+    const accountId = Number(adminSelectedUser?.id || 0);
+    if(!Number.isFinite(accountId) || accountId <= 0) {
+      setFeedback({ type: 'error', message: t('dashboard.adminSelectUserRequired') });
+      return;
+    }
+    if(adminGrantPlanKey !== 'starter' && adminGrantPlanKey !== 'plus') {
+      setFeedback({ type: 'error', message: t('dashboard.adminGrantInvalidPlan') });
+      return;
+    }
+    if(!grantMonthsValid) {
+      setFeedback({ type: 'error', message: t('dashboard.adminGrantInvalidMonthsRange') });
+      return;
+    }
+    setShowAdminGrantConfirm(true);
+  };
+
+  const onAdminGrantMonths = async () => {
+    const accountId = Number(adminSelectedUser?.id || 0);
+    if(!Number.isFinite(accountId) || accountId <= 0) {
+      setFeedback({ type: 'error', message: t('dashboard.adminSelectUserRequired') });
+      return;
+    }
+    if(adminGrantPlanKey !== 'starter' && adminGrantPlanKey !== 'plus') {
+      setFeedback({ type: 'error', message: t('dashboard.adminGrantInvalidPlan') });
+      return;
+    }
+    if(!grantMonthsValid) {
+      setFeedback({ type: 'error', message: t('dashboard.adminGrantInvalidMonthsRange') });
+      return;
+    }
+
+    setAdminGrantSubmitting(true);
+    setFeedback(null);
+    try {
+      await adminGrantSubscriptionMonths({
+        accountId,
+        planKey: adminGrantPlanKey,
+        months: parsedGrantMonths,
+        reason: String(adminGrantReason || '').trim(),
+      });
+      const list = await adminSearchUsers('');
+      setAdminUsers(Array.isArray(list?.users) ? list.users : []);
+      const refreshedSelected = Array.isArray(list?.users)
+        ? list.users.find((entry) => Number(entry?.id) === accountId) || null
+        : null;
+      setAdminSelectedUser(refreshedSelected);
+      setShowAdminGrantConfirm(false);
+      setAdminGrantMonths('1');
+      setAdminGrantReason('');
+      setFeedback({ type: 'ok', message: t('dashboard.adminGrantDone') });
+      await refreshSubscriptionInfo({ silent: true });
+    } catch (err) {
+      setFeedback({ type: 'error', message: err.message });
+    } finally {
+      setAdminGrantSubmitting(false);
+    }
+  };
+
   const onAdminPatreonTierSave = async () => {
     const tierId = String(adminPatreonTierId || '').trim();
     if(!tierId) {
@@ -1100,7 +1183,7 @@ ${t('dashboard.accessReasonLine', { reason: banReasonText || '-' })}`
               </button>
             )}
           </nav>
-          {isAdmin ? (
+          {isManager ? (
             <div className="dashboard-admin-nav">
               <div className="dashboard-nav-divider" />
               <p className="dashboard-admin-label">{t('dashboard.adminSection')}</p>
@@ -1112,6 +1195,16 @@ ${t('dashboard.accessReasonLine', { reason: banReasonText || '-' })}`
                 <span className="dashboard-nav-icon" aria-hidden="true"><img src={iconSiren} alt="" /></span>
                 <span>{t('dashboard.adminBanNav')}</span>
               </button>
+              {isOperator ? (
+                <button
+                  className={`dashboard-nav-btn${activeSection === 'admin-plan-grant' ? ' active' : ''}`}
+                  type="button"
+                  onClick={() => setActiveSection('admin-plan-grant')}
+                >
+                  <span className="dashboard-nav-icon" aria-hidden="true"><img src={iconCreditCard} alt="" /></span>
+                  <span>{t('dashboard.adminPlanGrantNav')}</span>
+                </button>
+              ) : null}
             </div>
           ) : null}
         </aside>
@@ -1448,7 +1541,7 @@ ${t('dashboard.accessReasonLine', { reason: banReasonText || '-' })}`
             </div>
           ) : null}
 
-          {activeSection === 'admin-ban' && isAdmin ? (
+          {activeSection === 'admin-ban' && isManager ? (
             <article className="panel">
               <h3>{t('dashboard.adminBanTitle')}</h3>
               <div className="admin-form-grid">
@@ -1605,93 +1698,201 @@ ${t('dashboard.accessReasonLine', { reason: banReasonText || '-' })}`
                 </div>
               ) : null}
 
-              <div className="dashboard-nav-divider" />
-              <h3>Patreon Tier Rules</h3>
-              <p className="muted">Only active patrons in allowed Starter/Plus tiers receive matching benefits.</p>
+              {isOperator ? (
+                <>
+                  <div className="dashboard-nav-divider" />
+                  <h3>Patreon Tier Rules</h3>
+                  <p className="muted">Only active patrons in allowed Starter/Plus tiers receive matching benefits.</p>
+                  <div className="admin-form-grid">
+                    <label>
+                      Plan Key
+                      <select
+                        value={adminPatreonPlanKey}
+                        onChange={(event) => setAdminPatreonPlanKey(event.target.value === 'starter' ? 'starter' : 'plus')}
+                      >
+                        <option value="plus">Plus</option>
+                        <option value="starter">Starter</option>
+                      </select>
+                    </label>
+                    <label>
+                      Patreon Tier ID
+                      <input
+                        value={adminPatreonTierId}
+                        onChange={(event) => setAdminPatreonTierId(event.target.value)}
+                        placeholder="e.g. 12345678"
+                      />
+                    </label>
+                    <label>
+                      Tier Title (optional)
+                      <input
+                        value={adminPatreonTierTitle}
+                        onChange={(event) => setAdminPatreonTierTitle(event.target.value)}
+                        placeholder="e.g. Ravion Plus"
+                      />
+                    </label>
+                    <label>
+                      Active
+                      <select
+                        value={adminPatreonTierActive ? '1' : '0'}
+                        onChange={(event) => setAdminPatreonTierActive(event.target.value === '1')}
+                      >
+                        <option value="1">Enabled</option>
+                        <option value="0">Disabled</option>
+                      </select>
+                    </label>
+                  </div>
+                  <div className="admin-actions">
+                    <button className="btn admin-main-action" type="button" onClick={onAdminPatreonTierSave} disabled={adminPatreonSubmitting}>
+                      Save Patreon Tier
+                    </button>
+                  </div>
+
+                  <div className="admin-tier-list">
+                    <div className="admin-tier-list-header">
+                      <span>Plan</span>
+                      <span>Tier ID</span>
+                      <span>Title</span>
+                      <span>Status</span>
+                      <span>Action</span>
+                    </div>
+                    <div className="admin-tier-list-body">
+                      {adminPatreonLoading ? (
+                        <div className="admin-user-list-empty">Loading tiers...</div>
+                      ) : adminPatreonTiers.length === 0 ? (
+                        <div className="admin-user-list-empty">No Patreon tier rules yet.</div>
+                      ) : (
+                        adminPatreonTiers.map((tier) => (
+                          <div className="admin-tier-row" key={tier.external_tier_id}>
+                            <span>{String(tier.plan_key || '-').toUpperCase()}</span>
+                            <span>{tier.external_tier_id}</span>
+                            <span>{tier.tier_title || '-'}</span>
+                            <span className={Number(tier.active || 0) === 1 ? 'status-text status-normal' : 'status-text status-temporary'}>
+                              {Number(tier.active || 0) === 1 ? 'Enabled' : 'Disabled'}
+                            </span>
+                            <span>
+                              {Number(tier.active || 0) === 1 ? (
+                                <button
+                                  className="btn ghost"
+                                  type="button"
+                                  onClick={() => onAdminPatreonTierDisable(tier.external_tier_id)}
+                                  disabled={adminPatreonSubmitting}
+                                >
+                                  Disable
+                                </button>
+                              ) : (
+                                <span className="muted">-</span>
+                              )}
+                            </span>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  </div>
+                </>
+              ) : null}
+            </article>
+          ) : null}
+
+          {activeSection === 'admin-plan-grant' && isOperator ? (
+            <article className="panel">
+              <h3>{t('dashboard.adminPlanGrantTitle')}</h3>
+              <p className="muted">{t('dashboard.adminPlanGrantBody')}</p>
               <div className="admin-form-grid">
                 <label>
-                  Plan Key
+                  {t('dashboard.adminSearchName')}
+                  <div className="admin-user-picker" ref={adminPickerRef}>
+                    <input
+                      ref={adminSearchInputRef}
+                      value={adminSearchName}
+                      onChange={(event) => {
+                        setAdminSearchName(event.target.value);
+                        setAdminPickerOpen(true);
+                        setAdminSelectedUser(null);
+                      }}
+                      onFocus={() => setAdminPickerOpen(true)}
+                      placeholder={t('dashboard.adminSearchPlaceholder')}
+                    />
+                    {adminPickerOpen ? (
+                      <div className="admin-user-list-wrap">
+                        <div className="admin-user-list-header">
+                          <span>{t('dashboard.rowUserId')}</span>
+                          <span>{t('dashboard.rowUsername')}</span>
+                          <span>{t('dashboard.rowDummyName')}</span>
+                          <span>{t('dashboard.rowAccess')}</span>
+                        </div>
+                        <div className="admin-user-list">
+                          {adminUsersLoading && adminUsers.length === 0 ? (
+                            <div className="admin-user-list-empty">{t('dashboard.adminNoUsers')}</div>
+                          ) : adminFilteredUsers.length === 0 ? (
+                            <div className="admin-user-list-empty">{t('dashboard.adminNoUsers')}</div>
+                          ) : (
+                            adminFilteredUsers.map((entry) => (
+                              <button
+                                key={entry.id}
+                                className="admin-user-row"
+                                type="button"
+                                onMouseDown={(event) => event.preventDefault()}
+                                onClick={() => {
+                                  setAdminSelectedUser(entry);
+                                  setAdminSearchName(String(entry.username || ''));
+                                  setAdminPickerOpen(false);
+                                  blurAdminPickerFocus();
+                                }}
+                              >
+                                <span>{entry.id}</span>
+                                <span>{entry.username || '-'}</span>
+                                <span>{entry.dummy_name || '-'}</span>
+                                <Tooltip label={adminUserStatusText(entry)}>
+                                  <span>{adminUserStatusCompact(entry)}</span>
+                                </Tooltip>
+                              </button>
+                            ))
+                          )}
+                        </div>
+                      </div>
+                    ) : null}
+                  </div>
+                </label>
+                <label>
+                  {t('dashboard.adminGrantPlanKey')}
                   <select
-                    value={adminPatreonPlanKey}
-                    onChange={(event) => setAdminPatreonPlanKey(event.target.value === 'starter' ? 'starter' : 'plus')}
+                    value={adminGrantPlanKey}
+                    onChange={(event) => setAdminGrantPlanKey(event.target.value === 'plus' ? 'plus' : 'starter')}
                   >
-                    <option value="plus">Plus</option>
-                    <option value="starter">Starter</option>
+                    <option value="starter">{t('dashboard.subscriptionPlanStarter')}</option>
+                    <option value="plus">{t('dashboard.subscriptionPlanPlus')}</option>
                   </select>
                 </label>
                 <label>
-                  Patreon Tier ID
+                  {t('dashboard.adminGrantMonths')}
                   <input
-                    value={adminPatreonTierId}
-                    onChange={(event) => setAdminPatreonTierId(event.target.value)}
-                    placeholder="e.g. 12345678"
+                    type="number"
+                    min={1}
+                    max={24}
+                    step={1}
+                    value={adminGrantMonths}
+                    onChange={(event) => setAdminGrantMonths(event.target.value)}
+                    placeholder={t('dashboard.adminGrantMonthsPlaceholder')}
                   />
                 </label>
                 <label>
-                  Tier Title (optional)
+                  {t('dashboard.adminGrantReason')}
                   <input
-                    value={adminPatreonTierTitle}
-                    onChange={(event) => setAdminPatreonTierTitle(event.target.value)}
-                    placeholder="e.g. Ravion Plus"
+                    value={adminGrantReason}
+                    onChange={(event) => setAdminGrantReason(event.target.value)}
+                    placeholder={t('dashboard.adminReasonPlaceholder')}
                   />
-                </label>
-                <label>
-                  Active
-                  <select
-                    value={adminPatreonTierActive ? '1' : '0'}
-                    onChange={(event) => setAdminPatreonTierActive(event.target.value === '1')}
-                  >
-                    <option value="1">Enabled</option>
-                    <option value="0">Disabled</option>
-                  </select>
                 </label>
               </div>
               <div className="admin-actions">
-                <button className="btn admin-main-action" type="button" onClick={onAdminPatreonTierSave} disabled={adminPatreonSubmitting}>
-                  Save Patreon Tier
+                <button
+                  className="btn admin-main-action"
+                  type="button"
+                  onClick={onOpenAdminGrantConfirm}
+                  disabled={adminGrantSubmitting}
+                >
+                  {t('dashboard.adminGrantAction')}
                 </button>
-              </div>
-
-              <div className="admin-tier-list">
-                <div className="admin-tier-list-header">
-                  <span>Plan</span>
-                  <span>Tier ID</span>
-                  <span>Title</span>
-                  <span>Status</span>
-                  <span>Action</span>
-                </div>
-                <div className="admin-tier-list-body">
-                  {adminPatreonLoading ? (
-                    <div className="admin-user-list-empty">Loading tiers...</div>
-                  ) : adminPatreonTiers.length === 0 ? (
-                    <div className="admin-user-list-empty">No Patreon tier rules yet.</div>
-                  ) : (
-                    adminPatreonTiers.map((tier) => (
-                      <div className="admin-tier-row" key={tier.external_tier_id}>
-                        <span>{String(tier.plan_key || '-').toUpperCase()}</span>
-                        <span>{tier.external_tier_id}</span>
-                        <span>{tier.tier_title || '-'}</span>
-                        <span className={Number(tier.active || 0) === 1 ? 'status-text status-normal' : 'status-text status-temporary'}>
-                          {Number(tier.active || 0) === 1 ? 'Enabled' : 'Disabled'}
-                        </span>
-                        <span>
-                          {Number(tier.active || 0) === 1 ? (
-                            <button
-                              className="btn ghost"
-                              type="button"
-                              onClick={() => onAdminPatreonTierDisable(tier.external_tier_id)}
-                              disabled={adminPatreonSubmitting}
-                            >
-                              Disable
-                            </button>
-                          ) : (
-                            <span className="muted">-</span>
-                          )}
-                        </span>
-                      </div>
-                    ))
-                  )}
-                </div>
               </div>
             </article>
           ) : null}
@@ -1946,6 +2147,29 @@ ${t('dashboard.accessReasonLine', { reason: banReasonText || '-' })}`
                 {t('common.cancel')}
               </button>
               <button className="btn" type="button" onClick={onAdminBan} disabled={adminSubmitting}>
+                {t('dashboard.adminBanConfirmAction')}
+              </button>
+            </div>
+          </section>
+        </div>
+      ) : null}
+
+      {showAdminGrantConfirm && adminSelectedUser ? (
+        <div className="modal-backdrop modal-backdrop-ban" role="dialog" aria-modal="true" aria-label={t('dashboard.adminGrantConfirmTitle')}>
+          <section className="modal-card modal-card-ban">
+            <h3>{t('dashboard.adminGrantConfirmTitle')}</h3>
+            <p className="muted">
+              {t('dashboard.adminGrantConfirmBody', {
+                name: adminSelectedUser.username || '-',
+                plan: adminGrantPlanKey === 'plus' ? t('dashboard.subscriptionPlanPlus') : t('dashboard.subscriptionPlanStarter'),
+                months: parsedGrantMonths,
+              })}
+            </p>
+            <div className="modal-actions modal-actions-even">
+              <button className="btn ghost" type="button" onClick={() => setShowAdminGrantConfirm(false)}>
+                {t('common.cancel')}
+              </button>
+              <button className="btn" type="button" onClick={onAdminGrantMonths} disabled={adminGrantSubmitting}>
                 {t('dashboard.adminBanConfirmAction')}
               </button>
             </div>

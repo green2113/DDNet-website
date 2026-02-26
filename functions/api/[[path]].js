@@ -169,6 +169,52 @@ function parseLanguageFromAcceptHeader(header) {
   return 'en';
 }
 
+function getAdminLevel(user) {
+  const rawLevel = Number(user?.is_admin || 0);
+  if(!Number.isFinite(rawLevel)) {
+    return 0;
+  }
+  const level = Math.floor(rawLevel);
+  if(level < 0) {
+    return 0;
+  }
+  if(level > 2) {
+    return 2;
+  }
+  return level;
+}
+
+function isManager(user) {
+  return getAdminLevel(user) >= 1;
+}
+
+function isOperator(user) {
+  return getAdminLevel(user) >= 2;
+}
+
+function addCalendarMonthsUTC(inputDate, monthsToAdd) {
+  const base = new Date(inputDate);
+  const months = Number(monthsToAdd);
+  if(!Number.isFinite(base.getTime()) || !Number.isFinite(months)) {
+    return new Date(NaN);
+  }
+  const add = Math.floor(months);
+  const year = base.getUTCFullYear();
+  const month = base.getUTCMonth();
+  const day = base.getUTCDate();
+  const hour = base.getUTCHours();
+  const minute = base.getUTCMinutes();
+  const second = base.getUTCSeconds();
+  const ms = base.getUTCMilliseconds();
+
+  const targetMonthIndex = month + add;
+  const targetYear = year + Math.floor(targetMonthIndex / 12);
+  const normalizedTargetMonth = ((targetMonthIndex % 12) + 12) % 12;
+  const lastDayOfTargetMonth = new Date(Date.UTC(targetYear, normalizedTargetMonth + 1, 0)).getUTCDate();
+  const clampedDay = Math.min(day, lastDayOfTargetMonth);
+  return new Date(Date.UTC(targetYear, normalizedTargetMonth, clampedDay, hour, minute, second, ms));
+}
+
 function formatUtcTimestamp(isoLike) {
   const date = new Date(isoLike || Date.now());
   const pad = (n) => String(n).padStart(2, '0');
@@ -613,13 +659,24 @@ function emailVerificationRequiredResponse() {
   }, 403);
 }
 
-async function requireAdmin(context) {
+async function requireManager(context) {
   const result = await currentUser(context);
   if(result.error) {
     return result;
   }
-  if(Number(result.user?.is_admin || 0) !== 1) {
+  if(!isManager(result.user)) {
     return { error: json({ ok: false, message: 'Admin privileges required' }, 403) };
+  }
+  return result;
+}
+
+async function requireOperator(context) {
+  const result = await currentUser(context);
+  if(result.error) {
+    return result;
+  }
+  if(!isOperator(result.user)) {
+    return { error: json({ ok: false, message: 'Operator privileges required' }, 403) };
   }
   return result;
 }
@@ -2570,17 +2627,18 @@ async function loadAllowedTierIds(env, planKey) {
   return out;
 }
 
-async function upsertEntitlement(env, userId, planKey, providerRef, status, currentPeriodEnd, rawPayload) {
+async function upsertEntitlement(env, userId, planKey, providerRef, status, currentPeriodEnd, rawPayload, provider = 'patreon') {
   const normalizedPlanKey = lower(planKey || '');
   if(normalizedPlanKey !== 'plus' && normalizedPlanKey !== 'starter') {
     throw new Error(`Unsupported plan key: ${planKey}`);
   }
+  const normalizedProvider = String(provider || 'patreon').trim() || 'patreon';
 
   const now = nowIso();
   await env.DB.prepare(`
     INSERT INTO billing_entitlements (
       user_id, plan_key, provider, provider_ref, status, current_period_end, raw_payload, created_at, updated_at
-    ) VALUES (?, ?, 'patreon', ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(user_id, plan_key) DO UPDATE SET
       provider = excluded.provider,
       provider_ref = excluded.provider_ref,
@@ -2591,6 +2649,7 @@ async function upsertEntitlement(env, userId, planKey, providerRef, status, curr
   `).bind(
     userId,
     normalizedPlanKey,
+    normalizedProvider,
     providerRef,
     status,
     currentPeriodEnd || null,
@@ -3030,7 +3089,7 @@ async function handlePatreonWebhook(context) {
 
 async function handleAdminPatreonTiers(context) {
   const { env } = context;
-  const auth = await requireAdmin(context);
+  const auth = await requireOperator(context);
   if(auth.error) {
     return auth.error;
   }
@@ -3047,7 +3106,7 @@ async function handleAdminPatreonTiers(context) {
 
 async function handleAdminPatreonTierUpsert(context) {
   const { env, request } = context;
-  const auth = await requireAdmin(context);
+  const auth = await requireOperator(context);
   if(auth.error) {
     return auth.error;
   }
@@ -3084,7 +3143,7 @@ async function handleAdminPatreonTierUpsert(context) {
 
 async function handleAdminPatreonTierDelete(context, externalTierId) {
   const { env } = context;
-  const auth = await requireAdmin(context);
+  const auth = await requireOperator(context);
   if(auth.error) {
     return auth.error;
   }
@@ -3108,7 +3167,7 @@ async function handleAdminPatreonTierDelete(context, externalTierId) {
 
 async function handleAdminTrailSettingsGet(context) {
   const { env } = context;
-  const auth = await requireAdmin(context);
+  const auth = await requireOperator(context);
   if(auth.error) {
     return auth.error;
   }
@@ -3136,7 +3195,7 @@ async function handleAdminTrailSettingsGet(context) {
 
 async function handleAdminTrailSettingsSet(context) {
   const { env, request } = context;
-  const auth = await requireAdmin(context);
+  const auth = await requireOperator(context);
   if(auth.error) {
     return auth.error;
   }
@@ -3243,7 +3302,7 @@ async function handleMyTrailSettingsSet(context) {
 
 async function handleAdminBan(context) {
   const { request, env } = context;
-  const auth = await requireAdmin(context);
+  const auth = await requireManager(context);
   if(auth.error) {
     return auth.error;
   }
@@ -3283,7 +3342,7 @@ async function handleAdminBan(context) {
 
 async function handleAdminUnban(context) {
   const { request, env } = context;
-  const auth = await requireAdmin(context);
+  const auth = await requireManager(context);
   if(auth.error) {
     return auth.error;
   }
@@ -3310,7 +3369,7 @@ async function handleAdminUnban(context) {
 
 async function handleAdminUsers(context) {
   const { request, env } = context;
-  const auth = await requireAdmin(context);
+  const auth = await requireManager(context);
   if(auth.error) {
     return auth.error;
   }
@@ -3349,6 +3408,115 @@ async function handleAdminUsers(context) {
     `).all();
 
   return json({ ok: true, users: rows?.results || [] });
+}
+
+async function handleAdminSubscriptionGrantMonths(context) {
+  const { request, env } = context;
+  const auth = await requireOperator(context);
+  if(auth.error) {
+    return auth.error;
+  }
+
+  await ensurePatreonTables(env);
+
+  const body = await parseRequestBody(request);
+  const data = typeof body === 'string' ? {} : (body || {});
+  const accountId = Number(data.accountId || 0);
+  const planKey = lower(data.planKey || '');
+  const months = Number(data.months || 0);
+  const reason = String(data.reason || '').trim();
+
+  if(!Number.isFinite(accountId) || accountId <= 0) {
+    return json({ ok: false, message: 'Invalid account id' }, 400);
+  }
+  if(planKey !== 'starter' && planKey !== 'plus') {
+    return json({ ok: false, message: 'planKey must be starter or plus' }, 400);
+  }
+  if(!Number.isInteger(months) || months < 1 || months > 24) {
+    return json({ ok: false, message: 'months must be an integer between 1 and 24' }, 400);
+  }
+
+  const targetUser = await env.DB.prepare(`
+    SELECT id
+    FROM users
+    WHERE id = ?
+    LIMIT 1
+  `).bind(accountId).first();
+  if(!targetUser) {
+    return json({ ok: false, message: 'Account not found' }, 404);
+  }
+
+  const targetPlan = planKey;
+  const oppositePlan = targetPlan === 'plus' ? 'starter' : 'plus';
+  const targetRow = await loadSubscriptionByPlanKey(env, accountId, targetPlan);
+  const oppositeRow = await loadSubscriptionByPlanKey(env, accountId, oppositePlan);
+  const targetActive = entitlementRowIsActive(targetRow);
+  const oppositeActive = entitlementRowIsActive(oppositeRow);
+  const now = new Date();
+  const nowIsoValue = now.toISOString();
+
+  let startAt = now;
+  if(oppositeActive) {
+    startAt = now;
+  } else if(targetActive) {
+    const currentEndMs = Date.parse(String(targetRow?.current_period_end || ''));
+    startAt = Number.isFinite(currentEndMs) && currentEndMs > Date.now() ? new Date(currentEndMs) : now;
+  }
+
+  const endAt = addCalendarMonthsUTC(startAt, months);
+  if(!Number.isFinite(endAt.getTime())) {
+    return json({ ok: false, message: 'Failed to calculate period end time' }, 500);
+  }
+  const endAtIso = endAt.toISOString();
+
+  await upsertEntitlement(
+    env,
+    accountId,
+    targetPlan,
+    `admin:${auth.user.id}`,
+    'ACTIVE',
+    endAtIso,
+    {
+      source: 'admin_grant',
+      months,
+      reason,
+      startAt: startAt.toISOString(),
+      endAt: endAtIso,
+      grantedBy: auth.user.id,
+    },
+    'manual_admin',
+  );
+
+  if(oppositeActive) {
+    await upsertEntitlement(
+      env,
+      accountId,
+      oppositePlan,
+      `admin:${auth.user.id}`,
+      'INACTIVE',
+      nowIsoValue,
+      {
+        source: 'admin_grant_switch',
+        switchedTo: targetPlan,
+        reason,
+        switchedBy: auth.user.id,
+      },
+      'manual_admin',
+    );
+  }
+
+  const updatedFlags = await loadPlanActivityFlags(env, accountId);
+  await applyPlanBenefits(env, accountId, updatedFlags);
+
+  return json({
+    ok: true,
+    accountId,
+    planKey: targetPlan,
+    months,
+    reason,
+    startAt: startAt.toISOString(),
+    endAt: endAtIso,
+  });
 }
 
 export async function onRequest(context) {
@@ -3504,6 +3672,10 @@ export async function onRequest(context) {
 
   if(request.method === 'POST' && path === '/admin/trail-settings') {
     return handleAdminTrailSettingsSet(context);
+  }
+
+  if(request.method === 'POST' && path === '/admin/subscription/grant-months') {
+    return handleAdminSubscriptionGrantMonths(context);
   }
 
   return json({ ok: false, message: 'API route not found' }, 404);

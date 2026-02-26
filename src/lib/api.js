@@ -173,6 +173,13 @@ export async function adminUpdateTrailSettings(payload) {
   });
 }
 
+export async function adminGrantSubscriptionMonths(payload) {
+  return api('/api/admin/subscription/grant-months', {
+    method: 'POST',
+    body: JSON.stringify(payload || {}),
+  });
+}
+
 export async function getTrailSettings() {
   return api('/api/me/trail-settings', { method: 'GET' });
 }
