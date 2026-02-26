@@ -100,6 +100,17 @@ export async function getCurrentDummyGameCode() {
   return api('/api/game-code/dummy/current', { method: 'GET' });
 }
 
+export async function getAutoLoginSettings() {
+  return api('/api/me/auto-login-settings', { method: 'GET' });
+}
+
+export async function updateAutoLoginSettings(payload) {
+  return api('/api/me/auto-login-settings', {
+    method: 'POST',
+    body: JSON.stringify(payload || {}),
+  });
+}
+
 export async function updateProfileName(payload) {
   return api('/api/profile/name', {
     method: 'POST',

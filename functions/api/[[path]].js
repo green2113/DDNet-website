@@ -547,6 +547,62 @@ async function ensureUsersInviteQuotaBaseColumn(env) {
   return true;
 }
 
+async function ensureUsersAutoLoginColumns(env) {
+  if(!(await hasUsersColumn(env, 'auto_login_enabled'))) {
+    try {
+      await env.DB.prepare(`
+        ALTER TABLE users ADD COLUMN auto_login_enabled INTEGER NOT NULL DEFAULT 1
+      `).run();
+    } catch(err) {
+      const message = String(err?.message || err).toLowerCase();
+      if(!message.includes('duplicate column')) {
+        throw err;
+      }
+    }
+  }
+
+  if(!(await hasUsersColumn(env, 'auto_login_strict'))) {
+    try {
+      await env.DB.prepare(`
+        ALTER TABLE users ADD COLUMN auto_login_strict INTEGER NOT NULL DEFAULT 0
+      `).run();
+    } catch(err) {
+      const message = String(err?.message || err).toLowerCase();
+      if(!message.includes('duplicate column')) {
+        throw err;
+      }
+    }
+  }
+}
+
+async function ensureAutoLoginBindingsTable(env) {
+  await env.DB.prepare(`
+    CREATE TABLE IF NOT EXISTS user_auto_login_bindings (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      ip TEXT NOT NULL,
+      client_name TEXT NOT NULL,
+      client_name_lower TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE(user_id, ip, client_name_lower),
+      FOREIGN KEY (user_id) REFERENCES users(id)
+    )
+  `).run();
+  await env.DB.prepare(`
+    CREATE INDEX IF NOT EXISTS idx_auto_bind_user_id
+    ON user_auto_login_bindings(user_id)
+  `).run();
+  await env.DB.prepare(`
+    CREATE INDEX IF NOT EXISTS idx_auto_bind_ip
+    ON user_auto_login_bindings(ip)
+  `).run();
+  await env.DB.prepare(`
+    CREATE INDEX IF NOT EXISTS idx_auto_bind_ip_name
+    ON user_auto_login_bindings(ip, client_name_lower)
+  `).run();
+}
+
 async function getUserSessionVersion(env, userId) {
   const hasSessionVersion = await ensureUsersSessionVersionColumn(env);
   if(!hasSessionVersion) {
@@ -571,6 +627,8 @@ async function publicUserById(env, userId) {
   const hasDummyNameChangeCooldown = await hasUsersColumn(env, 'dummy_name_change_available_at');
   const hasEmailVerified = await hasUsersColumn(env, 'email_verified');
   const hasIsAdmin = await hasUsersColumn(env, 'is_admin');
+  const hasAutoLoginEnabled = await hasUsersColumn(env, 'auto_login_enabled');
+  const hasAutoLoginStrict = await hasUsersColumn(env, 'auto_login_strict');
   return env.DB.prepare(`
     SELECT
       id,
@@ -584,6 +642,8 @@ async function publicUserById(env, userId) {
       invite_used,
       country_signup,
       ${hasIsAdmin ? 'is_admin' : '0 AS is_admin'},
+      ${hasAutoLoginEnabled ? 'auto_login_enabled' : '1 AS auto_login_enabled'},
+      ${hasAutoLoginStrict ? 'auto_login_strict' : '0 AS auto_login_strict'},
       ban_is_permanent,
       ban_until,
       ban_reason,
@@ -1095,6 +1155,63 @@ async function handleMe(context) {
   }
 
   return json({ ok: true, user: result.user });
+}
+
+async function handleMyAutoLoginSettingsGet(context) {
+  const { env } = context;
+  const result = await currentUser(context);
+  if(result.error) {
+    return result.error;
+  }
+
+  await ensureUsersAutoLoginColumns(env);
+  const row = await env.DB.prepare(`
+    SELECT
+      COALESCE(auto_login_enabled, 1) AS auto_login_enabled,
+      COALESCE(auto_login_strict, 0) AS auto_login_strict
+    FROM users
+    WHERE id = ?
+    LIMIT 1
+  `).bind(result.user.id).first();
+
+  const enabled = Number(row?.auto_login_enabled || 0) === 1;
+  const strict = enabled && Number(row?.auto_login_strict || 0) === 1;
+  return json({
+    ok: true,
+    settings: {
+      enabled: enabled ? 1 : 0,
+      strict: strict ? 1 : 0,
+    },
+  });
+}
+
+async function handleMyAutoLoginSettingsSet(context) {
+  const { env, request } = context;
+  const result = await currentUser(context);
+  if(result.error) {
+    return result.error;
+  }
+
+  const body = await parseRequestBody(request);
+  const data = typeof body === 'string' ? {} : (body || {});
+  const enabled = parseTruthyFlag(data.enabled, 1);
+  const strictInput = parseTruthyFlag(data.strict, 0);
+  const strict = enabled ? strictInput : 0;
+
+  await ensureUsersAutoLoginColumns(env);
+  await env.DB.prepare(`
+    UPDATE users
+    SET auto_login_enabled = ?, auto_login_strict = ?
+    WHERE id = ?
+  `).bind(enabled, strict, result.user.id).run();
+
+  return json({
+    ok: true,
+    settings: {
+      enabled,
+      strict,
+    },
+  });
 }
 
 async function handleEmailResend(context) {
@@ -2019,7 +2136,7 @@ async function applyPlanBenefits(env, userId, planFlags) {
   await ensureUsersInviteQuotaBaseColumn(env);
 
   const row = await env.DB.prepare(`
-    SELECT invite_quota, invite_quota_base, name_change_available_at
+    SELECT invite_code, invite_quota, invite_quota_base, name_change_available_at
     FROM users
     WHERE id = ?
     LIMIT 1
@@ -2050,6 +2167,15 @@ async function applyPlanBenefits(env, userId, planFlags) {
       SET invite_quota = ?
       WHERE id = ?
     `).bind(targetQuota, id).run();
+  }
+
+  if(normalized.plusActive && !String(row.invite_code || '').trim()) {
+    const generatedInviteCode = await allocateInviteCode(env);
+    await env.DB.prepare(`
+      UPDATE users
+      SET invite_code = ?
+      WHERE id = ?
+    `).bind(generatedInviteCode, id).run();
   }
 
   if(normalized.nameCooldownDays >= NAME_CHANGE_COOLDOWN_DAYS_DEFAULT) {
@@ -2115,10 +2241,115 @@ async function loadGameTrailState(env, accountId) {
   }
 }
 
+function parseTruthyFlag(value, fallback = 0) {
+  if(value === undefined || value === null) {
+    return fallback ? 1 : 0;
+  }
+  return TRUE_VALUES.includes(String(value).toLowerCase()) ? 1 : 0;
+}
+
+function gameClientIpFromRequest(request) {
+  return String(request.headers.get('X-Game-Client-Ip') || '').trim();
+}
+
+function gameClientNameFromRequest(request) {
+  return String(request.headers.get('X-Game-Client-Name') || '').trim();
+}
+
+function buildGameAuthPayload(user, trailState, { dummyCode = false } = {}) {
+  const dummyName = String(user?.dummy_name || '').trim();
+  const username = String(user?.username || '').trim();
+  const accountName = dummyCode && dummyName ? dummyName : username;
+  return {
+    ok: true,
+    accountId: Number(user?.id || 0),
+    name: accountName,
+    username: accountName,
+    dummyCode,
+    ...trailState,
+  };
+}
+
+async function upsertAutoLoginBinding(env, userId, ip, clientName) {
+  const normalizedIp = String(ip || '').trim();
+  const normalizedName = String(clientName || '').trim();
+  if(!normalizedIp || !normalizedName) {
+    return;
+  }
+
+  await ensureUsersAutoLoginColumns(env);
+  await ensureAutoLoginBindingsTable(env);
+  const now = nowIso();
+  const nameLower = lower(normalizedName);
+  await env.DB.prepare(`
+    INSERT INTO user_auto_login_bindings (
+      user_id,
+      ip,
+      client_name,
+      client_name_lower,
+      created_at,
+      updated_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?)
+    ON CONFLICT(user_id, ip, client_name_lower)
+    DO UPDATE SET
+      client_name = excluded.client_name,
+      updated_at = excluded.updated_at
+  `).bind(userId, normalizedIp, normalizedName, nameLower, now, now).run();
+}
+
+async function findAutoLoginMatches(env, ip, clientName) {
+  await ensureUsersAutoLoginColumns(env);
+  await ensureAutoLoginBindingsTable(env);
+  const ipValue = String(ip || '').trim();
+  const nameValue = String(clientName || '').trim();
+  if(!ipValue) {
+    return [];
+  }
+
+  const nameLower = lower(nameValue);
+  const rows = await env.DB.prepare(`
+    SELECT
+      u.id,
+      u.username,
+      u.dummy_name,
+      u.email_verified,
+      u.ban_is_permanent,
+      u.ban_until,
+      u.ban_reason,
+      COALESCE(u.auto_login_enabled, 1) AS auto_login_enabled,
+      COALESCE(u.auto_login_strict, 0) AS auto_login_strict,
+      b.client_name_lower
+    FROM user_auto_login_bindings b
+    JOIN users u ON u.id = b.user_id
+    WHERE b.ip = ?
+      AND COALESCE(u.auto_login_enabled, 1) = 1
+  `).bind(ipValue).all();
+
+  const list = Array.isArray(rows?.results) ? rows.results : [];
+  const accepted = [];
+  const seen = new Set();
+  for(const row of list) {
+    const userId = Number(row?.id || 0);
+    if(!Number.isFinite(userId) || userId <= 0 || seen.has(userId)) {
+      continue;
+    }
+    const strict = Number(row?.auto_login_strict || 0) === 1;
+    if(strict && (!nameLower || String(row?.client_name_lower || '') !== nameLower)) {
+      continue;
+    }
+    seen.add(userId);
+    accepted.push(row);
+  }
+  return accepted;
+}
+
 async function handleGameVerify(context) {
 	const { request, env } = context;
 	const key = request.headers.get('X-Game-Server-Key') || '';
   const defaults = defaultGameTrailState();
+  const clientIp = gameClientIpFromRequest(request);
+  const clientName = gameClientNameFromRequest(request);
 
   if(!env.GAME_SERVER_API_KEY || !timingSafeEqual(key, env.GAME_SERVER_API_KEY)) {
     return json({ ok: false, message: 'Unauthorized game server key' }, 401);
@@ -2228,13 +2459,80 @@ async function handleGameVerify(context) {
     });
   }
 
+  if(!matchedDummyCode) {
+    await upsertAutoLoginBinding(env, user.id, clientIp, clientName);
+  }
+
+  return json(buildGameAuthPayload(user, trailState, { dummyCode: matchedDummyCode }));
+}
+
+async function handleGameAutoLogin(context) {
+  const { request, env } = context;
+  const key = request.headers.get('X-Game-Server-Key') || '';
+  const defaults = defaultGameTrailState();
+  if(!env.GAME_SERVER_API_KEY || !timingSafeEqual(key, env.GAME_SERVER_API_KEY)) {
+    return json({ ok: false, message: 'Unauthorized game server key' }, 401);
+  }
+
+  const clientIp = gameClientIpFromRequest(request);
+  const clientName = gameClientNameFromRequest(request);
+  if(!clientIp) {
+    return json({ ok: true, matched: false, ...defaults });
+  }
+
+  const matches = await findAutoLoginMatches(env, clientIp, clientName);
+  if(matches.length === 0) {
+    return json({ ok: true, matched: false, ...defaults });
+  }
+  if(matches.length > 1) {
+    return json({
+      ok: true,
+      matched: false,
+      code: 'AUTO_LOGIN_CONFLICT',
+      ...defaults,
+    });
+  }
+
+  const user = matches[0];
+  const trailState = await loadGameTrailState(env, user.id);
+  if(Number(user.email_verified || 0) !== 1) {
+    return json({
+      ok: false,
+      code: 'ACCOUNT_UNVERIFIED',
+      message: 'Account email is not verified.',
+      matched: true,
+      ...trailState,
+    });
+  }
+
+  const now = Date.now();
+  const permanent = Number(user.ban_is_permanent || 0) !== 0;
+  const banUntilRaw = String(user.ban_until || '');
+  const banUntilMs = banUntilRaw ? Date.parse(banUntilRaw) : NaN;
+  const tempActive = Number.isFinite(banUntilMs) && banUntilMs > now;
+  const banned = permanent || tempActive;
+  if(banned) {
+    const remainingSeconds = tempActive ? Math.max(0, Math.ceil((banUntilMs - now) / 1000)) : 0;
+    return json({
+      ok: false,
+      matched: true,
+      code: 'ACCOUNT_BANNED',
+      message: permanent
+        ? 'This account is permanently restricted from gameplay.'
+        : `This account is temporarily restricted from gameplay. Remaining time: ${remainingSeconds} second(s).`,
+      accountId: Number(user.id),
+      banPermanent: permanent,
+      banUntil: banUntilRaw,
+      banReason: String(user.ban_reason || ''),
+      remainingSeconds,
+      dummyCode: false,
+      ...trailState,
+    });
+  }
+
   return json({
-    ok: true,
-    accountId: user.id,
-    name: matchedDummyCode && String(user.dummy_name || '').trim() ? String(user.dummy_name).trim() : user.username,
-    username: matchedDummyCode && String(user.dummy_name || '').trim() ? String(user.dummy_name).trim() : user.username,
-    dummyCode: matchedDummyCode,
-    ...trailState,
+    matched: true,
+    ...buildGameAuthPayload(user, trailState, { dummyCode: false }),
   });
 }
 
@@ -3000,6 +3298,7 @@ async function handleMySubscription(context) {
   const subscription = await loadSubscriptionByPlanKey(env, auth.user.id, 'plus');
   const starterSubscription = await loadSubscriptionByPlanKey(env, auth.user.id, 'starter');
   const planFlags = await loadPlanActivityFlags(env, auth.user.id);
+  await applyPlanBenefits(env, auth.user.id, planFlags);
   const benefits = resolvePlanBenefitValues(planFlags);
   const inviteQuotaRow = await env.DB.prepare(`
     SELECT invite_quota
@@ -3573,6 +3872,12 @@ export async function onRequest(context) {
   if(request.method === 'GET' && path === '/me') {
     return handleMe(context);
   }
+  if(request.method === 'GET' && path === '/me/auto-login-settings') {
+    return handleMyAutoLoginSettingsGet(context);
+  }
+  if(request.method === 'POST' && path === '/me/auto-login-settings') {
+    return handleMyAutoLoginSettingsSet(context);
+  }
 
   if(request.method === 'POST' && path === '/profile/name') {
     return handleUpdateProfileName(context);
@@ -3599,6 +3904,9 @@ export async function onRequest(context) {
 
   if(request.method === 'POST' && path === '/game/verify') {
     return handleGameVerify(context);
+  }
+  if(request.method === 'POST' && path === '/game/auto-login') {
+    return handleGameAutoLogin(context);
   }
 
   if(request.method === 'POST' && path === '/game/ban') {

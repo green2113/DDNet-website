@@ -15,3 +15,4 @@
 .read migrations/0015_billing_tier_rules.sql
 .read migrations/0016_patreon_oauth_states.sql
 .read migrations/0017_user_invite_quota_base.sql
+.read migrations/0018_user_auto_login_settings.sql

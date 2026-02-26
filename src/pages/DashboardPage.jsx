@@ -8,6 +8,7 @@ import {
   adminSearchUsers,
   adminUnbanAccount,
   adminUpsertPatreonTier,
+  getAutoLoginSettings,
   getMySubscription,
   getTrailSettings,
   getCurrentDummyGameCode,
@@ -17,6 +18,7 @@ import {
   rotateGameCode,
   updateTrailSettings,
   updateDummyProfileName,
+  updateAutoLoginSettings,
   updateProfileName,
   verifyEmailCode,
 } from '../lib/api';
@@ -153,6 +155,8 @@ export default function DashboardPage() {
   const [savingName, setSavingName] = useState(false);
   const [savingDummyName, setSavingDummyName] = useState(false);
   const [showCopyToast, setShowCopyToast] = useState(false);
+  const [showTrailSavedToast, setShowTrailSavedToast] = useState(false);
+  const [showAutoLoginSavedToast, setShowAutoLoginSavedToast] = useState(false);
   const [showEmailVerifyModal, setShowEmailVerifyModal] = useState(false);
   const [verifyCodeInput, setVerifyCodeInput] = useState('');
   const [verifySubmitting, setVerifySubmitting] = useState(false);
@@ -192,6 +196,10 @@ export default function DashboardPage() {
   const [adminTrailLoading, setAdminTrailLoading] = useState(false);
   const [adminTrailSubmitting, setAdminTrailSubmitting] = useState(false);
   const [adminTrailMenuOpen, setAdminTrailMenuOpen] = useState(false);
+  const [autoLoginEnabled, setAutoLoginEnabled] = useState(true);
+  const [autoLoginStrict, setAutoLoginStrict] = useState(false);
+  const [autoLoginLoading, setAutoLoginLoading] = useState(false);
+  const [autoLoginSaving, setAutoLoginSaving] = useState(false);
   const adminPickerRef = useRef(null);
   const adminTrailMenuRef = useRef(null);
   const adminSearchInputRef = useRef(null);
@@ -201,7 +209,7 @@ export default function DashboardPage() {
   const currentDummyName = String(user?.dummy_name || '');
   const emailVerified = Number(user?.email_verified || 0) === 1;
   const signupCountry = String(user?.country_signup || '').toUpperCase();
-  const canUseInvite = signupCountry === 'TW' || signupCountry === 'KR';
+  const hasInviteCode = String(user?.invite_code || '').trim().length > 0;
   const trimmedName = nameForm.trim();
   const trimmedDummyName = dummyNameForm.trim();
   const nameCooldownUntilRaw = String(user?.name_change_available_at || '');
@@ -225,6 +233,7 @@ export default function DashboardPage() {
   const isAdminSection = activeSection === 'admin-ban' || activeSection === 'admin-plan-grant';
   const plusActive = Boolean(subscriptionInfo?.benefits?.plusActive);
   const starterActive = plusActive || Boolean(subscriptionInfo?.benefits?.starterActive);
+  const canUseInvite = signupCountry === 'TW' || signupCountry === 'KR' || plusActive || hasInviteCode;
   const subscriptionStateLoading = subscriptionLoading;
   const trailFeatureLocked = subscriptionStateLoading || !plusActive;
   const plusSubscription = subscriptionInfo?.subscription || null;
@@ -307,6 +316,9 @@ export default function DashboardPage() {
     try {
       const result = await getMySubscription();
       setSubscriptionInfo(result || null);
+      if(result?.benefits?.plusActive && !String(user?.invite_code || '').trim()) {
+        await refresh({ silent: true });
+      }
     } catch (err) {
       if(!silent) {
         setFeedback({ type: 'error', message: err.message });
@@ -382,12 +394,41 @@ export default function DashboardPage() {
     }
   };
 
+  const refreshAutoLoginSettings = async ({ silent = false } = {}) => {
+    if(!silent) {
+      setAutoLoginLoading(true);
+    }
+    try {
+      const result = await getAutoLoginSettings();
+      const settings = result?.settings || {};
+      const enabled = Number(settings.enabled || 0) === 1;
+      const strict = enabled && Number(settings.strict || 0) === 1;
+      setAutoLoginEnabled(enabled);
+      setAutoLoginStrict(strict);
+    } catch (err) {
+      if(!silent) {
+        setFeedback({ type: 'error', message: err.message || t('dashboard.autoLoginSaveFailed') });
+      }
+    } finally {
+      if(!silent) {
+        setAutoLoginLoading(false);
+      }
+    }
+  };
+
   useEffect(() => {
     if(activeSection !== 'subscription-trail') {
       setAdminTrailMenuOpen(false);
       return;
     }
     refreshTrailSettings();
+  }, [activeSection]);
+
+  useEffect(() => {
+    if(activeSection !== 'codes') {
+      return;
+    }
+    refreshAutoLoginSettings();
   }, [activeSection]);
 
   useEffect(() => {
@@ -480,6 +521,22 @@ export default function DashboardPage() {
     const timer = setTimeout(() => setShowCopyToast(false), 1800);
     return () => clearTimeout(timer);
   }, [showCopyToast]);
+
+  useEffect(() => {
+    if(!showTrailSavedToast) {
+      return undefined;
+    }
+    const timer = setTimeout(() => setShowTrailSavedToast(false), 1800);
+    return () => clearTimeout(timer);
+  }, [showTrailSavedToast]);
+
+  useEffect(() => {
+    if(!showAutoLoginSavedToast) {
+      return undefined;
+    }
+    const timer = setTimeout(() => setShowAutoLoginSavedToast(false), 1800);
+    return () => clearTimeout(timer);
+  }, [showAutoLoginSavedToast]);
 
   useEffect(() => {
     if(!showVerifySentToast) {
@@ -662,6 +719,51 @@ export default function DashboardPage() {
     } catch {
       setFeedback({ type: 'error', message: t('dashboard.copyFailed') });
     }
+  };
+
+  const saveAutoLoginSettings = async (enabled, strict) => {
+    if(autoLoginSaving) {
+      return;
+    }
+    setAutoLoginSaving(true);
+    setFeedback(null);
+    try {
+      const response = await updateAutoLoginSettings({
+        enabled: enabled ? 1 : 0,
+        strict: enabled && strict ? 1 : 0,
+      });
+      const settings = response?.settings || {};
+      const nextEnabled = Number(settings.enabled || 0) === 1;
+      const nextStrict = nextEnabled && Number(settings.strict || 0) === 1;
+      setAutoLoginEnabled(nextEnabled);
+      setAutoLoginStrict(nextStrict);
+      setShowAutoLoginSavedToast(false);
+      requestAnimationFrame(() => setShowAutoLoginSavedToast(true));
+    } catch (err) {
+      setFeedback({ type: 'error', message: err.message || t('dashboard.autoLoginSaveFailed') });
+    } finally {
+      setAutoLoginSaving(false);
+    }
+  };
+
+  const onToggleAutoLoginEnabled = () => {
+    if(autoLoginLoading || autoLoginSaving) {
+      return;
+    }
+    const nextEnabled = !autoLoginEnabled;
+    const nextStrict = nextEnabled ? autoLoginStrict : false;
+    setAutoLoginEnabled(nextEnabled);
+    setAutoLoginStrict(nextStrict);
+    saveAutoLoginSettings(nextEnabled, nextStrict);
+  };
+
+  const onToggleAutoLoginStrict = () => {
+    if(autoLoginLoading || autoLoginSaving || !autoLoginEnabled) {
+      return;
+    }
+    const nextStrict = !autoLoginStrict;
+    setAutoLoginStrict(nextStrict);
+    saveAutoLoginSettings(true, nextStrict);
   };
 
   const saveName = async () => {
@@ -985,7 +1087,8 @@ export default function DashboardPage() {
         mode: adminTrailMode,
       });
       setAdminTrailBaseline({ enabled: adminTrailEnabled, mode: adminTrailMode });
-      setFeedback({ type: 'ok', message: t('dashboard.subscriptionTrailSaved') });
+      setShowTrailSavedToast(false);
+      requestAnimationFrame(() => setShowTrailSavedToast(true));
     } catch (err) {
       setFeedback({ type: 'error', message: err.message });
     } finally {
@@ -1129,6 +1232,18 @@ ${t('dashboard.accessReasonLine', { reason: banReasonText || '-' })}`
         <section className="copy-toast" role="status" aria-live="polite">
           <span className="copy-toast-icon"><ToastCheckIcon /></span>
           <span>{t('dashboard.copyToast')}</span>
+        </section>
+      ) : null}
+      {showTrailSavedToast ? (
+        <section className="copy-toast" role="status" aria-live="polite">
+          <span className="copy-toast-icon"><ToastCheckIcon /></span>
+          <span>{t('dashboard.subscriptionTrailSaved')}</span>
+        </section>
+      ) : null}
+      {showAutoLoginSavedToast ? (
+        <section className="copy-toast" role="status" aria-live="polite">
+          <span className="copy-toast-icon"><ToastCheckIcon /></span>
+          <span>{t('dashboard.autoLoginSaved')}</span>
         </section>
       ) : null}
       {showVerifySentToast ? (
@@ -1537,6 +1652,45 @@ ${t('dashboard.accessReasonLine', { reason: banReasonText || '-' })}`
                     {rotatingDummy ? t('dashboard.rotating') : (dummyCode ? t('dashboard.dummyReissueCode') : t('dashboard.dummyIssueCode'))}
                   </button>
                 )}
+              </article>
+
+              <article className="panel auto-login-settings-panel">
+                <h3>{t('dashboard.autoLoginToggle')}</h3>
+                <div className="trail-setting-card">
+                  <div className="trail-toggle-row">
+                    <div>
+                      <p className="trail-toggle-title">{t('dashboard.autoLoginToggle')}</p>
+                      <p className="trail-toggle-subtitle">{t('dashboard.autoLoginToggleDesc')}</p>
+                    </div>
+                    <button
+                      className={`trail-toggle${autoLoginEnabled ? ' is-on' : ''}`}
+                      type="button"
+                      role="switch"
+                      aria-checked={autoLoginEnabled}
+                      onClick={onToggleAutoLoginEnabled}
+                      disabled={autoLoginLoading || autoLoginSaving}
+                    >
+                      <span className="trail-toggle-knob" />
+                    </button>
+                  </div>
+                  <div className="trail-toggle-row">
+                    <div>
+                      <p className="trail-toggle-title">{t('dashboard.autoLoginStrictToggle')}</p>
+                      <p className="trail-toggle-subtitle">{t('dashboard.autoLoginStrictToggleDesc')}</p>
+                    </div>
+                    <button
+                      className={`trail-toggle${autoLoginStrict ? ' is-on' : ''}`}
+                      type="button"
+                      role="switch"
+                      aria-checked={autoLoginStrict}
+                      onClick={onToggleAutoLoginStrict}
+                      disabled={autoLoginLoading || autoLoginSaving || !autoLoginEnabled}
+                      aria-disabled={!autoLoginEnabled}
+                    >
+                      <span className="trail-toggle-knob" />
+                    </button>
+                  </div>
+                </div>
               </article>
             </div>
           ) : null}

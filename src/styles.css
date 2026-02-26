@@ -352,6 +352,10 @@ h3 {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
+.auto-login-settings-panel {
+  grid-column: 1 / -1;
+}
+
 .admin-form-grid {
   display: grid;
   gap: 10px;
@@ -647,6 +651,11 @@ h3 {
 
 .trail-toggle.is-on .trail-toggle-knob {
   transform: translateX(22px);
+}
+
+.trail-toggle:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
 .trail-mode-box {

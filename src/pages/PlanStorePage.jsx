@@ -95,6 +95,7 @@ export default function PlanStorePage() {
             <li>{t('plans.plusFeatureNameCooldown')}</li>
             <li>{t('plans.plusFeatureInvite')}</li>
             <li>{t('plans.plusFeatureIncludesStarter')}</li>
+            <li>{t('plans.plusFeatureGlobalInvite')}</li>
           </ul>
 
           <div className="plan-actions">
