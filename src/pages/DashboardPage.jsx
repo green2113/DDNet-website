@@ -179,7 +179,7 @@ export default function DashboardPage() {
   const [adminPatreonLoading, setAdminPatreonLoading] = useState(false);
   const [adminPatreonSubmitting, setAdminPatreonSubmitting] = useState(false);
   const [subscriptionInfo, setSubscriptionInfo] = useState(null);
-  const [subscriptionLoading, setSubscriptionLoading] = useState(false);
+  const [subscriptionLoading, setSubscriptionLoading] = useState(true);
   const [adminTrailEnabled, setAdminTrailEnabled] = useState(false);
   const [adminTrailMode, setAdminTrailMode] = useState(1);
   const [adminTrailBaseline, setAdminTrailBaseline] = useState(null);
@@ -217,7 +217,8 @@ export default function DashboardPage() {
   const isAdminSection = activeSection === 'admin-ban';
   const plusActive = Boolean(subscriptionInfo?.benefits?.plusActive);
   const starterActive = plusActive || Boolean(subscriptionInfo?.benefits?.starterActive);
-  const trailFeatureLocked = !plusActive;
+  const subscriptionStateLoading = subscriptionLoading;
+  const trailFeatureLocked = subscriptionStateLoading || !plusActive;
   const plusSubscription = subscriptionInfo?.subscription || null;
   const starterSubscription = subscriptionInfo?.starterSubscription || null;
   const activeSubscription = plusActive ? plusSubscription : (starterActive ? starterSubscription : null);
@@ -230,7 +231,9 @@ export default function DashboardPage() {
   const currentPeriodEndMs = currentPeriodEndRaw ? Date.parse(currentPeriodEndRaw) : NaN;
   const hasCurrentPeriodEnd = Number.isFinite(currentPeriodEndMs) && currentPeriodEndMs > 0;
   const remainingDays = hasCurrentPeriodEnd ? Math.max(0, Math.ceil((currentPeriodEndMs - Date.now()) / (24 * 60 * 60 * 1000))) : 0;
-  const trailSectionLockedTooltip = t('dashboard.subscriptionTrailLockedTooltip');
+  const trailSectionLockedTooltip = subscriptionStateLoading
+    ? t('dashboard.subscriptionTrailLoadingTooltip')
+    : t('dashboard.subscriptionTrailLockedTooltip');
   const billingPageUrl = typeof window !== 'undefined'
     ? `${window.location.origin}/billing/plans`
     : '/billing/plans';
@@ -312,7 +315,7 @@ export default function DashboardPage() {
   }, [isAdmin, isAdminSection]);
 
   useEffect(() => {
-    refreshSubscriptionInfo({ silent: true });
+    refreshSubscriptionInfo();
   }, []);
 
   useEffect(() => {

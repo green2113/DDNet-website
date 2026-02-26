@@ -2463,7 +2463,15 @@ async function exchangePatreonToken(env, request, params) {
 }
 
 async function fetchPatreonIdentity(accessToken) {
-  const response = await fetch('https://www.patreon.com/api/oauth2/v2/identity?include=memberships,memberships.currently_entitled_tiers,memberships.campaign', {
+  const params = new URLSearchParams({
+    include: 'memberships,memberships.currently_entitled_tiers,memberships.campaign',
+    'fields[member]': 'patron_status,next_charge_date,last_charge_date,last_charge_status,pledge_relationship_start',
+    'fields[user]': 'full_name,vanity',
+    'fields[tier]': 'title,amount_cents',
+    'fields[campaign]': 'creation_name',
+  });
+
+  const response = await fetch(`https://www.patreon.com/api/oauth2/v2/identity?${params.toString()}`, {
     headers: {
       authorization: `Bearer ${accessToken}`,
       accept: 'application/json',
