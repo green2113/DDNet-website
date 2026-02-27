@@ -196,9 +196,10 @@ export default function DashboardPage() {
   const [adminTrailLoading, setAdminTrailLoading] = useState(false);
   const [adminTrailSubmitting, setAdminTrailSubmitting] = useState(false);
   const [adminTrailMenuOpen, setAdminTrailMenuOpen] = useState(false);
-  const [autoLoginEnabled, setAutoLoginEnabled] = useState(true);
-  const [autoLoginStrict, setAutoLoginStrict] = useState(false);
-  const [autoLoginLoading, setAutoLoginLoading] = useState(false);
+  const [autoLoginEnabled, setAutoLoginEnabled] = useState(Number(user?.auto_login_enabled ?? 1) === 1);
+  const [autoLoginStrict, setAutoLoginStrict] = useState(
+    Number(user?.auto_login_enabled ?? 1) === 1 && Number(user?.auto_login_strict ?? 0) === 1,
+  );
   const [autoLoginSaving, setAutoLoginSaving] = useState(false);
   const adminPickerRef = useRef(null);
   const adminTrailMenuRef = useRef(null);
@@ -347,13 +348,6 @@ export default function DashboardPage() {
   }, []);
 
   useEffect(() => {
-    if(activeSection !== 'subscription' && activeSection !== 'subscription-trail') {
-      return;
-    }
-    refreshSubscriptionInfo();
-  }, [activeSection]);
-
-  useEffect(() => {
     if(!plusActive && activeSection === 'subscription-trail') {
       setActiveSection('subscription');
     }
@@ -395,9 +389,6 @@ export default function DashboardPage() {
   };
 
   const refreshAutoLoginSettings = async ({ silent = false } = {}) => {
-    if(!silent) {
-      setAutoLoginLoading(true);
-    }
     try {
       const result = await getAutoLoginSettings();
       const settings = result?.settings || {};
@@ -409,12 +400,15 @@ export default function DashboardPage() {
       if(!silent) {
         setFeedback({ type: 'error', message: err.message || t('dashboard.autoLoginSaveFailed') });
       }
-    } finally {
-      if(!silent) {
-        setAutoLoginLoading(false);
-      }
     }
   };
+
+  useEffect(() => {
+    const enabled = Number(user?.auto_login_enabled ?? 1) === 1;
+    const strict = enabled && Number(user?.auto_login_strict ?? 0) === 1;
+    setAutoLoginEnabled(enabled);
+    setAutoLoginStrict(strict);
+  }, [user?.auto_login_enabled, user?.auto_login_strict]);
 
   useEffect(() => {
     if(activeSection !== 'subscription-trail') {
@@ -428,7 +422,7 @@ export default function DashboardPage() {
     if(activeSection !== 'codes') {
       return;
     }
-    refreshAutoLoginSettings();
+    refreshAutoLoginSettings({ silent: true });
   }, [activeSection]);
 
   useEffect(() => {
@@ -747,7 +741,7 @@ export default function DashboardPage() {
   };
 
   const onToggleAutoLoginEnabled = () => {
-    if(autoLoginLoading || autoLoginSaving) {
+    if(autoLoginSaving) {
       return;
     }
     const nextEnabled = !autoLoginEnabled;
@@ -758,7 +752,7 @@ export default function DashboardPage() {
   };
 
   const onToggleAutoLoginStrict = () => {
-    if(autoLoginLoading || autoLoginSaving || !autoLoginEnabled) {
+    if(autoLoginSaving || !autoLoginEnabled) {
       return;
     }
     const nextStrict = !autoLoginStrict;
@@ -1668,7 +1662,7 @@ ${t('dashboard.accessReasonLine', { reason: banReasonText || '-' })}`
                       role="switch"
                       aria-checked={autoLoginEnabled}
                       onClick={onToggleAutoLoginEnabled}
-                      disabled={autoLoginLoading || autoLoginSaving}
+                      disabled={autoLoginSaving}
                     >
                       <span className="trail-toggle-knob" />
                     </button>
@@ -1684,7 +1678,7 @@ ${t('dashboard.accessReasonLine', { reason: banReasonText || '-' })}`
                       role="switch"
                       aria-checked={autoLoginStrict}
                       onClick={onToggleAutoLoginStrict}
-                      disabled={autoLoginLoading || autoLoginSaving || !autoLoginEnabled}
+                      disabled={autoLoginSaving || !autoLoginEnabled}
                       aria-disabled={!autoLoginEnabled}
                     >
                       <span className="trail-toggle-knob" />
