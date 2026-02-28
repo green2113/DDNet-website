@@ -3,10 +3,13 @@ import { useNavigate } from 'react-router-dom';
 import {
   adminBanAccount,
   adminDeletePatreonTier,
+  adminGetMapTargets,
   adminGrantSubscriptionMonths,
   adminGetPatreonTiers,
+  adminListMapDeployJobs,
   adminSearchUsers,
   adminUnbanAccount,
+  adminUploadMap,
   adminUpsertPatreonTier,
   getAutoLoginSettings,
   getMySubscription,
@@ -54,6 +57,22 @@ function maskEmail(value) {
 function formatDateTimePrecise(valueMs, locale) {
   if(!Number.isFinite(valueMs) || valueMs <= 0) {
     return '';
+  }
+  return new Intl.DateTimeFormat(locale || 'en-US', {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  }).format(new Date(valueMs));
+}
+
+function formatDateTimeShort(value, locale) {
+  const valueMs = Date.parse(String(value || ''));
+  if(!Number.isFinite(valueMs) || valueMs <= 0) {
+    return '-';
   }
   return new Intl.DateTimeFormat(locale || 'en-US', {
     year: 'numeric',
@@ -199,6 +218,19 @@ export default function DashboardPage() {
   const [adminTrailLoading, setAdminTrailLoading] = useState(false);
   const [adminTrailSubmitting, setAdminTrailSubmitting] = useState(false);
   const [adminTrailMenuOpen, setAdminTrailMenuOpen] = useState(false);
+  const [adminMapFile, setAdminMapFile] = useState(null);
+  const [adminMapName, setAdminMapName] = useState('');
+  const [adminMapCategory, setAdminMapCategory] = useState('Easy');
+  const [adminMapStars, setAdminMapStars] = useState('1');
+  const [adminMapPoints, setAdminMapPoints] = useState('0');
+  const [adminMapAuthor, setAdminMapAuthor] = useState('');
+  const [adminMapSourceLabel, setAdminMapSourceLabel] = useState('');
+  const [adminMapNotes, setAdminMapNotes] = useState('');
+  const [adminMapTargets, setAdminMapTargets] = useState([]);
+  const [adminSelectedMapTargets, setAdminSelectedMapTargets] = useState([]);
+  const [adminMapUploadSubmitting, setAdminMapUploadSubmitting] = useState(false);
+  const [adminMapJobsLoading, setAdminMapJobsLoading] = useState(false);
+  const [adminMapJobs, setAdminMapJobs] = useState([]);
   const [autoLoginEnabled, setAutoLoginEnabled] = useState(Number(user?.auto_login_enabled ?? 1) === 1);
   const [autoLoginStrict, setAutoLoginStrict] = useState(
     Number(user?.auto_login_enabled ?? 1) === 1 && Number(user?.auto_login_strict ?? 0) === 1,
@@ -234,7 +266,7 @@ export default function DashboardPage() {
   const adminLevel = Number(user?.is_admin || 0);
   const isManager = Number.isFinite(adminLevel) && adminLevel >= 1;
   const isOperator = Number.isFinite(adminLevel) && adminLevel >= 2;
-  const isAdminSection = activeSection === 'admin-ban' || activeSection === 'admin-plan-grant';
+  const isAdminSection = activeSection === 'admin-ban' || activeSection === 'admin-plan-grant' || activeSection === 'admin-map-upload';
   const plusActive = Boolean(subscriptionInfo?.benefits?.plusActive);
   const starterActive = plusActive || Boolean(subscriptionInfo?.benefits?.starterActive);
   const canUseInvite = signupCountry === 'TW' || signupCountry === 'KR' || plusActive || hasInviteCode;
@@ -275,6 +307,39 @@ export default function DashboardPage() {
     { value: 2, label: t('dashboard.subscriptionTrailMode2') },
     { value: 3, label: t('dashboard.subscriptionTrailMode3') },
   ];
+  const mapCategoryOptions = ['Easy', 'Main', 'Hard', 'Insane', 'Extreme', 'Mod', 'Unknown'];
+  const mapDeployStatusLabel = (status) => {
+    switch(String(status || '')) {
+    case 'queued':
+      return t('dashboard.adminMapStatusQueued');
+    case 'copying_map':
+      return t('dashboard.adminMapStatusCopyingMap');
+    case 'updating_config':
+      return t('dashboard.adminMapStatusUpdatingConfig');
+    case 'generating_votes':
+      return t('dashboard.adminMapStatusGeneratingVotes');
+    case 'syncing_database':
+      return t('dashboard.adminMapStatusSyncingDatabase');
+    case 'completed':
+      return t('dashboard.adminMapStatusCompleted');
+    case 'failed':
+      return t('dashboard.adminMapStatusFailed');
+    case 'running':
+      return t('dashboard.adminMapJobRunning');
+    default:
+      return String(status || '-');
+    }
+  };
+  const mapDeployStatusClass = (status) => {
+    switch(String(status || '')) {
+    case 'completed':
+      return 'status-text status-normal';
+    case 'failed':
+      return 'status-text status-permanent';
+    default:
+      return 'status-text status-temporary';
+    }
+  };
   const currentTrailModeLabel = trailModeOptions.find((entry) => entry.value === adminTrailMode)?.label || trailModeOptions[0].label;
   const trailModeDisabled = trailFeatureLocked || !adminTrailEnabled || adminTrailLoading || adminTrailSubmitting;
   const trailExtraDisabled = trailFeatureLocked || !adminTrailExtraEnabled || adminTrailLoading || adminTrailSubmitting;
@@ -311,6 +376,43 @@ export default function DashboardPage() {
     }
   };
 
+  const refreshAdminMapTargets = async () => {
+    try {
+      const result = await adminGetMapTargets();
+      const targets = Array.isArray(result?.targets) ? result.targets : [];
+      setAdminMapTargets(targets);
+      setAdminSelectedMapTargets((prev) => {
+        if(prev.length > 0) {
+          return prev.filter((entry) => targets.some((target) => target.key === entry));
+        }
+        return targets.map((entry) => String(entry.key || ''));
+      });
+    } catch (err) {
+      setAdminMapTargets([]);
+      setAdminSelectedMapTargets([]);
+      setFeedback({ type: 'error', message: err.message });
+    }
+  };
+
+  const refreshAdminMapJobs = async ({ silent = false } = {}) => {
+    if(!silent) {
+      setAdminMapJobsLoading(true);
+    }
+    try {
+      const result = await adminListMapDeployJobs();
+      setAdminMapJobs(Array.isArray(result?.jobs) ? result.jobs : []);
+    } catch (err) {
+      setAdminMapJobs([]);
+      if(!silent) {
+        setFeedback({ type: 'error', message: err.message });
+      }
+    } finally {
+      if(!silent) {
+        setAdminMapJobsLoading(false);
+      }
+    }
+  };
+
   const refreshSubscriptionInfo = async ({ silent = false } = {}) => {
     if(!silent) {
       setSubscriptionLoading(true);
@@ -339,7 +441,7 @@ export default function DashboardPage() {
   }, [isManager, isAdminSection]);
 
   useEffect(() => {
-    if(!isOperator && activeSection === 'admin-plan-grant') {
+    if(!isOperator && (activeSection === 'admin-plan-grant' || activeSection === 'admin-map-upload')) {
       setActiveSection(isManager ? 'admin-ban' : 'account');
     }
   }, [isOperator, isManager, activeSection]);
@@ -355,7 +457,7 @@ export default function DashboardPage() {
   }, [plusActive, activeSection]);
 
   useEffect(() => {
-    if(!isManager || (activeSection !== 'admin-ban' && activeSection !== 'admin-plan-grant')) {
+    if(!isManager || (activeSection !== 'admin-ban' && activeSection !== 'admin-plan-grant' && activeSection !== 'admin-map-upload')) {
       setAdminPickerOpen(false);
       adminUsersRequestIdRef.current += 1;
       return undefined;
@@ -437,6 +539,24 @@ export default function DashboardPage() {
   }, [activeSection]);
 
   useEffect(() => {
+    if(!isOperator || activeSection !== 'admin-map-upload') {
+      return;
+    }
+    refreshAdminMapTargets();
+    refreshAdminMapJobs();
+  }, [isOperator, activeSection]);
+
+  useEffect(() => {
+    if(!isOperator || activeSection !== 'admin-map-upload') {
+      return undefined;
+    }
+    const timer = window.setInterval(() => {
+      refreshAdminMapJobs({ silent: true });
+    }, 3000);
+    return () => window.clearInterval(timer);
+  }, [isOperator, activeSection]);
+
+  useEffect(() => {
     if(!adminTrailMenuOpen) {
       return undefined;
     }
@@ -466,7 +586,7 @@ export default function DashboardPage() {
   }, [trailModeDisabled, adminTrailMenuOpen]);
 
   useEffect(() => {
-    if(!isManager || (activeSection !== 'admin-ban' && activeSection !== 'admin-plan-grant') || !adminPickerOpen) {
+    if(!isManager || (activeSection !== 'admin-ban' && activeSection !== 'admin-plan-grant' && activeSection !== 'admin-map-upload') || !adminPickerOpen) {
       return;
     }
     refreshAdminUsers();
@@ -1076,6 +1196,69 @@ export default function DashboardPage() {
     }
   };
 
+  const onAdminMapTargetToggle = (targetKey) => {
+    const normalized = String(targetKey || '');
+    if(!normalized) {
+      return;
+    }
+    setAdminSelectedMapTargets((prev) => (
+      prev.includes(normalized)
+        ? prev.filter((entry) => entry !== normalized)
+        : [...prev, normalized]
+    ));
+  };
+
+  const resetAdminMapForm = () => {
+    setAdminMapFile(null);
+    setAdminMapName('');
+    setAdminMapCategory('Easy');
+    setAdminMapStars('1');
+    setAdminMapPoints('0');
+    setAdminMapAuthor('');
+    setAdminMapSourceLabel('');
+    setAdminMapNotes('');
+  };
+
+  const onAdminMapUpload = async () => {
+    if(adminMapUploadSubmitting) {
+      return;
+    }
+    if(!(adminMapFile instanceof File)) {
+      setFeedback({ type: 'error', message: t('dashboard.adminMapFileRequired') });
+      return;
+    }
+    if(adminSelectedMapTargets.length === 0) {
+      setFeedback({ type: 'error', message: t('dashboard.adminMapTargetRequired') });
+      return;
+    }
+
+    const formData = new FormData();
+    formData.append('mapFile', adminMapFile);
+    formData.append('mapName', adminMapName);
+    formData.append('category', adminMapCategory);
+    formData.append('stars', adminMapStars);
+    formData.append('points', adminMapPoints);
+    formData.append('author', adminMapAuthor);
+    formData.append('sourceLabel', adminMapSourceLabel);
+    formData.append('notes', adminMapNotes);
+    adminSelectedMapTargets.forEach((entry) => {
+      formData.append('targetKeys[]', entry);
+    });
+
+    setAdminMapUploadSubmitting(true);
+    setFeedback(null);
+    try {
+      await adminUploadMap(formData);
+      resetAdminMapForm();
+      await refreshAdminMapJobs();
+      setFeedback({ type: 'ok', message: t('dashboard.adminMapUploadDone') });
+    } catch (err) {
+      setFeedback({ type: 'error', message: err.message });
+    } finally {
+      setAdminMapUploadSubmitting(false);
+    }
+  };
+
   const getCurrentTrailSettingsState = () => ({
     enabled: adminTrailEnabled,
     mode: adminTrailMode,
@@ -1380,6 +1563,16 @@ ${t('dashboard.accessReasonLine', { reason: banReasonText || '-' })}`
                 >
                   <span className="dashboard-nav-icon" aria-hidden="true"><img src={iconCreditCard} alt="" /></span>
                   <span>{t('dashboard.adminPlanGrantNav')}</span>
+                </button>
+              ) : null}
+              {isOperator ? (
+                <button
+                  className={`dashboard-nav-btn${activeSection === 'admin-map-upload' ? ' active' : ''}`}
+                  type="button"
+                  onClick={() => setActiveSection('admin-map-upload')}
+                >
+                  <span className="dashboard-nav-icon" aria-hidden="true"><img src={iconKey} alt="" /></span>
+                  <span>{t('dashboard.adminMapUploadNav')}</span>
                 </button>
               ) : null}
             </div>
@@ -2109,6 +2302,166 @@ ${t('dashboard.accessReasonLine', { reason: banReasonText || '-' })}`
                 >
                   {t('dashboard.adminGrantAction')}
                 </button>
+              </div>
+            </article>
+          ) : null}
+
+          {activeSection === 'admin-map-upload' && isOperator ? (
+            <article className="panel">
+              <h3>{t('dashboard.adminMapUploadTitle')}</h3>
+              <p className="muted">{t('dashboard.adminMapUploadBody')}</p>
+              <div className="admin-form-grid">
+                <label>
+                  {t('dashboard.adminMapFile')}
+                  <input
+                    type="file"
+                    accept=".map"
+                    onChange={(event) => {
+                      const nextFile = event.target.files && event.target.files[0] ? event.target.files[0] : null;
+                      setAdminMapFile(nextFile);
+                      if(nextFile && !adminMapName.trim()) {
+                        setAdminMapName(String(nextFile.name || '').replace(/\.map$/i, ''));
+                      }
+                    }}
+                  />
+                </label>
+                <label>
+                  {t('dashboard.adminMapName')}
+                  <input
+                    value={adminMapName}
+                    onChange={(event) => setAdminMapName(event.target.value)}
+                    placeholder="e.g. BlmapChill"
+                  />
+                </label>
+                <label>
+                  {t('dashboard.adminMapCategory')}
+                  <select value={adminMapCategory} onChange={(event) => setAdminMapCategory(event.target.value)}>
+                    {mapCategoryOptions.map((entry) => (
+                      <option key={entry} value={entry}>{entry}</option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  {t('dashboard.adminMapStars')}
+                  <input
+                    type="number"
+                    min={0}
+                    max={5}
+                    step={1}
+                    value={adminMapStars}
+                    onChange={(event) => setAdminMapStars(event.target.value)}
+                  />
+                </label>
+                <label>
+                  {t('dashboard.adminMapPoints')}
+                  <input
+                    type="number"
+                    min={0}
+                    max={1000}
+                    step={1}
+                    value={adminMapPoints}
+                    onChange={(event) => setAdminMapPoints(event.target.value)}
+                  />
+                </label>
+                <label>
+                  {t('dashboard.adminMapAuthor')}
+                  <input
+                    value={adminMapAuthor}
+                    onChange={(event) => setAdminMapAuthor(event.target.value)}
+                    placeholder="e.g. Ravion"
+                  />
+                </label>
+                <label>
+                  {t('dashboard.adminMapSource')}
+                  <input
+                    value={adminMapSourceLabel}
+                    onChange={(event) => setAdminMapSourceLabel(event.target.value)}
+                    placeholder="e.g. KoG"
+                  />
+                </label>
+                <label>
+                  {t('dashboard.adminMapNotes')}
+                  <input
+                    value={adminMapNotes}
+                    onChange={(event) => setAdminMapNotes(event.target.value)}
+                    placeholder="-"
+                  />
+                </label>
+              </div>
+
+              <div className="admin-map-targets">
+                <p className="trail-mode-label">{t('dashboard.adminMapTargets')}</p>
+                {adminMapTargets.length === 0 ? (
+                  <p className="muted">{t('dashboard.adminMapNoTargets')}</p>
+                ) : (
+                  <div className="admin-map-target-grid">
+                    {adminMapTargets.map((target) => {
+                      const targetKey = String(target?.key || '');
+                      const selected = adminSelectedMapTargets.includes(targetKey);
+                      return (
+                        <button
+                          key={targetKey}
+                          className={`trail-extra-option${selected ? ' is-selected' : ''}`}
+                          type="button"
+                          onClick={() => onAdminMapTargetToggle(targetKey)}
+                          aria-pressed={selected}
+                        >
+                          <span className="trail-extra-label">
+                            {target?.label || targetKey}
+                            {target?.region ? ` (${target.region})` : ''}
+                          </span>
+                          <span className="trail-extra-check" aria-hidden="true" />
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+
+              <div className="admin-actions">
+                <button
+                  className="btn admin-main-action"
+                  type="button"
+                  onClick={onAdminMapUpload}
+                  disabled={adminMapUploadSubmitting}
+                >
+                  {adminMapUploadSubmitting ? t('dashboard.adminMapUploading') : t('dashboard.adminMapUploadAction')}
+                </button>
+              </div>
+
+              <div className="dashboard-nav-divider" />
+              <h3>{t('dashboard.adminMapRecentJobs')}</h3>
+              <div className="admin-map-job-list">
+                {adminMapJobsLoading && adminMapJobs.length === 0 ? (
+                  <div className="admin-user-list-empty">{t('dashboard.subscriptionLoading')}</div>
+                ) : adminMapJobs.length === 0 ? (
+                  <div className="admin-user-list-empty">{t('dashboard.adminMapNoJobs')}</div>
+                ) : (
+                  adminMapJobs.map((job) => (
+                    <section className="admin-map-job-card" key={job.id}>
+                      <div className="admin-map-job-head">
+                        <div>
+                          <strong>{job?.map?.mapName || '-'}</strong>
+                          <p className="muted">{formatDateTimeShort(job?.requestedAt, locale)}</p>
+                        </div>
+                        <span className={mapDeployStatusClass(job?.status)}>{mapDeployStatusLabel(job?.status)}</span>
+                      </div>
+                      <div className="admin-map-job-meta">
+                        <span>{job?.map?.category || '-'}</span>
+                        <span>{t('dashboard.adminMapStars')}: {job?.map?.stars ?? '-'}</span>
+                        <span>{t('dashboard.adminMapPoints')}: {job?.map?.points ?? '-'}</span>
+                      </div>
+                      <div className="admin-map-job-targets">
+                        {(Array.isArray(job?.targets) ? job.targets : []).map((target) => (
+                          <div className="admin-map-job-target" key={target.id}>
+                            <span>{target?.target_label || target?.target_key || '-'}</span>
+                            <span className={mapDeployStatusClass(target?.deploy_status)}>{mapDeployStatusLabel(target?.deploy_status)}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </section>
+                  ))
+                )}
               </div>
             </article>
           ) : null}

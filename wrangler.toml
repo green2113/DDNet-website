@@ -7,3 +7,7 @@ binding = "DB"
 database_name = "ddnet_req_login"
 database_id = "413951e9-8380-4cd0-8a61-3437ef97a093"
 preview_database_id = "413951e9-8380-4cd0-8a61-3437ef97a093"
+
+[[r2_buckets]]
+binding = "MAPS_BUCKET"
+bucket_name = "ddnet-map-uploads"

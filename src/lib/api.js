@@ -19,6 +19,27 @@ export async function api(path, options = {}) {
   return data;
 }
 
+export async function apiForm(path, options = {}) {
+  const headers = {
+    ...(options.headers || {}),
+  };
+  const response = await fetch(path, {
+    credentials: 'include',
+    ...options,
+    headers,
+  });
+
+  const data = await response.json().catch(() => ({ ok: false, message: 'Invalid API response' }));
+  if(!response.ok) {
+    const error = new Error(data.message || `Request failed (${response.status})`);
+    error.status = response.status;
+    error.payload = data;
+    throw error;
+  }
+
+  return data;
+}
+
 export async function getMe() {
   const data = await api('/api/me', { method: 'GET' });
   return data.user;
@@ -200,4 +221,28 @@ export async function updateTrailSettings(payload) {
     method: 'POST',
     body: JSON.stringify(payload || {}),
   });
+}
+
+export async function adminGetMapTargets() {
+  return api('/api/admin/map-targets', { method: 'GET' });
+}
+
+export async function adminUploadMap(formData) {
+  return apiForm('/api/admin/maps/upload', {
+    method: 'POST',
+    body: formData,
+  });
+}
+
+export async function adminListMaps(query = '') {
+  const q = encodeURIComponent(String(query || ''));
+  return api(`/api/admin/maps?q=${q}`, { method: 'GET' });
+}
+
+export async function adminListMapDeployJobs() {
+  return api('/api/admin/maps/deploy-jobs', { method: 'GET' });
+}
+
+export async function adminGetMapDeployJob(jobId) {
+  return api(`/api/admin/maps/deploy-jobs/${encodeURIComponent(String(jobId || ''))}`, { method: 'GET' });
 }

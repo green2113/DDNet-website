@@ -52,8 +52,13 @@ const PATREON_TOKEN_REFRESH_SKEW_MS = 30 * 1000;
 const PATREON_SYNC_STALE_DEFAULT_SECONDS = 6 * 60 * 60;
 const TRAIL_MODE_MIN = 1;
 const TRAIL_MODE_MAX = 3;
+const MAP_UPLOAD_MAX_BYTES = 20 * 1024 * 1024;
+const MAP_DEPLOY_STATUS_VALUES = new Set(['queued', 'copying_map', 'updating_config', 'generating_votes', 'syncing_database', 'completed', 'failed']);
+const MAP_JOB_STATUS_VALUES = new Set(['queued', 'running', 'completed', 'failed']);
+const MAP_CATEGORY_VALUES = new Set(['Easy', 'Main', 'Hard', 'Insane', 'Extreme', 'Mod', 'Unknown']);
 
 let s_TrailSettingsReady = false;
+let s_MapAdminTablesReady = false;
 
 function cookieSecure(request) {
   return new URL(request.url).protocol === 'https:';
@@ -182,6 +187,58 @@ function getAdminLevel(user) {
     return 2;
   }
   return level;
+}
+
+async function sha256HexBytes(buffer) {
+  const digest = await crypto.subtle.digest('SHA-256', buffer);
+  return Array.from(new Uint8Array(digest)).map((value) => value.toString(16).padStart(2, '0')).join('');
+}
+
+function sanitizeMapName(value) {
+  const name = String(value || '').trim().replace(/\.map$/i, '');
+  if(!name || name.length > 128) {
+    return '';
+  }
+  return /^[A-Za-z0-9 _().+\-]+$/.test(name) ? name : '';
+}
+
+function sanitizeFileName(value) {
+  const base = String(value || '').trim().replace(/[\\/:*?"<>|]+/g, '_');
+  return base || 'upload.map';
+}
+
+function formatCompactUtc(value = Date.now()) {
+  const date = new Date(value);
+  const pad = (input) => String(input).padStart(2, '0');
+  return `${date.getUTCFullYear()}${pad(date.getUTCMonth() + 1)}${pad(date.getUTCDate())}T${pad(date.getUTCHours())}${pad(date.getUTCMinutes())}${pad(date.getUTCSeconds())}Z`;
+}
+
+function parseMapDeployTargetsConfig(rawValue) {
+  const raw = String(rawValue || '').trim();
+  if(!raw) {
+    return [];
+  }
+  try {
+    const parsed = JSON.parse(raw);
+    const targets = Array.isArray(parsed) ? parsed : (Array.isArray(parsed?.targets) ? parsed.targets : []);
+    return targets
+      .map((entry) => ({
+        key: String(entry?.key || '').trim(),
+        label: String(entry?.label || '').trim(),
+        region: String(entry?.region || '').trim().toUpperCase(),
+      }))
+      .filter((entry) => entry.key && entry.label);
+  } catch {
+    return [];
+  }
+}
+
+function resolveSelectedMapTargets(rawTargets, requestedKeys) {
+  const requested = new Set((Array.isArray(requestedKeys) ? requestedKeys : [requestedKeys]).map((entry) => String(entry || '').trim()).filter(Boolean));
+  if(requested.size === 0) {
+    return [];
+  }
+  return rawTargets.filter((entry) => requested.has(entry.key));
 }
 
 function isManager(user) {
@@ -739,6 +796,23 @@ async function requireOperator(context) {
     return { error: json({ ok: false, message: 'Operator privileges required' }, 403) };
   }
   return result;
+}
+
+function requireDeployWorker(context) {
+  const secret = String(context?.env?.MAP_DEPLOY_WORKER_SECRET || '').trim();
+  if(!secret) {
+    return { error: json({ ok: false, message: 'MAP_DEPLOY_WORKER_SECRET is not configured' }, 500) };
+  }
+  const headerValue = String(
+    context?.request?.headers.get('x-map-deploy-secret')
+    || context?.request?.headers.get('authorization')
+    || '',
+  ).trim();
+  const normalized = headerValue.startsWith('Bearer ') ? headerValue.slice(7) : headerValue;
+  if(!normalized || !timingSafeEqual(normalized, secret)) {
+    return { error: json({ ok: false, message: 'Unauthorized deploy worker' }, 401) };
+  }
+  return { ok: true };
 }
 
 async function allocateInviteCode(env) {
@@ -2072,6 +2146,76 @@ async function ensureTrailSettingsTable(env) {
   }
 
   s_TrailSettingsReady = true;
+}
+
+async function ensureMapAdminTables(env) {
+  if(s_MapAdminTablesReady) {
+    return;
+  }
+
+  await env.DB.prepare(`
+    CREATE TABLE IF NOT EXISTS admin_maps (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      map_name TEXT NOT NULL UNIQUE,
+      r2_object_key TEXT NOT NULL,
+      file_name TEXT NOT NULL,
+      file_sha256 TEXT NOT NULL,
+      file_size INTEGER NOT NULL,
+      category TEXT NOT NULL,
+      stars INTEGER NOT NULL,
+      points INTEGER NOT NULL,
+      author TEXT NOT NULL,
+      source_label TEXT,
+      notes TEXT,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      created_by_account_id INTEGER NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (created_by_account_id) REFERENCES users(id)
+    )
+  `).run();
+  await env.DB.prepare(`
+    CREATE TABLE IF NOT EXISTS admin_map_deploy_jobs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      map_id INTEGER NOT NULL,
+      job_status TEXT NOT NULL,
+      requested_by_account_id INTEGER NOT NULL,
+      requested_at TEXT NOT NULL,
+      started_at TEXT,
+      finished_at TEXT,
+      error_message TEXT,
+      FOREIGN KEY (map_id) REFERENCES admin_maps(id),
+      FOREIGN KEY (requested_by_account_id) REFERENCES users(id)
+    )
+  `).run();
+  await env.DB.prepare(`
+    CREATE TABLE IF NOT EXISTS admin_map_deploy_targets (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      job_id INTEGER NOT NULL,
+      target_key TEXT NOT NULL,
+      target_label TEXT NOT NULL,
+      target_path TEXT NOT NULL,
+      region_code TEXT NOT NULL,
+      deploy_status TEXT NOT NULL,
+      error_message TEXT,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (job_id) REFERENCES admin_map_deploy_jobs(id)
+    )
+  `).run();
+  await env.DB.prepare(`
+    CREATE INDEX IF NOT EXISTS idx_admin_maps_created_at
+    ON admin_maps(created_at)
+  `).run();
+  await env.DB.prepare(`
+    CREATE INDEX IF NOT EXISTS idx_admin_map_jobs_status_requested
+    ON admin_map_deploy_jobs(job_status, requested_at)
+  `).run();
+  await env.DB.prepare(`
+    CREATE INDEX IF NOT EXISTS idx_admin_map_targets_job_id
+    ON admin_map_deploy_targets(job_id)
+  `).run();
+
+  s_MapAdminTablesReady = true;
 }
 
 function entitlementRowIsActive(row) {
@@ -3666,6 +3810,411 @@ async function handleMyTrailSettingsSet(context) {
   });
 }
 
+async function handleAdminMapTargets(context) {
+  const auth = await requireOperator(context);
+  if(auth.error) {
+    return auth.error;
+  }
+
+  const targets = parseMapDeployTargetsConfig(context.env.MAP_DEPLOY_TARGETS_JSON);
+  return json({ ok: true, targets });
+}
+
+async function handleAdminMapsUpload(context) {
+  const { env, request } = context;
+  const auth = await requireOperator(context);
+  if(auth.error) {
+    return auth.error;
+  }
+  if(!env.MAPS_BUCKET) {
+    return json({ ok: false, message: 'MAPS_BUCKET binding is not configured.' }, 500);
+  }
+
+  await ensureMapAdminTables(env);
+
+  let form;
+  try {
+    form = await request.formData();
+  } catch {
+    return json({ ok: false, message: 'Invalid multipart form data.' }, 400);
+  }
+
+  const mapFile = form.get('mapFile');
+  if(!(mapFile instanceof File)) {
+    return json({ ok: false, message: 'Map file is required.' }, 400);
+  }
+  if(!String(mapFile.name || '').toLowerCase().endsWith('.map')) {
+    return json({ ok: false, message: 'Only .map files can be uploaded.' }, 400);
+  }
+  if(Number(mapFile.size || 0) <= 0 || Number(mapFile.size || 0) > MAP_UPLOAD_MAX_BYTES) {
+    return json({ ok: false, message: 'Map file size must be between 1 byte and 20 MB.' }, 400);
+  }
+
+  const mapName = sanitizeMapName(form.get('mapName'));
+  if(!mapName) {
+    return json({ ok: false, message: 'Map name is invalid.' }, 400);
+  }
+
+  const category = String(form.get('category') || '').trim();
+  if(!MAP_CATEGORY_VALUES.has(category)) {
+    return json({ ok: false, message: 'Map category is invalid.' }, 400);
+  }
+
+  const stars = Math.max(0, Math.min(5, Math.floor(Number(form.get('stars') || 0))));
+  const points = Math.max(0, Math.min(1000, Math.floor(Number(form.get('points') || 0))));
+  const author = String(form.get('author') || '').trim();
+  const sourceLabel = String(form.get('sourceLabel') || '').trim();
+  const notes = String(form.get('notes') || '').trim();
+  if(!author) {
+    return json({ ok: false, message: 'Author is required.' }, 400);
+  }
+
+  const availableTargets = parseMapDeployTargetsConfig(env.MAP_DEPLOY_TARGETS_JSON);
+  const targetKeys = [...form.getAll('targetKeys'), ...form.getAll('targetKeys[]')]
+    .map((value) => String(value || '').trim())
+    .filter(Boolean);
+  const selectedTargets = resolveSelectedMapTargets(availableTargets, targetKeys);
+  if(selectedTargets.length === 0) {
+    return json({ ok: false, message: 'Select at least one deploy target.' }, 400);
+  }
+
+  const existing = await env.DB.prepare(`
+    SELECT id FROM admin_maps WHERE map_name = ? LIMIT 1
+  `).bind(mapName).first();
+  if(existing) {
+    return json({ ok: false, message: 'A map with that name already exists.' }, 409);
+  }
+
+  const bytes = await mapFile.arrayBuffer();
+  const sha256 = await sha256HexBytes(bytes);
+  const fileName = sanitizeFileName(mapFile.name);
+  const objectKey = `maps/${encodeURIComponent(mapName)}/${formatCompactUtc()}_${fileName}`;
+  await env.MAPS_BUCKET.put(objectKey, bytes, {
+    httpMetadata: {
+      contentType: 'application/octet-stream',
+    },
+    customMetadata: {
+      mapName,
+      uploadedBy: String(auth.user.id),
+      sha256,
+    },
+  });
+
+  const now = nowIso();
+  const insertMap = await env.DB.prepare(`
+    INSERT INTO admin_maps (
+      map_name, r2_object_key, file_name, file_sha256, file_size, category, stars, points, author, source_label, notes, enabled, created_by_account_id, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
+  `).bind(
+    mapName,
+    objectKey,
+    fileName,
+    sha256,
+    Number(mapFile.size || 0),
+    category,
+    stars,
+    points,
+    author,
+    sourceLabel || null,
+    notes || null,
+    auth.user.id,
+    now,
+    now,
+  ).run();
+  const mapId = Number(insertMap.meta?.last_row_id || 0);
+  if(!Number.isFinite(mapId) || mapId <= 0) {
+    return json({ ok: false, message: 'Failed to create map record.' }, 500);
+  }
+
+  const insertJob = await env.DB.prepare(`
+    INSERT INTO admin_map_deploy_jobs (
+      map_id, job_status, requested_by_account_id, requested_at
+    ) VALUES (?, 'queued', ?, ?)
+  `).bind(mapId, auth.user.id, now).run();
+  const jobId = Number(insertJob.meta?.last_row_id || 0);
+  if(!Number.isFinite(jobId) || jobId <= 0) {
+    return json({ ok: false, message: 'Failed to create deploy job.' }, 500);
+  }
+
+  for(const target of selectedTargets) {
+    await env.DB.prepare(`
+      INSERT INTO admin_map_deploy_targets (
+        job_id, target_key, target_label, target_path, region_code, deploy_status, updated_at
+      ) VALUES (?, ?, ?, ?, ?, 'queued', ?)
+    `).bind(
+      jobId,
+      target.key,
+      target.label,
+      target.key,
+      target.region || '',
+      now,
+    ).run();
+  }
+
+  return json({
+    ok: true,
+    map: {
+      id: mapId,
+      mapName,
+      category,
+      stars,
+      points,
+      author,
+      sourceLabel,
+      notes,
+    },
+    job: {
+      id: jobId,
+      status: 'queued',
+    },
+    targets: selectedTargets,
+  });
+}
+
+async function handleAdminMapsList(context) {
+  const { env } = context;
+  const auth = await requireOperator(context);
+  if(auth.error) {
+    return auth.error;
+  }
+  await ensureMapAdminTables(env);
+
+  const rows = await env.DB.prepare(`
+    SELECT id, map_name, category, stars, points, author, source_label, enabled, created_at, updated_at
+    FROM admin_maps
+    ORDER BY created_at DESC
+    LIMIT 50
+  `).all();
+  return json({ ok: true, maps: rows?.results || [] });
+}
+
+async function loadMapDeployJobDetails(env, jobId) {
+  const job = await env.DB.prepare(`
+    SELECT
+      j.id,
+      j.job_status,
+      j.requested_at,
+      j.started_at,
+      j.finished_at,
+      j.error_message,
+      m.id AS map_id,
+      m.map_name,
+      m.category,
+      m.stars,
+      m.points,
+      m.author,
+      m.source_label,
+      u.username AS requested_by_username
+    FROM admin_map_deploy_jobs j
+    JOIN admin_maps m ON m.id = j.map_id
+    LEFT JOIN users u ON u.id = j.requested_by_account_id
+    WHERE j.id = ?
+    LIMIT 1
+  `).bind(jobId).first();
+  if(!job) {
+    return null;
+  }
+  const targets = await env.DB.prepare(`
+    SELECT id, target_key, target_label, target_path, region_code, deploy_status, error_message, updated_at
+    FROM admin_map_deploy_targets
+    WHERE job_id = ?
+    ORDER BY id ASC
+  `).bind(jobId).all();
+  return {
+    id: job.id,
+    status: job.job_status,
+    requestedAt: job.requested_at,
+    startedAt: job.started_at,
+    finishedAt: job.finished_at,
+    errorMessage: job.error_message,
+    requestedByUsername: job.requested_by_username || '',
+    map: {
+      id: job.map_id,
+      mapName: job.map_name,
+      category: job.category,
+      stars: job.stars,
+      points: job.points,
+      author: job.author,
+      sourceLabel: job.source_label || '',
+    },
+    targets: targets?.results || [],
+  };
+}
+
+async function handleAdminMapDeployJobs(context) {
+  const { env } = context;
+  const auth = await requireOperator(context);
+  if(auth.error) {
+    return auth.error;
+  }
+  await ensureMapAdminTables(env);
+
+  const rows = await env.DB.prepare(`
+    SELECT id
+    FROM admin_map_deploy_jobs
+    ORDER BY requested_at DESC
+    LIMIT 20
+  `).all();
+  const jobs = [];
+  for(const row of rows?.results || []) {
+    const detailed = await loadMapDeployJobDetails(env, row.id);
+    if(detailed) {
+      jobs.push(detailed);
+    }
+  }
+  return json({ ok: true, jobs });
+}
+
+async function handleAdminMapDeployJobDetail(context, jobIdRaw) {
+  const { env } = context;
+  const auth = await requireOperator(context);
+  if(auth.error) {
+    return auth.error;
+  }
+  await ensureMapAdminTables(env);
+  const jobId = Math.floor(Number(jobIdRaw || 0));
+  if(!Number.isFinite(jobId) || jobId <= 0) {
+    return json({ ok: false, message: 'Invalid job id.' }, 400);
+  }
+  const job = await loadMapDeployJobDetails(env, jobId);
+  if(!job) {
+    return json({ ok: false, message: 'Deploy job not found.' }, 404);
+  }
+  return json({ ok: true, job });
+}
+
+async function handleInternalMapDeployClaim(context) {
+  const { env } = context;
+  const auth = requireDeployWorker(context);
+  if(auth.error) {
+    return auth.error;
+  }
+  await ensureMapAdminTables(env);
+
+  const nextJob = await env.DB.prepare(`
+    SELECT id
+    FROM admin_map_deploy_jobs
+    WHERE job_status = 'queued'
+    ORDER BY requested_at ASC, id ASC
+    LIMIT 1
+  `).first();
+  if(!nextJob?.id) {
+    return json({ ok: true, job: null });
+  }
+
+  const startedAt = nowIso();
+  const updated = await env.DB.prepare(`
+    UPDATE admin_map_deploy_jobs
+    SET job_status = 'running', started_at = COALESCE(started_at, ?), error_message = NULL
+    WHERE id = ? AND job_status = 'queued'
+  `).bind(startedAt, nextJob.id).run();
+  if((updated.meta?.changes || 0) !== 1) {
+    return json({ ok: true, job: null });
+  }
+
+  const job = await loadMapDeployJobDetails(env, nextJob.id);
+  return json({ ok: true, job });
+}
+
+async function handleInternalMapDeployTargetStatus(context, targetIdRaw) {
+  const { env, request } = context;
+  const auth = requireDeployWorker(context);
+  if(auth.error) {
+    return auth.error;
+  }
+  await ensureMapAdminTables(env);
+
+  const targetId = Math.floor(Number(targetIdRaw || 0));
+  if(!Number.isFinite(targetId) || targetId <= 0) {
+    return json({ ok: false, message: 'Invalid target id.' }, 400);
+  }
+
+  const body = await parseRequestBody(request);
+  const data = typeof body === 'string' ? {} : (body || {});
+  const status = String(data.status || '').trim();
+  const errorMessage = String(data.errorMessage || '').trim();
+  if(!MAP_DEPLOY_STATUS_VALUES.has(status)) {
+    return json({ ok: false, message: 'Invalid deploy status.' }, 400);
+  }
+
+  await env.DB.prepare(`
+    UPDATE admin_map_deploy_targets
+    SET deploy_status = ?, error_message = ?, updated_at = ?
+    WHERE id = ?
+  `).bind(status, errorMessage || null, nowIso(), targetId).run();
+
+  return json({ ok: true, targetId, status });
+}
+
+async function handleInternalMapDeployJobFinish(context, jobIdRaw) {
+  const { env, request } = context;
+  const auth = requireDeployWorker(context);
+  if(auth.error) {
+    return auth.error;
+  }
+  await ensureMapAdminTables(env);
+
+  const jobId = Math.floor(Number(jobIdRaw || 0));
+  if(!Number.isFinite(jobId) || jobId <= 0) {
+    return json({ ok: false, message: 'Invalid job id.' }, 400);
+  }
+
+  const body = await parseRequestBody(request);
+  const data = typeof body === 'string' ? {} : (body || {});
+  const status = String(data.status || '').trim();
+  const errorMessage = String(data.errorMessage || '').trim();
+  if(!MAP_JOB_STATUS_VALUES.has(status) || status === 'queued' || status === 'running') {
+    return json({ ok: false, message: 'Invalid final job status.' }, 400);
+  }
+
+  await env.DB.prepare(`
+    UPDATE admin_map_deploy_jobs
+    SET job_status = ?, finished_at = ?, error_message = ?
+    WHERE id = ?
+  `).bind(status, nowIso(), errorMessage || null, jobId).run();
+
+  return json({ ok: true, jobId, status });
+}
+
+async function handleInternalMapDeployFile(context, jobIdRaw) {
+  const { env } = context;
+  const auth = requireDeployWorker(context);
+  if(auth.error) {
+    return auth.error;
+  }
+  await ensureMapAdminTables(env);
+
+  const jobId = Math.floor(Number(jobIdRaw || 0));
+  if(!Number.isFinite(jobId) || jobId <= 0) {
+    return json({ ok: false, message: 'Invalid job id.' }, 400);
+  }
+
+  const row = await env.DB.prepare(`
+    SELECT m.file_name, m.r2_object_key
+    FROM admin_map_deploy_jobs j
+    JOIN admin_maps m ON m.id = j.map_id
+    WHERE j.id = ?
+    LIMIT 1
+  `).bind(jobId).first();
+  if(!row?.r2_object_key) {
+    return json({ ok: false, message: 'Map file not found.' }, 404);
+  }
+
+  const object = await env.MAPS_BUCKET.get(row.r2_object_key);
+  if(!object) {
+    return json({ ok: false, message: 'Map file missing from R2.' }, 404);
+  }
+
+  return new Response(object.body, {
+    status: 200,
+    headers: {
+      'content-type': 'application/octet-stream',
+      'content-disposition': `attachment; filename="${sanitizeFileName(row.file_name || 'map.map')}"`,
+      'cache-control': 'no-store',
+    },
+  });
+}
+
 async function handleAdminBan(context) {
   const { request, env } = context;
   const auth = await requireManager(context);
@@ -4051,6 +4600,46 @@ export async function onRequest(context) {
 
   if(request.method === 'POST' && path === '/admin/subscription/grant-months') {
     return handleAdminSubscriptionGrantMonths(context);
+  }
+
+  if(request.method === 'GET' && path === '/admin/map-targets') {
+    return handleAdminMapTargets(context);
+  }
+
+  if(request.method === 'POST' && path === '/admin/maps/upload') {
+    return handleAdminMapsUpload(context);
+  }
+
+  if(request.method === 'GET' && path === '/admin/maps') {
+    return handleAdminMapsList(context);
+  }
+
+  if(request.method === 'GET' && path === '/admin/maps/deploy-jobs') {
+    return handleAdminMapDeployJobs(context);
+  }
+
+  if(request.method === 'GET' && path.startsWith('/admin/maps/deploy-jobs/')) {
+    const jobIdRaw = decodeURIComponent(path.slice('/admin/maps/deploy-jobs/'.length));
+    return handleAdminMapDeployJobDetail(context, jobIdRaw);
+  }
+
+  if(request.method === 'POST' && path === '/internal/map-deploy/claim') {
+    return handleInternalMapDeployClaim(context);
+  }
+
+  if(request.method === 'POST' && path.startsWith('/internal/map-deploy/targets/') && path.endsWith('/status')) {
+    const targetIdRaw = decodeURIComponent(path.slice('/internal/map-deploy/targets/'.length, -'/status'.length));
+    return handleInternalMapDeployTargetStatus(context, targetIdRaw);
+  }
+
+  if(request.method === 'POST' && path.startsWith('/internal/map-deploy/jobs/') && path.endsWith('/finish')) {
+    const jobIdRaw = decodeURIComponent(path.slice('/internal/map-deploy/jobs/'.length, -'/finish'.length));
+    return handleInternalMapDeployJobFinish(context, jobIdRaw);
+  }
+
+  if(request.method === 'GET' && path.startsWith('/internal/map-deploy/jobs/') && path.endsWith('/file')) {
+    const jobIdRaw = decodeURIComponent(path.slice('/internal/map-deploy/jobs/'.length, -'/file'.length));
+    return handleInternalMapDeployFile(context, jobIdRaw);
   }
 
   return json({ ok: false, message: 'API route not found' }, 404);
