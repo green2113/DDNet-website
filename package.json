@@ -13,6 +13,7 @@
     "d1:migrate:local": "wrangler d1 migrations apply ddnet_req_login --local"
   },
   "dependencies": {
+    "mysql2": "^3.18.2",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-router-dom": "^6.28.1"

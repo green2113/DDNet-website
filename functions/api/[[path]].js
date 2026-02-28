@@ -22,6 +22,7 @@ import {
   verifySessionToken,
 } from '../_lib/utils.js';
 import { hmacMd5Hex } from '../_lib/patreon.js';
+import mysql from 'mysql2/promise';
 
 const AUTH_COOKIE = 'ddnet_auth';
 const SESSION_MAX_AGE_DEFAULT = 30 * 24 * 60 * 60;
@@ -59,6 +60,7 @@ const MAP_CATEGORY_VALUES = new Set(['Easy', 'Main', 'Hard', 'Insane', 'Extreme'
 
 let s_TrailSettingsReady = false;
 let s_MapAdminTablesReady = false;
+let s_RecordMapsDbPool = null;
 
 function cookieSecure(request) {
   return new URL(request.url).protocol === 'https:';
@@ -70,6 +72,76 @@ function getSessionMaxAgeSeconds(env) {
     return SESSION_MAX_AGE_DEFAULT;
   }
   return Math.max(SESSION_MAX_AGE_MIN, Math.min(SESSION_MAX_AGE_MAX, Math.floor(raw)));
+}
+
+function recordMapsDbConfigured(env) {
+  return Boolean(
+    String(env.RECORD_DB_HOST || '').trim() &&
+    String(env.RECORD_DB_USER || '').trim() &&
+    String(env.RECORD_DB_PASSWORD || '').trim() &&
+    String(env.RECORD_DB_NAME || '').trim(),
+  );
+}
+
+function getRecordMapsDbPool(env) {
+  if(!recordMapsDbConfigured(env)) {
+    return null;
+  }
+  if(!s_RecordMapsDbPool) {
+    s_RecordMapsDbPool = mysql.createPool({
+      host: String(env.RECORD_DB_HOST || '').trim(),
+      port: Math.max(1, Math.min(65535, Number(env.RECORD_DB_PORT || 3306) || 3306)),
+      user: String(env.RECORD_DB_USER || '').trim(),
+      password: String(env.RECORD_DB_PASSWORD || '').trim(),
+      database: String(env.RECORD_DB_NAME || '').trim(),
+      charset: 'utf8mb4',
+      waitForConnections: true,
+      connectionLimit: 2,
+      maxIdle: 2,
+      idleTimeout: 60000,
+      queueLimit: 0,
+    });
+  }
+  return s_RecordMapsDbPool;
+}
+
+async function syncRecordMapRow(env, payload) {
+  const pool = getRecordMapsDbPool(env);
+  if(!pool) {
+    throw new Error('Record DB is not configured.');
+  }
+
+  const tablePrefix = String(env.RECORD_DB_TABLE_PREFIX || 'record').trim();
+  const tableName = `${tablePrefix ? `${tablePrefix}_` : ''}maps`;
+  const categoryName = String(payload?.category || '').trim().toUpperCase();
+  if(!categoryName) {
+    throw new Error('Map category is required.');
+  }
+
+  const connection = await pool.getConnection();
+  try {
+    await connection.beginTransaction();
+    await connection.execute(
+      `DELETE FROM \`${tableName}\` WHERE Map = ?`,
+      [String(payload.mapName || '')],
+    );
+    await connection.execute(
+      `INSERT INTO \`${tableName}\` (Map, Server, Mapper, Points, Stars, Timestamp) VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`,
+      [
+        String(payload.mapName || ''),
+        categoryName,
+        String(payload.author || ''),
+        Math.max(0, Math.min(1000, Math.floor(Number(payload.points || 0)))),
+        Math.max(0, Math.min(5, Math.floor(Number(payload.stars || 0)))),
+      ],
+    );
+    await connection.commit();
+  } catch (err) {
+    await connection.rollback();
+    throw err;
+  } finally {
+    connection.release();
+  }
 }
 
 function vpnProxyBlockingEnabled(env) {
@@ -3901,6 +3973,14 @@ async function handleAdminMapsUpload(context) {
   });
 
   const now = nowIso();
+  await syncRecordMapRow(env, {
+    mapName,
+    category,
+    author,
+    points,
+    stars,
+  });
+
   const insertMap = await env.DB.prepare(`
     INSERT INTO admin_maps (
       map_name, r2_object_key, file_name, file_sha256, file_size, category, stars, points, author, source_label, notes, enabled, created_by_account_id, created_at, updated_at
