@@ -778,6 +778,16 @@ h3 {
   gap: 10px;
 }
 
+.trail-extra-warning {
+  margin: -2px 0 4px;
+  padding-left: 8px;
+  color: #ff5e6c;
+  font-size: 0.84rem;
+  font-weight: 700;
+  line-height: 1.45;
+  animation: trail-warning-pulse 2.8s ease-in-out infinite;
+}
+
 .trail-extra-option {
   display: flex;
   align-items: center;
@@ -856,6 +866,21 @@ h3 {
 .trail-extra-option.is-selected .trail-extra-check::after {
   background: linear-gradient(180deg, #78f2c3, #43cf93);
   transform: scale(1);
+}
+
+@keyframes trail-warning-pulse {
+  0% {
+    color: #ff5e6c;
+    text-shadow: 0 0 0 rgba(255, 94, 108, 0);
+  }
+  50% {
+    color: #fff4f5;
+    text-shadow: 0 0 12px rgba(255, 94, 108, 0.28);
+  }
+  100% {
+    color: #ff5e6c;
+    text-shadow: 0 0 0 rgba(255, 94, 108, 0);
+  }
 }
 
 .trail-mode-check {

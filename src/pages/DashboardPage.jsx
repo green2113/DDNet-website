@@ -2217,6 +2217,7 @@ ${t('dashboard.accessReasonLine', { reason: banReasonText || '-' })}`
                       <span className="trail-extra-label">{t('dashboard.subscriptionTrailExtraJetpack')}</span>
                       <span className="trail-extra-check" aria-hidden="true" />
                     </button>
+                    <p className="trail-extra-warning">{t('dashboard.subscriptionTrailExtraJetpackWarning')}</p>
                   </div>
                 </div>
               </div>
