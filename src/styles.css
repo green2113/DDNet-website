@@ -777,7 +777,8 @@ h3 {
 .trail-extra-option {
   display: flex;
   align-items: center;
-  gap: 12px;
+  justify-content: space-between;
+  gap: 16px;
   width: 100%;
   min-height: 54px;
   padding: 12px 14px;
@@ -792,6 +793,11 @@ h3 {
   text-align: left;
   cursor: pointer;
   transition: transform 0.16s ease, border-color 0.16s ease, box-shadow 0.16s ease, background 0.16s ease;
+}
+
+.trail-extra-label {
+  flex: 1 1 auto;
+  text-align: left;
 }
 
 .trail-extra-option:hover:not(:disabled) {
@@ -818,21 +824,34 @@ h3 {
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  position: relative;
   flex: 0 0 22px;
   width: 22px;
   height: 22px;
-  border-radius: 7px;
+  border-radius: 999px;
   border: 1px solid rgba(145, 173, 226, 0.34);
-  background: rgba(255, 255, 255, 0.06);
-  color: #0d172b;
-  font-size: 0.82rem;
-  font-weight: 800;
+  background: rgba(255, 255, 255, 0.04);
+  transition: border-color 0.16s ease, background 0.16s ease, box-shadow 0.16s ease;
+}
+
+.trail-extra-check::after {
+  content: '';
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: transparent;
+  transition: background 0.16s ease, transform 0.16s ease;
 }
 
 .trail-extra-option.is-selected .trail-extra-check {
   border-color: rgba(89, 227, 178, 0.72);
+  background: rgba(67, 207, 147, 0.14);
+  box-shadow: 0 0 0 4px rgba(67, 207, 147, 0.12);
+}
+
+.trail-extra-option.is-selected .trail-extra-check::after {
   background: linear-gradient(180deg, #78f2c3, #43cf93);
-  color: #062517;
+  transform: scale(1);
 }
 
 @media (max-width: 640px) {

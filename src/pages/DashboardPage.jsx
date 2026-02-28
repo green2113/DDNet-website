@@ -2194,8 +2194,8 @@ ${t('dashboard.accessReasonLine', { reason: banReasonText || '-' })}`
                       disabled={trailExtraDisabled}
                       aria-pressed={adminTrailExtraHook}
                     >
-                      <span className="trail-extra-check" aria-hidden="true">{adminTrailExtraHook ? '✓' : ''}</span>
-                      <span>{t('dashboard.subscriptionTrailExtraHook')}</span>
+                      <span className="trail-extra-label">{t('dashboard.subscriptionTrailExtraHook')}</span>
+                      <span className="trail-extra-check" aria-hidden="true" />
                     </button>
                     <button
                       className={`trail-extra-option${adminTrailExtraJump ? ' is-selected' : ''}`}
@@ -2204,8 +2204,8 @@ ${t('dashboard.accessReasonLine', { reason: banReasonText || '-' })}`
                       disabled={trailExtraDisabled}
                       aria-pressed={adminTrailExtraJump}
                     >
-                      <span className="trail-extra-check" aria-hidden="true">{adminTrailExtraJump ? '✓' : ''}</span>
-                      <span>{t('dashboard.subscriptionTrailExtraJump')}</span>
+                      <span className="trail-extra-label">{t('dashboard.subscriptionTrailExtraJump')}</span>
+                      <span className="trail-extra-check" aria-hidden="true" />
                     </button>
                     <button
                       className={`trail-extra-option${adminTrailExtraJetpack ? ' is-selected' : ''}`}
@@ -2214,8 +2214,8 @@ ${t('dashboard.accessReasonLine', { reason: banReasonText || '-' })}`
                       disabled={trailExtraDisabled}
                       aria-pressed={adminTrailExtraJetpack}
                     >
-                      <span className="trail-extra-check" aria-hidden="true">{adminTrailExtraJetpack ? '✓' : ''}</span>
-                      <span>{t('dashboard.subscriptionTrailExtraJetpack')}</span>
+                      <span className="trail-extra-label">{t('dashboard.subscriptionTrailExtraJetpack')}</span>
+                      <span className="trail-extra-check" aria-hidden="true" />
                     </button>
                   </div>
                 </div>
