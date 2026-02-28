@@ -64,8 +64,10 @@ export default function PlanStorePage() {
 
       <section className="plan-grid">
         <article className="panel plan-card">
-          <h3>{t('plans.starterName')}</h3>
-          <p className="plan-price">{t('plans.starterPrice')}</p>
+          <div className="plan-card-head">
+            <h3>{t('plans.starterName')}</h3>
+            <p className="plan-price">{t('plans.starterPrice')}</p>
+          </div>
           <ul className="plan-features">
             <li>{t('plans.starterFeatureNameCooldown')}</li>
             <li>{t('plans.starterFeatureInvite')}</li>
@@ -76,7 +78,9 @@ export default function PlanStorePage() {
               <button className="btn block" type="button" onClick={onConnect}>
                 {t('plans.connectPatreon')}
               </button>
-            ) : null}
+            ) : (
+              <div className="plan-action-placeholder" aria-hidden="true" />
+            )}
             {joinUrl ? (
               <a className="btn block ghost" href={joinUrl} target="_blank" rel="noreferrer">
                 {t('plans.openPatreonJoin')}
@@ -88,10 +92,13 @@ export default function PlanStorePage() {
         </article>
 
         <article className="panel plan-card">
-          <h3>{t('plans.plusName')}</h3>
-          <p className="plan-price">{t('plans.plusPrice')}</p>
+          <div className="plan-card-head">
+            <h3>{t('plans.plusName')}</h3>
+            <p className="plan-price">{t('plans.plusPrice')}</p>
+          </div>
           <ul className="plan-features">
             <li>{t('plans.plusFeatureTrail')}</li>
+            <li>{t('plans.plusFeatureReturnRecovery')}</li>
             <li>{t('plans.plusFeatureNameCooldown')}</li>
             <li>{t('plans.plusFeatureInvite')}</li>
             <li>{t('plans.plusFeatureIncludesStarter')}</li>
@@ -103,7 +110,9 @@ export default function PlanStorePage() {
               <button className="btn block" type="button" onClick={onConnect}>
                 {t('plans.connectPatreon')}
               </button>
-            ) : null}
+            ) : (
+              <div className="plan-action-placeholder" aria-hidden="true" />
+            )}
             {joinUrl ? (
               <a className="btn block ghost" href={joinUrl} target="_blank" rel="noreferrer">
                 {t('plans.openPatreonJoin')}

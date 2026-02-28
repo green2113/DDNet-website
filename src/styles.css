@@ -759,6 +759,28 @@ h3 {
   color: #f0f5ff;
 }
 
+.trail-extra-box {
+  display: grid;
+  gap: 8px;
+}
+
+.trail-extra-box.is-disabled {
+  opacity: 0.72;
+}
+
+.trail-extra-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #d5e2ff;
+  font-size: 0.92rem;
+}
+
+.trail-extra-option input {
+  width: 16px;
+  height: 16px;
+}
+
 .trail-mode-check {
   color: #7fb2ff;
   font-weight: 700;
@@ -1297,27 +1319,82 @@ button.btn {
 
 .plan-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 14px;
+  grid-template-columns: repeat(2, minmax(280px, 1fr));
+  gap: 18px;
+  align-items: stretch;
+  max-width: 920px;
+  margin: 0 auto;
 }
 
 .plan-card {
   display: grid;
-  gap: 10px;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  gap: 16px;
+  min-height: 100%;
+  padding: 24px;
+}
+
+.plan-card-head {
+  display: grid;
+  gap: 8px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid rgba(145, 173, 226, 0.18);
+}
+
+.plan-card-head h3 {
+  margin: 0;
 }
 
 .plan-price {
   margin: 0;
   font-weight: 700;
   color: #e9f1ff;
+  min-height: 28px;
 }
 
 .plan-features {
   margin: 0;
-  padding-left: 18px;
+  padding-left: 0;
+  list-style: none;
   color: var(--muted);
   display: grid;
-  gap: 4px;
+  gap: 10px;
+  align-content: start;
+}
+
+.plan-features li {
+  min-height: 44px;
+  display: grid;
+  align-items: start;
+  grid-template-columns: 18px minmax(0, 1fr);
+  gap: 10px;
+  line-height: 1.45;
+}
+
+.plan-features li::before {
+  content: "•";
+  color: #8fb1ff;
+  font-size: 1.1rem;
+  line-height: 1.1;
+  transform: translateY(1px);
+}
+
+.plan-actions {
+  display: grid;
+  grid-template-rows: repeat(2, 48px);
+  gap: 10px;
+}
+
+.plan-actions .btn,
+.plan-action-placeholder {
+  min-height: 48px;
+  height: 48px;
+}
+
+.plan-action-placeholder {
+  border-radius: 12px;
+  border: 1px solid transparent;
+  visibility: hidden;
 }
 
 .mono-mini {
@@ -1329,6 +1406,7 @@ button.btn {
 @media (max-width: 980px) {
   .plan-grid {
     grid-template-columns: 1fr;
+    max-width: 560px;
   }
 
   .feature-grid {

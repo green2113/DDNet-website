@@ -192,6 +192,10 @@ export default function DashboardPage() {
   const [subscriptionLoading, setSubscriptionLoading] = useState(true);
   const [adminTrailEnabled, setAdminTrailEnabled] = useState(false);
   const [adminTrailMode, setAdminTrailMode] = useState(1);
+  const [adminTrailExtraEnabled, setAdminTrailExtraEnabled] = useState(false);
+  const [adminTrailExtraHook, setAdminTrailExtraHook] = useState(false);
+  const [adminTrailExtraJump, setAdminTrailExtraJump] = useState(false);
+  const [adminTrailExtraJetpack, setAdminTrailExtraJetpack] = useState(false);
   const [adminTrailBaseline, setAdminTrailBaseline] = useState(null);
   const [adminTrailLoading, setAdminTrailLoading] = useState(false);
   const [adminTrailSubmitting, setAdminTrailSubmitting] = useState(false);
@@ -274,8 +278,14 @@ export default function DashboardPage() {
   ];
   const currentTrailModeLabel = trailModeOptions.find((entry) => entry.value === adminTrailMode)?.label || trailModeOptions[0].label;
   const trailModeDisabled = trailFeatureLocked || !adminTrailEnabled || adminTrailLoading || adminTrailSubmitting;
+  const trailExtraDisabled = trailFeatureLocked || !adminTrailExtraEnabled || adminTrailLoading || adminTrailSubmitting;
   const trailSaveDirty = Boolean(adminTrailBaseline) &&
-    (adminTrailEnabled !== Boolean(adminTrailBaseline.enabled) || adminTrailMode !== Number(adminTrailBaseline.mode));
+    (adminTrailEnabled !== Boolean(adminTrailBaseline.enabled)
+    || adminTrailMode !== Number(adminTrailBaseline.mode)
+    || adminTrailExtraEnabled !== Boolean(adminTrailBaseline.extraEnabled)
+    || adminTrailExtraHook !== Boolean(adminTrailBaseline.extraEndlessHook)
+    || adminTrailExtraJump !== Boolean(adminTrailBaseline.extraEndlessJump)
+    || adminTrailExtraJetpack !== Boolean(adminTrailBaseline.extraJetpack));
   const trailSaveDisabled = trailFeatureLocked || adminTrailLoading || adminTrailSubmitting || !trailSaveDirty;
   const refreshAdminUsers = async () => {
     const requestId = ++adminUsersRequestIdRef.current;
@@ -375,12 +385,31 @@ export default function DashboardPage() {
       const enabled = Boolean(result?.trailEnabled);
       const modeRaw = Number(result?.trailMode || 1);
       const normalizedMode = Number.isFinite(modeRaw) && modeRaw >= 1 && modeRaw <= 3 ? Math.floor(modeRaw) : 1;
+      const extraEnabled = Boolean(result?.extraEnabled);
+      const extraHook = Boolean(result?.extraEndlessHook);
+      const extraJump = Boolean(result?.extraEndlessJump);
+      const extraJetpack = Boolean(result?.extraJetpack);
       setAdminTrailEnabled(enabled);
       setAdminTrailMode(normalizedMode);
-      setAdminTrailBaseline({ enabled, mode: normalizedMode });
+      setAdminTrailExtraEnabled(extraEnabled);
+      setAdminTrailExtraHook(extraHook);
+      setAdminTrailExtraJump(extraJump);
+      setAdminTrailExtraJetpack(extraJetpack);
+      setAdminTrailBaseline({
+        enabled,
+        mode: normalizedMode,
+        extraEnabled,
+        extraEndlessHook: extraHook,
+        extraEndlessJump: extraJump,
+        extraJetpack,
+      });
     } catch (err) {
       setAdminTrailEnabled(false);
       setAdminTrailMode(1);
+      setAdminTrailExtraEnabled(false);
+      setAdminTrailExtraHook(false);
+      setAdminTrailExtraJump(false);
+      setAdminTrailExtraJetpack(false);
       setAdminTrailBaseline(null);
       setFeedback({ type: 'error', message: err.message });
     } finally {
@@ -1079,8 +1108,19 @@ export default function DashboardPage() {
       await updateTrailSettings({
         enabled: adminTrailEnabled ? 1 : 0,
         mode: adminTrailMode,
+        extraEnabled: adminTrailExtraEnabled ? 1 : 0,
+        extraEndlessHook: adminTrailExtraHook ? 1 : 0,
+        extraEndlessJump: adminTrailExtraJump ? 1 : 0,
+        extraJetpack: adminTrailExtraJetpack ? 1 : 0,
       });
-      setAdminTrailBaseline({ enabled: adminTrailEnabled, mode: adminTrailMode });
+      setAdminTrailBaseline({
+        enabled: adminTrailEnabled,
+        mode: adminTrailMode,
+        extraEnabled: adminTrailExtraEnabled,
+        extraEndlessHook: adminTrailExtraHook,
+        extraEndlessJump: adminTrailExtraJump,
+        extraJetpack: adminTrailExtraJetpack,
+      });
       setShowTrailSavedToast(false);
       requestAnimationFrame(() => setShowTrailSavedToast(true));
     } catch (err) {
@@ -2101,6 +2141,54 @@ ${t('dashboard.accessReasonLine', { reason: banReasonText || '-' })}`
                       ))}
                     </div>
                   ) : null}
+                </div>
+
+                <div className="trail-toggle-row">
+                  <div>
+                    <p className="trail-toggle-title">{t('dashboard.subscriptionTrailExtraToggleLabel')}</p>
+                    <p className="trail-toggle-subtitle">{t('dashboard.subscriptionTrailExtraToggleDesc')}</p>
+                  </div>
+                  <button
+                    className={`trail-toggle${adminTrailExtraEnabled ? ' is-on' : ''}`}
+                    type="button"
+                    role="switch"
+                    aria-checked={adminTrailExtraEnabled}
+                    onClick={() => setAdminTrailExtraEnabled((prev) => !prev)}
+                    disabled={trailFeatureLocked || adminTrailLoading || adminTrailSubmitting}
+                  >
+                    <span className="trail-toggle-knob" />
+                  </button>
+                </div>
+
+                <div className={`trail-extra-box${trailExtraDisabled ? ' is-disabled' : ''}`}>
+                  <p className="trail-mode-label">{t('dashboard.subscriptionTrailExtraListLabel')}</p>
+                  <label className="trail-extra-option">
+                    <input
+                      type="checkbox"
+                      checked={adminTrailExtraHook}
+                      onChange={(event) => setAdminTrailExtraHook(event.target.checked)}
+                      disabled={trailExtraDisabled}
+                    />
+                    <span>{t('dashboard.subscriptionTrailExtraHook')}</span>
+                  </label>
+                  <label className="trail-extra-option">
+                    <input
+                      type="checkbox"
+                      checked={adminTrailExtraJump}
+                      onChange={(event) => setAdminTrailExtraJump(event.target.checked)}
+                      disabled={trailExtraDisabled}
+                    />
+                    <span>{t('dashboard.subscriptionTrailExtraJump')}</span>
+                  </label>
+                  <label className="trail-extra-option">
+                    <input
+                      type="checkbox"
+                      checked={adminTrailExtraJetpack}
+                      onChange={(event) => setAdminTrailExtraJetpack(event.target.checked)}
+                      disabled={trailExtraDisabled}
+                    />
+                    <span>{t('dashboard.subscriptionTrailExtraJetpack')}</span>
+                  </label>
                 </div>
               </div>
               <div className="admin-actions">

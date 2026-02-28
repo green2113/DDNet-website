@@ -2033,6 +2033,10 @@ async function ensureTrailSettingsTable(env) {
       user_id INTEGER NOT NULL UNIQUE,
       enabled INTEGER NOT NULL DEFAULT 0,
       mode INTEGER NOT NULL DEFAULT 1,
+      extra_enabled INTEGER NOT NULL DEFAULT 0,
+      extra_endless_hook INTEGER NOT NULL DEFAULT 0,
+      extra_endless_jump INTEGER NOT NULL DEFAULT 0,
+      extra_jetpack INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       FOREIGN KEY (user_id) REFERENCES users(id)
@@ -2042,6 +2046,31 @@ async function ensureTrailSettingsTable(env) {
     CREATE INDEX IF NOT EXISTS idx_user_trail_settings_user_id
     ON user_trail_settings(user_id)
   `).run();
+
+  const trailColumns = [
+    ['extra_enabled', 'INTEGER NOT NULL DEFAULT 0'],
+    ['extra_endless_hook', 'INTEGER NOT NULL DEFAULT 0'],
+    ['extra_endless_jump', 'INTEGER NOT NULL DEFAULT 0'],
+    ['extra_jetpack', 'INTEGER NOT NULL DEFAULT 0'],
+  ];
+  for(const [columnName, definition] of trailColumns) {
+    const columnInfo = await env.DB.prepare(`
+      PRAGMA table_info(user_trail_settings)
+    `).all();
+    const hasColumn = Array.isArray(columnInfo?.results)
+      && columnInfo.results.some((entry) => String(entry?.name || '').toLowerCase() === columnName);
+    if(hasColumn) {
+      continue;
+    }
+    try {
+      await env.DB.prepare(`
+        ALTER TABLE user_trail_settings ADD COLUMN ${columnName} ${definition}
+      `).run();
+    } catch {
+      // Ignore migration races.
+    }
+  }
+
   s_TrailSettingsReady = true;
 }
 
@@ -2203,6 +2232,10 @@ function defaultGameTrailState() {
     plusActive: false,
     trailEnabled: false,
     trailMode: 1,
+    plusExtraEnabled: false,
+    plusExtraEndlessHook: false,
+    plusExtraEndlessJump: false,
+    plusExtraJetpack: false,
   };
 }
 
@@ -2217,7 +2250,7 @@ async function loadGameTrailState(env, accountId) {
     await ensureTrailSettingsTable(env);
 
     const trailRow = await env.DB.prepare(`
-      SELECT enabled, mode
+      SELECT enabled, mode, extra_enabled, extra_endless_hook, extra_endless_jump, extra_jetpack
       FROM user_trail_settings
       WHERE user_id = ?
       LIMIT 1
@@ -2234,6 +2267,10 @@ async function loadGameTrailState(env, accountId) {
       plusActive: planFlags.plusActive,
       trailEnabled,
       trailMode,
+      plusExtraEnabled: Number(trailRow?.extra_enabled || 0) === 1,
+      plusExtraEndlessHook: Number(trailRow?.extra_endless_hook || 0) === 1,
+      plusExtraEndlessJump: Number(trailRow?.extra_endless_jump || 0) === 1,
+      plusExtraJetpack: Number(trailRow?.extra_jetpack || 0) === 1,
     };
   } catch {
     // Fail closed when billing tables are missing or query errors occur.
@@ -2643,6 +2680,10 @@ async function handleGameAccountStatus(context) {
     plusActive: trailState.plusActive,
     trailEnabled: trailState.trailEnabled,
     trailMode: trailState.trailMode,
+    plusExtraEnabled: trailState.plusExtraEnabled,
+    plusExtraEndlessHook: trailState.plusExtraEndlessHook,
+    plusExtraEndlessJump: trailState.plusExtraEndlessJump,
+    plusExtraJetpack: trailState.plusExtraJetpack,
   });
 }
 
@@ -3537,7 +3578,7 @@ async function handleMyTrailSettingsGet(context) {
   await ensureTrailSettingsTable(env);
 
   const row = await env.DB.prepare(`
-    SELECT enabled, mode
+    SELECT enabled, mode, extra_enabled, extra_endless_hook, extra_endless_jump, extra_jetpack
     FROM user_trail_settings
     WHERE user_id = ?
     LIMIT 1
@@ -3555,6 +3596,10 @@ async function handleMyTrailSettingsGet(context) {
     plusActive: !!planFlags.plusActive,
     trailEnabled: Number(row?.enabled || 0) === 1,
     trailMode,
+    extraEnabled: Number(row?.extra_enabled || 0) === 1,
+    extraEndlessHook: Number(row?.extra_endless_hook || 0) === 1,
+    extraEndlessJump: Number(row?.extra_endless_jump || 0) === 1,
+    extraJetpack: Number(row?.extra_jetpack || 0) === 1,
   });
 }
 
@@ -3579,23 +3624,45 @@ async function handleMyTrailSettingsSet(context) {
   if(!Number.isFinite(trailMode) || trailMode < TRAIL_MODE_MIN || trailMode > TRAIL_MODE_MAX) {
     trailMode = 1;
   }
+  const extraEnabled = Number(data.extraEnabled ? 1 : 0) === 1;
+  const extraEndlessHook = Number(data.extraEndlessHook ? 1 : 0) === 1;
+  const extraEndlessJump = Number(data.extraEndlessJump ? 1 : 0) === 1;
+  const extraJetpack = Number(data.extraJetpack ? 1 : 0) === 1;
 
   const now = nowIso();
   await env.DB.prepare(`
     INSERT INTO user_trail_settings (
-      user_id, enabled, mode, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?)
+      user_id, enabled, mode, extra_enabled, extra_endless_hook, extra_endless_jump, extra_jetpack, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(user_id) DO UPDATE SET
       enabled = excluded.enabled,
       mode = excluded.mode,
+      extra_enabled = excluded.extra_enabled,
+      extra_endless_hook = excluded.extra_endless_hook,
+      extra_endless_jump = excluded.extra_endless_jump,
+      extra_jetpack = excluded.extra_jetpack,
       updated_at = excluded.updated_at
-  `).bind(auth.user.id, trailEnabled ? 1 : 0, trailMode, now, now).run();
+  `).bind(
+    auth.user.id,
+    trailEnabled ? 1 : 0,
+    trailMode,
+    extraEnabled ? 1 : 0,
+    extraEndlessHook ? 1 : 0,
+    extraEndlessJump ? 1 : 0,
+    extraJetpack ? 1 : 0,
+    now,
+    now,
+  ).run();
 
   return json({
     ok: true,
     plusActive: true,
     trailEnabled,
     trailMode,
+    extraEnabled,
+    extraEndlessHook,
+    extraEndlessJump,
+    extraJetpack,
   });
 }
 
