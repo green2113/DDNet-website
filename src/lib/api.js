@@ -246,3 +246,9 @@ export async function adminListMapDeployJobs() {
 export async function adminGetMapDeployJob(jobId) {
   return api(`/api/admin/maps/deploy-jobs/${encodeURIComponent(String(jobId || ''))}`, { method: 'GET' });
 }
+
+export async function adminRetryMapDeployJob(jobId) {
+  return api(`/api/admin/maps/deploy-jobs/${encodeURIComponent(String(jobId || ''))}/retry`, {
+    method: 'POST',
+  });
+}

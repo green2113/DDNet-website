@@ -4041,6 +4041,64 @@ async function loadMapDeployJobDetails(env, jobId) {
   };
 }
 
+async function refreshMapDeployJobStatus(env, jobId) {
+  const rows = await env.DB.prepare(`
+    SELECT deploy_status, error_message
+    FROM admin_map_deploy_targets
+    WHERE job_id = ?
+  `).bind(jobId).all();
+  const targets = rows?.results || [];
+  if(targets.length === 0) {
+    return null;
+  }
+
+  const statuses = targets.map((entry) => String(entry?.deploy_status || ''));
+  const allCompleted = statuses.every((status) => status === 'completed');
+  const hasFailed = statuses.some((status) => status === 'failed');
+  const hasRunning = statuses.some((status) => status !== 'queued' && status !== 'completed' && status !== 'failed');
+  const hasQueued = statuses.some((status) => status === 'queued');
+
+  let nextJobStatus = 'queued';
+  if(allCompleted) {
+    nextJobStatus = 'completed';
+  } else if(!hasRunning && !hasQueued && hasFailed) {
+    nextJobStatus = 'failed';
+  } else if(hasRunning || hasFailed || statuses.some((status) => status === 'completed')) {
+    nextJobStatus = 'running';
+  }
+
+  const errorMessages = targets
+    .map((entry) => String(entry?.error_message || '').trim())
+    .filter(Boolean);
+  const errorMessage = nextJobStatus === 'failed' ? errorMessages.join('\n') : null;
+  const now = nowIso();
+  await env.DB.prepare(`
+    UPDATE admin_map_deploy_jobs
+    SET
+      job_status = ?,
+      started_at = CASE
+        WHEN ? = 'running' THEN COALESCE(started_at, ?)
+        ELSE started_at
+      END,
+      finished_at = CASE
+        WHEN ? IN ('completed', 'failed') THEN ?
+        ELSE NULL
+      END,
+      error_message = ?
+    WHERE id = ?
+  `).bind(
+    nextJobStatus,
+    nextJobStatus,
+    now,
+    nextJobStatus,
+    now,
+    errorMessage,
+    jobId,
+  ).run();
+
+  return nextJobStatus;
+}
+
 async function handleAdminMapDeployJobs(context) {
   const { env } = context;
   const auth = await requireOperator(context);
@@ -4083,37 +4141,97 @@ async function handleAdminMapDeployJobDetail(context, jobIdRaw) {
   return json({ ok: true, job });
 }
 
-async function handleInternalMapDeployClaim(context) {
+async function handleAdminMapDeployJobRetry(context, jobIdRaw) {
   const { env } = context;
+  const auth = await requireOperator(context);
+  if(auth.error) {
+    return auth.error;
+  }
+  await ensureMapAdminTables(env);
+
+  const jobId = Math.floor(Number(jobIdRaw || 0));
+  if(!Number.isFinite(jobId) || jobId <= 0) {
+    return json({ ok: false, message: 'Invalid job id.' }, 400);
+  }
+
+  const job = await loadMapDeployJobDetails(env, jobId);
+  if(!job) {
+    return json({ ok: false, message: 'Deploy job not found.' }, 404);
+  }
+  if(job.status === 'running') {
+    return json({ ok: false, message: 'Cannot retry a running deploy job.' }, 400);
+  }
+
+  const failedTargets = (job.targets || []).filter((entry) => String(entry?.deploy_status || '') === 'failed');
+  if(failedTargets.length === 0) {
+    return json({ ok: false, message: 'No failed targets to retry.' }, 400);
+  }
+
+  const now = nowIso();
+  await env.DB.prepare(`
+    UPDATE admin_map_deploy_targets
+    SET deploy_status = 'queued', error_message = NULL, updated_at = ?
+    WHERE job_id = ? AND deploy_status = 'failed'
+  `).bind(now, jobId).run();
+
+  await env.DB.prepare(`
+    UPDATE admin_map_deploy_jobs
+    SET job_status = 'queued', started_at = NULL, finished_at = NULL, error_message = NULL
+    WHERE id = ?
+  `).bind(jobId).run();
+
+  const refreshed = await loadMapDeployJobDetails(env, jobId);
+  return json({ ok: true, job: refreshed });
+}
+
+async function handleInternalMapDeployClaim(context) {
+  const { env, request } = context;
   const auth = requireDeployWorker(context);
   if(auth.error) {
     return auth.error;
   }
   await ensureMapAdminTables(env);
 
-  const nextJob = await env.DB.prepare(`
-    SELECT id
-    FROM admin_map_deploy_jobs
-    WHERE job_status = 'queued'
-    ORDER BY requested_at ASC, id ASC
+  const body = await parseRequestBody(request);
+  const data = typeof body === 'string' ? {} : (body || {});
+  const targetKeys = Array.isArray(data?.targetKeys)
+    ? data.targetKeys.map((entry) => String(entry || '').trim()).filter(Boolean)
+    : [];
+  if(targetKeys.length === 0) {
+    return json({ ok: false, message: 'targetKeys are required.' }, 400);
+  }
+
+  const placeholders = targetKeys.map(() => '?').join(', ');
+  const nextTarget = await env.DB.prepare(`
+    SELECT
+      t.id,
+      t.job_id
+    FROM admin_map_deploy_targets t
+    JOIN admin_map_deploy_jobs j ON j.id = t.job_id
+    WHERE t.deploy_status = 'queued'
+      AND j.job_status IN ('queued', 'running', 'failed')
+      AND t.target_key IN (${placeholders})
+    ORDER BY j.requested_at ASC, j.id ASC, t.id ASC
     LIMIT 1
-  `).first();
-  if(!nextJob?.id) {
-    return json({ ok: true, job: null });
+  `).bind(...targetKeys).first();
+  if(!nextTarget?.id || !nextTarget?.job_id) {
+    return json({ ok: true, claim: null });
   }
 
-  const startedAt = nowIso();
+  const now = nowIso();
   const updated = await env.DB.prepare(`
-    UPDATE admin_map_deploy_jobs
-    SET job_status = 'running', started_at = COALESCE(started_at, ?), error_message = NULL
-    WHERE id = ? AND job_status = 'queued'
-  `).bind(startedAt, nextJob.id).run();
+    UPDATE admin_map_deploy_targets
+    SET deploy_status = 'copying_map', error_message = NULL, updated_at = ?
+    WHERE id = ? AND deploy_status = 'queued'
+  `).bind(now, nextTarget.id).run();
   if((updated.meta?.changes || 0) !== 1) {
-    return json({ ok: true, job: null });
+    return json({ ok: true, claim: null });
   }
 
-  const job = await loadMapDeployJobDetails(env, nextJob.id);
-  return json({ ok: true, job });
+  await refreshMapDeployJobStatus(env, nextTarget.job_id);
+  const job = await loadMapDeployJobDetails(env, nextTarget.job_id);
+  const target = (job?.targets || []).find((entry) => Number(entry?.id) === Number(nextTarget.id)) || null;
+  return json({ ok: true, claim: job && target ? { job, target } : null });
 }
 
 async function handleInternalMapDeployTargetStatus(context, targetIdRaw) {
@@ -4142,6 +4260,16 @@ async function handleInternalMapDeployTargetStatus(context, targetIdRaw) {
     SET deploy_status = ?, error_message = ?, updated_at = ?
     WHERE id = ?
   `).bind(status, errorMessage || null, nowIso(), targetId).run();
+
+  const targetRow = await env.DB.prepare(`
+    SELECT job_id
+    FROM admin_map_deploy_targets
+    WHERE id = ?
+    LIMIT 1
+  `).bind(targetId).first();
+  if(targetRow?.job_id) {
+    await refreshMapDeployJobStatus(env, targetRow.job_id);
+  }
 
   return json({ ok: true, targetId, status });
 }
@@ -4620,7 +4748,18 @@ export async function onRequest(context) {
 
   if(request.method === 'GET' && path.startsWith('/admin/maps/deploy-jobs/')) {
     const jobIdRaw = decodeURIComponent(path.slice('/admin/maps/deploy-jobs/'.length));
+    if(jobIdRaw.endsWith('/retry')) {
+      const retryJobIdRaw = decodeURIComponent(jobIdRaw.slice(0, -'/retry'.length));
+      if(request.method === 'POST') {
+        return handleAdminMapDeployJobRetry(context, retryJobIdRaw);
+      }
+    }
     return handleAdminMapDeployJobDetail(context, jobIdRaw);
+  }
+
+  if(request.method === 'POST' && path.startsWith('/admin/maps/deploy-jobs/') && path.endsWith('/retry')) {
+    const jobIdRaw = decodeURIComponent(path.slice('/admin/maps/deploy-jobs/'.length, -'/retry'.length));
+    return handleAdminMapDeployJobRetry(context, jobIdRaw);
   }
 
   if(request.method === 'POST' && path === '/internal/map-deploy/claim') {
