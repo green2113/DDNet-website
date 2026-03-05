@@ -34,6 +34,7 @@ import iconEnvelope from '../assets/icons/icon-envelope.svg';
 import iconUser from '../assets/icons/icon-user.svg';
 import iconSiren from '../assets/icons/icon-siren.svg';
 import iconKey from '../assets/icons/icon-key.svg';
+import iconCloudUploadAlt from '../assets/icons/icon-cloud-upload-alt.svg';
 import iconCreditCard from '../assets/icons/icon-credit-card.svg';
 
 function maskEmail(value) {
@@ -1590,7 +1591,7 @@ ${t('dashboard.accessReasonLine', { reason: banReasonText || '-' })}`
                   type="button"
                   onClick={() => setActiveSection('admin-map-upload')}
                 >
-                  <span className="dashboard-nav-icon" aria-hidden="true"><img src={iconKey} alt="" /></span>
+                  <span className="dashboard-nav-icon" aria-hidden="true"><img src={iconCloudUploadAlt} alt="" /></span>
                   <span>{t('dashboard.adminMapUploadNav')}</span>
                 </button>
               ) : null}
