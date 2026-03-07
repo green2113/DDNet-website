@@ -269,6 +269,7 @@ export default function DashboardPage() {
   const dummyNameCooldownDaysLeft = dummyNameCooldownActive
     ? Math.max(1, Math.floor((dummyNameCooldownUntilMs - Date.now()) / (24 * 60 * 60 * 1000)))
     : 0;
+  const subscriptionStateLoading = subscriptionLoading;
   const canSaveName = editingName && !savingName && trimmedName.length > 0 && trimmedName !== currentName;
   const canSaveDisplayName = editingDisplayName && !savingDisplayName && trimmedDisplayName.length > 0 && trimmedDisplayName !== currentDisplayName;
   const canSaveDummyName = editingDummyName && !dummyNameCooldownActive && !savingDummyName && trimmedDummyName.length > 0 && trimmedDummyName !== currentDummyName;
@@ -281,7 +282,6 @@ export default function DashboardPage() {
   const plusActive = Boolean(subscriptionInfo?.benefits?.plusActive);
   const starterActive = plusActive || Boolean(subscriptionInfo?.benefits?.starterActive);
   const canUseInvite = signupCountry === 'TW' || signupCountry === 'KR' || plusActive || hasInviteCode;
-  const subscriptionStateLoading = subscriptionLoading;
   const trailFeatureLocked = subscriptionStateLoading || !plusActive;
   const plusSubscription = subscriptionInfo?.subscription || null;
   const starterSubscription = subscriptionInfo?.starterSubscription || null;
