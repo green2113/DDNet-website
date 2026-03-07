@@ -680,6 +680,7 @@ async function getUserSessionVersion(env, userId) {
 
 async function publicUserById(env, userId) {
   const hasNameChangeCooldown = await hasUsersColumn(env, 'name_change_available_at');
+  const hasDisplayName = await hasUsersColumn(env, 'display_name');
   const hasDummyName = await hasUsersColumn(env, 'dummy_name');
   const hasDummyNameChangeCooldown = await hasUsersColumn(env, 'dummy_name_change_available_at');
   const hasEmailVerified = await hasUsersColumn(env, 'email_verified');
@@ -690,6 +691,7 @@ async function publicUserById(env, userId) {
     SELECT
       id,
       username,
+      ${hasDisplayName ? 'display_name' : 'username AS display_name'},
       ${hasDummyName ? 'dummy_name' : 'NULL AS dummy_name'},
       ${hasDummyNameChangeCooldown ? 'dummy_name_change_available_at' : 'NULL AS dummy_name_change_available_at'},
       email,
@@ -716,12 +718,21 @@ async function isNameTaken(env, name, excludeUserId = null) {
   if(!normalized) {
     return false;
   }
+  const hasDisplayNameLower = await hasUsersColumn(env, 'display_name_lower');
   const hasDummyNameLower = await hasUsersColumn(env, 'dummy_name_lower');
   const byUsername = excludeUserId === null
     ? await env.DB.prepare('SELECT id FROM users WHERE username_lower = ? LIMIT 1').bind(normalized).first()
     : await env.DB.prepare('SELECT id FROM users WHERE username_lower = ? AND id != ? LIMIT 1').bind(normalized, excludeUserId).first();
   if(byUsername) {
     return true;
+  }
+  if(hasDisplayNameLower) {
+    const byDisplay = excludeUserId === null
+      ? await env.DB.prepare('SELECT id FROM users WHERE display_name_lower = ? LIMIT 1').bind(normalized).first()
+      : await env.DB.prepare('SELECT id FROM users WHERE display_name_lower = ? AND id != ? LIMIT 1').bind(normalized, excludeUserId).first();
+    if(byDisplay) {
+      return true;
+    }
   }
   if(!hasDummyNameLower) {
     return false;
@@ -981,6 +992,8 @@ async function handleRegister(context) {
           INSERT INTO users (
             username,
             username_lower,
+            display_name,
+            display_name_lower,
             email,
             email_lower,
             password_hash,
@@ -999,8 +1012,10 @@ async function handleRegister(context) {
             game_login_code_plain,
             game_login_code_rotated_at,
             created_at
-          ) VALUES (?, ?, ?, ?, ?, 0, NULL, NULL, NULL, NULL, ?, ?, ${hasInviteQuotaBase ? '?, ' : ''}0, ?, ?, ?, ?, ?, ?)
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, NULL, NULL, NULL, NULL, ?, ?, ${hasInviteQuotaBase ? '?, ' : ''}0, ?, ?, ?, ?, ?, ?)
         `).bind(
+          username,
+          lower(username),
           username,
           lower(username),
           email,
@@ -1020,6 +1035,8 @@ async function handleRegister(context) {
           INSERT INTO users (
             username,
             username_lower,
+            display_name,
+            display_name_lower,
             email,
             email_lower,
             password_hash,
@@ -1037,8 +1054,10 @@ async function handleRegister(context) {
             game_login_code_hash,
             game_login_code_rotated_at,
             created_at
-          ) VALUES (?, ?, ?, ?, ?, 0, NULL, NULL, NULL, NULL, ?, ?, ${hasInviteQuotaBase ? '?, ' : ''}0, ?, ?, ?, ?, ?)
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, NULL, NULL, NULL, NULL, ?, ?, ${hasInviteQuotaBase ? '?, ' : ''}0, ?, ?, ?, ?, ?)
         `).bind(
+          username,
+          lower(username),
           username,
           lower(username),
           email,
@@ -1805,6 +1824,57 @@ async function handleUpdateProfileName(context) {
   return json({ ok: true, user, message: 'Name updated' });
 }
 
+async function handleUpdateProfileDisplayName(context) {
+  const { request, env } = context;
+  const result = await currentUser(context);
+  if(result.error) {
+    return result.error;
+  }
+  if(!isEmailVerified(result.user)) {
+    return emailVerificationRequiredResponse();
+  }
+
+  const hasDisplayName = await hasUsersColumn(env, 'display_name');
+  const hasDisplayNameLower = await hasUsersColumn(env, 'display_name_lower');
+  if(!hasDisplayName || !hasDisplayNameLower) {
+    return json({ ok: false, message: 'Display name columns are missing. Run migrations first.' }, 500);
+  }
+
+  const planFlags = await loadPlanActivityFlags(env, result.user.id);
+  if(!planFlags.plusActive) {
+    return json({ ok: false, message: 'Plus subscription is required to change display name.' }, 403);
+  }
+
+  const body = await parseRequestBody(request);
+  const data = typeof body === 'string' ? {} : (body || {});
+  const nextName = String(data.name || data.displayName || '').trim();
+
+  if(!isValidUsername(nextName)) {
+    return json({ ok: false, message: 'Display name must be 1-15 UTF-8 bytes and cannot start with /' }, 400);
+  }
+
+  if(nextName === String(result.user.display_name || result.user.username || '')) {
+    return json({ ok: true, user: result.user, message: 'Display name updated' });
+  }
+
+  if(await isNameTaken(env, nextName, result.user.id)) {
+    return json({ ok: false, message: 'Name already exists' }, 409);
+  }
+
+  const updated = await env.DB.prepare(`
+    UPDATE users
+    SET display_name = ?, display_name_lower = ?
+    WHERE id = ?
+  `).bind(nextName, lower(nextName), result.user.id).run();
+
+  if((updated.meta?.changes || 0) !== 1) {
+    return json({ ok: false, message: 'Could not update display name' }, 500);
+  }
+
+  const user = await publicUserById(env, result.user.id);
+  return json({ ok: true, user, message: 'Display name updated' });
+}
+
 async function handleRotateGameCode(context) {
   const { request, env } = context;
   const result = await currentUser(context);
@@ -2440,12 +2510,15 @@ function gameClientNameFromRequest(request) {
 function buildGameAuthPayload(user, trailState, { dummyCode = false } = {}) {
   const dummyName = String(user?.dummy_name || '').trim();
   const username = String(user?.username || '').trim();
-  const accountName = dummyCode && dummyName ? dummyName : username;
+  const displayName = String(user?.display_name || username).trim() || username;
+  const accountName = dummyCode && dummyName ? dummyName : displayName;
+  const canonicalUsername = dummyCode && dummyName ? dummyName : username;
   return {
     ok: true,
     accountId: Number(user?.id || 0),
     name: accountName,
-    username: accountName,
+    username: canonicalUsername,
+    displayName: accountName,
     dummyCode,
     ...trailState,
   };
@@ -2493,6 +2566,7 @@ async function findAutoLoginMatches(env, ip, clientName) {
     SELECT
       u.id,
       u.username,
+      COALESCE(u.display_name, u.username) AS display_name,
       u.dummy_name,
       u.email_verified,
       u.ban_is_permanent,
@@ -2557,7 +2631,7 @@ async function handleGameVerify(context) {
   let matchedDummyCode = false;
 
   let user = await env.DB.prepare(`
-    SELECT id, username, dummy_name, email_verified, ban_is_permanent, ban_until, ban_reason
+    SELECT id, username, COALESCE(display_name, username) AS display_name, dummy_name, email_verified, ban_is_permanent, ban_until, ban_reason
     FROM users
     WHERE game_login_code_hash = ?
     LIMIT 1
@@ -2566,13 +2640,13 @@ async function handleGameVerify(context) {
   if(!user && hasDummyHash) {
     user = hasDummyPlain
       ? await env.DB.prepare(`
-        SELECT id, username, dummy_name, email_verified, ban_is_permanent, ban_until, ban_reason
+        SELECT id, username, COALESCE(display_name, username) AS display_name, dummy_name, email_verified, ban_is_permanent, ban_until, ban_reason
         FROM users
         WHERE dummy_login_code_hash = ? OR dummy_login_code_plain = ?
         LIMIT 1
       `).bind(code, code).first()
       : await env.DB.prepare(`
-        SELECT id, username, dummy_name, email_verified, ban_is_permanent, ban_until, ban_reason
+        SELECT id, username, COALESCE(display_name, username) AS display_name, dummy_name, email_verified, ban_is_permanent, ban_until, ban_reason
         FROM users
         WHERE dummy_login_code_hash = ?
         LIMIT 1
@@ -2585,14 +2659,14 @@ async function handleGameVerify(context) {
   if(!user && env.CODE_PEPPER) {
     const hash = await sha256Hex(`${env.CODE_PEPPER}:${code}`);
     user = await env.DB.prepare(`
-      SELECT id, username, dummy_name, email_verified, ban_is_permanent, ban_until, ban_reason
+      SELECT id, username, COALESCE(display_name, username) AS display_name, dummy_name, email_verified, ban_is_permanent, ban_until, ban_reason
       FROM users
       WHERE game_login_code_hash = ?
       LIMIT 1
     `).bind(hash).first();
     if(!user && hasDummyHash) {
       user = await env.DB.prepare(`
-        SELECT id, username, dummy_name, email_verified, ban_is_permanent, ban_until, ban_reason
+        SELECT id, username, COALESCE(display_name, username) AS display_name, dummy_name, email_verified, ban_is_permanent, ban_until, ban_reason
         FROM users
         WHERE dummy_login_code_hash = ?
         LIMIT 1
@@ -2794,7 +2868,7 @@ async function handleGameAccountStatus(context) {
   }
 
   const user = await env.DB.prepare(`
-    SELECT ban_is_permanent, ban_until, ban_reason
+    SELECT username, COALESCE(display_name, username) AS display_name, ban_is_permanent, ban_until, ban_reason
     FROM users
     WHERE id = ?
     LIMIT 1
@@ -2816,6 +2890,8 @@ async function handleGameAccountStatus(context) {
   return json({
     ok: true,
     accountId,
+    username: String(user.username || ''),
+    displayName: String(user.display_name || user.username || ''),
     banned,
     banPermanent: permanent,
     banUntil: banUntilRaw,
@@ -4427,20 +4503,23 @@ async function handleAdminUsers(context) {
       SELECT
         id,
         username,
+        COALESCE(display_name, username) AS display_name,
         ${hasDummyName ? 'dummy_name' : 'NULL AS dummy_name'},
         ban_is_permanent,
         ban_until,
         ban_reason
       FROM users
       WHERE username LIKE ?
+         OR COALESCE(display_name, username) LIKE ?
       ${hasDummyName ? 'OR dummy_name LIKE ?' : ''}
       ORDER BY id ASC
       LIMIT 200
-    `).bind(...(hasDummyName ? [like, like] : [like])).all()
+    `).bind(...(hasDummyName ? [like, like, like] : [like, like])).all()
     : await env.DB.prepare(`
       SELECT
         id,
         username,
+        COALESCE(display_name, username) AS display_name,
         ${hasDummyName ? 'dummy_name' : 'NULL AS dummy_name'},
         ban_is_permanent,
         ban_until,
@@ -4625,6 +4704,9 @@ export async function onRequest(context) {
 
   if(request.method === 'POST' && path === '/profile/name') {
     return handleUpdateProfileName(context);
+  }
+  if(request.method === 'POST' && path === '/profile/display-name') {
+    return handleUpdateProfileDisplayName(context);
   }
   if(request.method === 'POST' && path === '/profile/dummy-name') {
     return handleUpdateDummyName(context);

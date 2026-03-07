@@ -139,6 +139,13 @@ export async function updateProfileName(payload) {
   });
 }
 
+export async function updateProfileDisplayName(payload) {
+  return api('/api/profile/display-name', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
 export async function updateDummyProfileName(payload) {
   return api('/api/profile/dummy-name', {
     method: 'POST',

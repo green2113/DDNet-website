@@ -17,3 +17,4 @@
 .read migrations/0017_user_invite_quota_base.sql
 .read migrations/0018_user_auto_login_settings.sql
 .read migrations/0019_admin_map_uploads.sql
+.read migrations/0020_user_display_name.sql

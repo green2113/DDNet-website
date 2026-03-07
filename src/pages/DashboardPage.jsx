@@ -23,6 +23,7 @@ import {
   updateTrailSettings,
   updateDummyProfileName,
   updateAutoLoginSettings,
+  updateProfileDisplayName,
   updateProfileName,
   verifyEmailCode,
 } from '../lib/api';
@@ -170,10 +171,13 @@ export default function DashboardPage() {
   const [showDummyFirstIssue, setShowDummyFirstIssue] = useState(false);
   const [showNameConfirm, setShowNameConfirm] = useState(false);
   const [nameForm, setNameForm] = useState('');
+  const [displayNameForm, setDisplayNameForm] = useState('');
   const [dummyNameForm, setDummyNameForm] = useState('');
   const [editingName, setEditingName] = useState(false);
+  const [editingDisplayName, setEditingDisplayName] = useState(false);
   const [editingDummyName, setEditingDummyName] = useState(false);
   const [savingName, setSavingName] = useState(false);
+  const [savingDisplayName, setSavingDisplayName] = useState(false);
   const [savingDummyName, setSavingDummyName] = useState(false);
   const [showCopyToast, setShowCopyToast] = useState(false);
   const [showTrailSavedToast, setShowTrailSavedToast] = useState(false);
@@ -245,11 +249,13 @@ export default function DashboardPage() {
   const adminUsersRequestIdRef = useRef(0);
 
   const currentName = String(user?.username || '');
+  const currentDisplayName = String(user?.display_name || user?.username || '');
   const currentDummyName = String(user?.dummy_name || '');
   const emailVerified = Number(user?.email_verified || 0) === 1;
   const signupCountry = String(user?.country_signup || '').toUpperCase();
   const hasInviteCode = String(user?.invite_code || '').trim().length > 0;
   const trimmedName = nameForm.trim();
+  const trimmedDisplayName = displayNameForm.trim();
   const trimmedDummyName = dummyNameForm.trim();
   const nameCooldownUntilRaw = String(user?.name_change_available_at || '');
   const nameCooldownUntilMs = nameCooldownUntilRaw ? Date.parse(nameCooldownUntilRaw) : NaN;
@@ -264,7 +270,9 @@ export default function DashboardPage() {
     ? Math.max(1, Math.floor((dummyNameCooldownUntilMs - Date.now()) / (24 * 60 * 60 * 1000)))
     : 0;
   const canSaveName = editingName && !savingName && trimmedName.length > 0 && trimmedName !== currentName;
+  const canSaveDisplayName = editingDisplayName && !savingDisplayName && trimmedDisplayName.length > 0 && trimmedDisplayName !== currentDisplayName;
   const canSaveDummyName = editingDummyName && !dummyNameCooldownActive && !savingDummyName && trimmedDummyName.length > 0 && trimmedDummyName !== currentDummyName;
+  const displayNameFeatureLocked = subscriptionStateLoading || !plusActive;
   const isDummyNameInputActive = editingDummyName || showDummyFirstIssue;
   const adminLevel = Number(user?.is_admin || 0);
   const isManager = Number.isFinite(adminLevel) && adminLevel >= 1;
@@ -625,6 +633,11 @@ export default function DashboardPage() {
   }, [currentName]);
 
   useEffect(() => {
+    setDisplayNameForm(currentDisplayName);
+    setEditingDisplayName(false);
+  }, [currentDisplayName]);
+
+  useEffect(() => {
     setDummyNameForm(currentDummyName);
     setEditingDummyName(false);
   }, [currentDummyName]);
@@ -912,6 +925,24 @@ export default function DashboardPage() {
     }
   };
 
+  const saveDisplayName = async () => {
+    if(!canSaveDisplayName) {
+      return;
+    }
+    setSavingDisplayName(true);
+    setFeedback(null);
+    try {
+      await updateProfileDisplayName({ displayName: trimmedDisplayName });
+      await refresh();
+      setEditingDisplayName(false);
+      setFeedback({ type: 'ok', message: t('dashboard.displayNameUpdated') });
+    } catch (err) {
+      setFeedback({ type: 'error', message: err.message });
+    } finally {
+      setSavingDisplayName(false);
+    }
+  };
+
   const onNameAction = () => {
     if(!emailVerified) {
       return;
@@ -932,6 +963,28 @@ export default function DashboardPage() {
   const onCancelNameEdit = () => {
     setNameForm(currentName);
     setEditingName(false);
+  };
+
+  const onDisplayNameAction = () => {
+    if(!emailVerified) {
+      return;
+    }
+    if(displayNameFeatureLocked) {
+      return;
+    }
+    if(editingDisplayName) {
+      if(canSaveDisplayName) {
+        saveDisplayName();
+      }
+      return;
+    }
+    setDisplayNameForm(currentDisplayName);
+    setEditingDisplayName(true);
+  };
+
+  const onCancelDisplayNameEdit = () => {
+    setDisplayNameForm(currentDisplayName);
+    setEditingDisplayName(false);
   };
 
   const onDummyNameAction = () => {
@@ -1396,8 +1449,9 @@ ${t('dashboard.accessReasonLine', { reason: banReasonText || '-' })}`
   const adminFilteredUsers = adminSearchLower
     ? adminUsers.filter((entry) => {
       const username = String(entry?.username || '').toLowerCase();
+      const displayName = String(entry?.display_name || entry?.username || '').toLowerCase();
       const dummyName = String(entry?.dummy_name || '').toLowerCase();
-      return username.includes(adminSearchLower) || dummyName.includes(adminSearchLower);
+      return username.includes(adminSearchLower) || displayName.includes(adminSearchLower) || dummyName.includes(adminSearchLower);
     })
     : adminUsers;
   const adminUserStatusText = (targetUser) => {
@@ -1687,6 +1741,77 @@ ${t('dashboard.accessReasonLine', { reason: banReasonText || '-' })}`
                     <CloseIcon />
                   </button>
                 ) : null}
+              </div>
+            </dd>
+            <dt>{t('dashboard.rowDisplayName')}</dt>
+            <dd>
+              <div className="name-inline">
+                {editingDisplayName ? (
+                  <input
+                    className="name-inline-input"
+                    value={displayNameForm}
+                    onChange={(event) => setDisplayNameForm(event.target.value)}
+                    maxLength={32}
+                    autoComplete="nickname"
+                    autoFocus
+                    onKeyDown={(event) => {
+                      if(event.key === 'Escape') {
+                        onCancelDisplayNameEdit();
+                      }
+                      if(event.key === 'Enter') {
+                        event.preventDefault();
+                        if(canSaveDisplayName) {
+                          saveDisplayName();
+                        }
+                      }
+                    }}
+                  />
+                ) : (
+                  <span className="name-inline-value">{currentDisplayName || '-'}</span>
+                )}
+                {editingDisplayName ? (
+                  <>
+                    <button
+                      className="btn ghost icon-btn name-action-btn"
+                      type="button"
+                      onClick={onDisplayNameAction}
+                      disabled={!canSaveDisplayName}
+                      title={t('dashboard.nameApply')}
+                    >
+                      <CheckIcon />
+                    </button>
+                    <button
+                      className="btn ghost icon-btn name-action-btn"
+                      type="button"
+                      onClick={onCancelDisplayNameEdit}
+                      title={t('dashboard.nameCancel')}
+                    >
+                      <CloseIcon />
+                    </button>
+                  </>
+                ) : (
+                  displayNameFeatureLocked ? (
+                    <Tooltip label={t('dashboard.displayNamePlusTooltip')}>
+                      <button
+                        className="btn ghost icon-btn name-action-btn locked-action"
+                        type="button"
+                        aria-disabled="true"
+                        title={t('dashboard.displayNamePlusTooltip')}
+                      >
+                        <LockIcon />
+                      </button>
+                    </Tooltip>
+                  ) : (
+                    <button
+                      className="btn ghost icon-btn name-action-btn"
+                      type="button"
+                      onClick={onDisplayNameAction}
+                      title={t('dashboard.displayNameEdit')}
+                    >
+                      <PencilIcon />
+                    </button>
+                  )
+                )}
               </div>
             </dd>
             {(dummyCode || currentDummyName) ? (
@@ -1993,6 +2118,7 @@ ${t('dashboard.accessReasonLine', { reason: banReasonText || '-' })}`
                         <div className="admin-user-list-header">
                           <span>{t('dashboard.rowUserId')}</span>
                           <span>{t('dashboard.rowUsername')}</span>
+                          <span>{t('dashboard.rowDisplayName')}</span>
                           <span>{t('dashboard.rowDummyName')}</span>
                           <span>{t('dashboard.rowAccess')}</span>
                         </div>
@@ -2017,6 +2143,7 @@ ${t('dashboard.accessReasonLine', { reason: banReasonText || '-' })}`
                               >
                                 <span>{entry.id}</span>
                                 <span>{entry.username || '-'}</span>
+                                <span>{entry.display_name || entry.username || '-'}</span>
                                 <span>{entry.dummy_name || '-'}</span>
                                 <Tooltip label={adminUserStatusText(entry)}>
                                   <span>{adminUserStatusCompact(entry)}</span>
@@ -2038,6 +2165,10 @@ ${t('dashboard.accessReasonLine', { reason: banReasonText || '-' })}`
                     <div className="admin-picked-row">
                       <span>{t('dashboard.rowUsername')}</span>
                       <span>{adminSelectedUser.username || '-'}</span>
+                    </div>
+                    <div className="admin-picked-row">
+                      <span>{t('dashboard.rowDisplayName')}</span>
+                      <span>{adminSelectedUser.display_name || adminSelectedUser.username || '-'}</span>
                     </div>
                     <div className="admin-picked-row">
                       <span>{t('dashboard.rowDummyName')}</span>
@@ -2246,6 +2377,7 @@ ${t('dashboard.accessReasonLine', { reason: banReasonText || '-' })}`
                         <div className="admin-user-list-header">
                           <span>{t('dashboard.rowUserId')}</span>
                           <span>{t('dashboard.rowUsername')}</span>
+                          <span>{t('dashboard.rowDisplayName')}</span>
                           <span>{t('dashboard.rowDummyName')}</span>
                           <span>{t('dashboard.rowAccess')}</span>
                         </div>
@@ -2270,6 +2402,7 @@ ${t('dashboard.accessReasonLine', { reason: banReasonText || '-' })}`
                               >
                                 <span>{entry.id}</span>
                                 <span>{entry.username || '-'}</span>
+                                <span>{entry.display_name || entry.username || '-'}</span>
                                 <span>{entry.dummy_name || '-'}</span>
                                 <Tooltip label={adminUserStatusText(entry)}>
                                   <span>{adminUserStatusCompact(entry)}</span>
