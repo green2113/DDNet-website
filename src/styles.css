@@ -478,7 +478,7 @@ h3 {
 .admin-user-list-header,
 .admin-user-row {
   display: grid;
-  grid-template-columns: 60px minmax(0, 1fr) minmax(0, 1fr) 140px;
+  grid-template-columns: 60px minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr) 140px;
   gap: 10px;
   align-items: center;
   padding: 9px 10px;
@@ -531,6 +531,7 @@ h3 {
   justify-content: center;
 }
 
+.admin-user-cell-text,
 .admin-user-row .tooltip-wrap > span {
   display: block;
   max-width: 100%;
@@ -1603,7 +1604,7 @@ button.btn {
 
   .admin-user-list-header,
   .admin-user-row {
-    grid-template-columns: 54px minmax(0, 1fr) minmax(0, 1fr) 110px;
+    grid-template-columns: 54px minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr) 110px;
   }
 
   .admin-tier-list-header,

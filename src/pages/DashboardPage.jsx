@@ -306,6 +306,14 @@ export default function DashboardPage() {
     ? `${String(Math.floor(verifyRemainingSeconds / 60)).padStart(2, '0')}:${String(verifyRemainingSeconds % 60).padStart(2, '0')}`
     : '';
   const parsedMinutes = Number(adminMinutes);
+  const renderAdminUserCell = (value) => {
+    const text = String(value || '-');
+    return (
+      <Tooltip label={text}>
+        <span className="admin-user-cell-text">{text}</span>
+      </Tooltip>
+    );
+  };
   const temporaryMinutesValid = Number.isInteger(parsedMinutes) && parsedMinutes >= 1 && parsedMinutes <= 1440;
   const adminMinutesNum = adminBanMode === 'permanent' ? 0 : parsedMinutes;
   const parsedGrantMonths = Number(adminGrantMonths);
@@ -2142,11 +2150,11 @@ ${t('dashboard.accessReasonLine', { reason: banReasonText || '-' })}`
                                 }}
                               >
                                 <span>{entry.id}</span>
-                                <span>{entry.username || '-'}</span>
-                                <span>{entry.display_name || entry.username || '-'}</span>
-                                <span>{entry.dummy_name || '-'}</span>
+                                {renderAdminUserCell(entry.username || '-')}
+                                {renderAdminUserCell(entry.display_name || entry.username || '-')}
+                                {renderAdminUserCell(entry.dummy_name || '-')}
                                 <Tooltip label={adminUserStatusText(entry)}>
-                                  <span>{adminUserStatusCompact(entry)}</span>
+                                  <span className="admin-user-cell-text">{adminUserStatusCompact(entry)}</span>
                                 </Tooltip>
                               </button>
                             ))
@@ -2401,11 +2409,11 @@ ${t('dashboard.accessReasonLine', { reason: banReasonText || '-' })}`
                                 }}
                               >
                                 <span>{entry.id}</span>
-                                <span>{entry.username || '-'}</span>
-                                <span>{entry.display_name || entry.username || '-'}</span>
-                                <span>{entry.dummy_name || '-'}</span>
+                                {renderAdminUserCell(entry.username || '-')}
+                                {renderAdminUserCell(entry.display_name || entry.username || '-')}
+                                {renderAdminUserCell(entry.dummy_name || '-')}
                                 <Tooltip label={adminUserStatusText(entry)}>
-                                  <span>{adminUserStatusCompact(entry)}</span>
+                                  <span className="admin-user-cell-text">{adminUserStatusCompact(entry)}</span>
                                 </Tooltip>
                               </button>
                             ))
