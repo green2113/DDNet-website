@@ -270,6 +270,8 @@ export default function DashboardPage() {
     ? Math.max(1, Math.floor((dummyNameCooldownUntilMs - Date.now()) / (24 * 60 * 60 * 1000)))
     : 0;
   const subscriptionStateLoading = subscriptionLoading;
+  const plusActive = Boolean(subscriptionInfo?.benefits?.plusActive);
+  const starterActive = plusActive || Boolean(subscriptionInfo?.benefits?.starterActive);
   const canSaveName = editingName && !savingName && trimmedName.length > 0 && trimmedName !== currentName;
   const canSaveDisplayName = editingDisplayName && !savingDisplayName && trimmedDisplayName.length > 0 && trimmedDisplayName !== currentDisplayName;
   const canSaveDummyName = editingDummyName && !dummyNameCooldownActive && !savingDummyName && trimmedDummyName.length > 0 && trimmedDummyName !== currentDummyName;
@@ -279,8 +281,6 @@ export default function DashboardPage() {
   const isManager = Number.isFinite(adminLevel) && adminLevel >= 1;
   const isOperator = Number.isFinite(adminLevel) && adminLevel >= 2;
   const isAdminSection = activeSection === 'admin-ban' || activeSection === 'admin-plan-grant' || activeSection === 'admin-map-upload';
-  const plusActive = Boolean(subscriptionInfo?.benefits?.plusActive);
-  const starterActive = plusActive || Boolean(subscriptionInfo?.benefits?.starterActive);
   const canUseInvite = signupCountry === 'TW' || signupCountry === 'KR' || plusActive || hasInviteCode;
   const trailFeatureLocked = subscriptionStateLoading || !plusActive;
   const plusSubscription = subscriptionInfo?.subscription || null;
