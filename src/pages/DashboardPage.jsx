@@ -1665,11 +1665,14 @@ ${t('dashboard.accessReasonLine', { reason: banReasonText || '-' })}`
           {activeSection === 'account' ? (
             <article className="panel">
           <h3>{t('dashboard.accountTitle')}</h3>
-          <dl className="info">
-            <dt>{t('dashboard.rowUserId')}</dt>
-            <dd>{user?.id ?? '-'}</dd>
-            <dt>{t('dashboard.rowUsername')}</dt>
-            <dd>
+          <div className="account-info">
+            <div className="account-row">
+              <div className="account-label">{t('dashboard.rowUserId')}</div>
+              <div className="account-value">{user?.id ?? '-'}</div>
+            </div>
+            <div className="account-row">
+              <div className="account-label">{t('dashboard.rowUsername')}</div>
+              <div className="account-value">
               <div className="name-inline">
                 {editingName ? (
                   <input
@@ -1750,9 +1753,11 @@ ${t('dashboard.accessReasonLine', { reason: banReasonText || '-' })}`
                   </button>
                 ) : null}
               </div>
-            </dd>
-            <dt>{t('dashboard.rowDisplayName')}</dt>
-            <dd>
+              </div>
+            </div>
+            <div className="account-row">
+              <div className="account-label">{t('dashboard.rowDisplayName')}</div>
+              <div className="account-value">
               <div className="name-inline">
                 {editingDisplayName ? (
                   <input
@@ -1821,11 +1826,12 @@ ${t('dashboard.accessReasonLine', { reason: banReasonText || '-' })}`
                   )
                 )}
               </div>
-            </dd>
+              </div>
+            </div>
             {(dummyCode || currentDummyName) ? (
-              <>
-                <dt>{t('dashboard.rowDummyName')}</dt>
-                <dd>
+              <div className="account-row">
+                <div className="account-label">{t('dashboard.rowDummyName')}</div>
+                <div className="account-value">
                   <div className="name-inline">
                     {editingDummyName ? (
                       <input
@@ -1906,12 +1912,12 @@ ${t('dashboard.accessReasonLine', { reason: banReasonText || '-' })}`
                       </button>
                     ) : null}
                   </div>
-                </dd>
-              </>
+                </div>
+              </div>
             ) : null}
-
-            <dt>{t('dashboard.rowEmail')}</dt>
-            <dd>
+            <div className="account-row">
+              <div className="account-label">{t('dashboard.rowEmail')}</div>
+              <div className="account-value">
               <div className="email-verify-row">
                 <span>{maskEmail(user?.email)}</span>
                 {emailVerified ? (
@@ -1920,10 +1926,13 @@ ${t('dashboard.accessReasonLine', { reason: banReasonText || '-' })}`
                   <button className="btn ghost" type="button" onClick={openEmailVerifyModal}>{t('dashboard.emailVerifyAction')}</button>
                 )}
               </div>
-            </dd>
-            <dt>{t('dashboard.rowAccess')}</dt>
-            <dd><span className={`${accessStatusClass} preserve-lines`}>{accessStatusText}</span></dd>
-          </dl>
+              </div>
+            </div>
+            <div className="account-row">
+              <div className="account-label">{t('dashboard.rowAccess')}</div>
+              <div className="account-value"><span className={`${accessStatusClass} preserve-lines`}>{accessStatusText}</span></div>
+            </div>
+          </div>
             </article>
           ) : null}
 

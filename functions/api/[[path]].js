@@ -2511,8 +2511,9 @@ function buildGameAuthPayload(user, trailState, { dummyCode = false } = {}) {
   const dummyName = String(user?.dummy_name || '').trim();
   const username = String(user?.username || '').trim();
   const displayName = String(user?.display_name || username).trim() || username;
-  const accountName = dummyCode && dummyName ? dummyName : displayName;
-  const canonicalUsername = dummyCode && dummyName ? dummyName : username;
+  const dummyLoginName = dummyName || username;
+  const accountName = dummyCode ? dummyLoginName : displayName;
+  const canonicalUsername = dummyCode ? dummyLoginName : username;
   return {
     ok: true,
     accountId: Number(user?.id || 0),
