@@ -241,6 +241,68 @@ function resolveSelectedMapTargets(rawTargets, requestedKeys) {
   return rawTargets.filter((entry) => requested.has(entry.key));
 }
 
+function parseMapDeployPushUrls(rawValue) {
+  const raw = String(rawValue || '').trim();
+  if(!raw) {
+    return [];
+  }
+
+  try {
+    const parsed = JSON.parse(raw);
+    if(Array.isArray(parsed)) {
+      return parsed
+        .map((entry) => String(entry || '').trim())
+        .filter(Boolean);
+    }
+  } catch {
+    // fall through to delimiter-based parsing
+  }
+
+  return raw
+    .split(/[\r\n,;]+/)
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+}
+
+async function notifyMapDeployPush(env, payload) {
+  const urls = parseMapDeployPushUrls(env.MAP_DEPLOY_PUSH_URLS || env.MAP_DEPLOY_PUSH_URL);
+  if(urls.length === 0) {
+    return;
+  }
+
+  const secret = String(env.MAP_DEPLOY_PUSH_SECRET || '').trim();
+  const body = JSON.stringify(payload || {});
+
+  await Promise.allSettled(urls.map(async (url) => {
+    const headers = {
+      'content-type': 'application/json',
+    };
+    if(secret) {
+      headers['x-map-deploy-secret'] = secret;
+    }
+
+    const response = await fetch(url, {
+      method: 'POST',
+      headers,
+      body,
+    });
+
+    if(!response.ok) {
+      const responseText = await response.text().catch(() => '');
+      throw new Error(`Push webhook failed (${response.status}): ${responseText}`);
+    }
+  })).then((results) => {
+    results.forEach((result, index) => {
+      if(result.status === 'rejected') {
+        console.error('map deploy push failed', {
+          url: urls[index],
+          error: String(result.reason?.message || result.reason || 'unknown error'),
+        });
+      }
+    });
+  });
+}
+
 function isManager(user) {
   return getAdminLevel(user) >= 1;
 }
@@ -4027,6 +4089,15 @@ async function handleAdminMapsUpload(context) {
       now,
     ).run();
   }
+
+  await notifyMapDeployPush(env, {
+    event: 'map_deploy_queued',
+    requestedAt: now,
+    mapId,
+    mapName,
+    jobId,
+    targetKeys: selectedTargets.map((entry) => entry.key),
+  });
 
   return json({
     ok: true,
