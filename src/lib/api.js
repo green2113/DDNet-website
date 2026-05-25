@@ -259,3 +259,14 @@ export async function adminRetryMapDeployJob(jobId) {
     method: 'POST',
   });
 }
+
+export async function adminGetServerMaintenance() {
+  return api('/api/admin/server-maintenance', { method: 'GET' });
+}
+
+export async function adminSetServerMaintenance(payload) {
+  return api('/api/admin/server-maintenance', {
+    method: 'POST',
+    body: JSON.stringify(payload || {}),
+  });
+}

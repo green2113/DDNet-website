@@ -59,6 +59,7 @@ const MAP_CATEGORY_VALUES = new Set(['Easy', 'Main', 'Hard', 'Insane', 'Extreme'
 
 let s_TrailSettingsReady = false;
 let s_MapAdminTablesReady = false;
+let s_MaintenanceSettingsReady = false;
 
 function cookieSecure(request) {
   return new URL(request.url).protocol === 'https:';
@@ -239,6 +240,78 @@ function resolveSelectedMapTargets(rawTargets, requestedKeys) {
     return [];
   }
   return rawTargets.filter((entry) => requested.has(entry.key));
+}
+
+function parseMaintenanceServerRoutes(rawValue) {
+  const raw = String(rawValue || '').trim();
+  if(!raw) {
+    return [];
+  }
+
+  try {
+    const parsed = JSON.parse(raw);
+    const items = Array.isArray(parsed) ? parsed : (Array.isArray(parsed?.servers) ? parsed.servers : []);
+    return items
+      .map((entry) => ({
+        key: String(entry?.key || '').trim(),
+        label: String(entry?.label || entry?.key || '').trim(),
+        pushUrl: String(entry?.pushUrl || '').trim(),
+        pushSecret: String(entry?.pushSecret || '').trim(),
+      }))
+      .filter((entry) => entry.key && entry.label);
+  } catch {
+    return [];
+  }
+}
+
+function normalizeMaintenanceAllowIps(rawValue) {
+  return String(rawValue || '')
+    .split(';')
+    .map((entry) => String(entry || '').trim())
+    .filter(Boolean)
+    .join(';');
+}
+
+async function dispatchMaintenancePush(route, payload) {
+  const pushUrl = String(route?.pushUrl || '').trim();
+  if(!pushUrl) {
+    return {
+      ok: false,
+      message: `No pushUrl configured for server '${String(route?.key || '')}'.`,
+    };
+  }
+
+  const headers = {
+    'content-type': 'application/json',
+  };
+  const pushSecret = String(route?.pushSecret || '').trim();
+  if(pushSecret) {
+    headers['x-maintenance-secret'] = pushSecret;
+  }
+
+  try {
+    const response = await fetch(pushUrl, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(payload || {}),
+    });
+    if(!response.ok) {
+      const responseText = await response.text().catch(() => '');
+      return {
+        ok: false,
+        message: `Push failed (${response.status}): ${responseText}`,
+      };
+    }
+    return {
+      ok: true,
+      message: 'Push applied',
+    };
+  } catch(err) {
+    return {
+      ok: false,
+      message: String(err?.message || err || 'Push request failed'),
+    };
+  }
 }
 
 function parseMapDeployPushUrls(rawValue) {
@@ -2350,6 +2423,42 @@ async function ensureMapAdminTables(env) {
   s_MapAdminTablesReady = true;
 }
 
+async function ensureMaintenanceSettingsTable(env) {
+  if(s_MaintenanceSettingsReady) {
+    return;
+  }
+
+  await env.DB.prepare(`
+    CREATE TABLE IF NOT EXISTS admin_server_maintenance_settings (
+      server_key TEXT PRIMARY KEY,
+      enabled INTEGER NOT NULL DEFAULT 0,
+      block_message TEXT,
+      updated_by_account_id INTEGER,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (updated_by_account_id) REFERENCES users(id)
+    )
+  `).run();
+
+  await env.DB.prepare(`
+    CREATE TABLE IF NOT EXISTS admin_server_maintenance_global (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      allow_ips_raw TEXT NOT NULL DEFAULT '',
+      updated_by_account_id INTEGER,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (updated_by_account_id) REFERENCES users(id)
+    )
+  `).run();
+
+  const now = nowIso();
+  await env.DB.prepare(`
+    INSERT INTO admin_server_maintenance_global (id, allow_ips_raw, updated_by_account_id, updated_at)
+    VALUES (1, '', NULL, ?)
+    ON CONFLICT(id) DO NOTHING
+  `).bind(now).run();
+
+  s_MaintenanceSettingsReady = true;
+}
+
 function entitlementRowIsActive(row) {
   if(!row) {
     return false;
@@ -3959,6 +4068,121 @@ async function handleAdminMapTargets(context) {
   return json({ ok: true, targets });
 }
 
+async function handleAdminServerMaintenanceGet(context) {
+  const { env } = context;
+  const auth = await requireOperator(context);
+  if(auth.error) {
+    return auth.error;
+  }
+
+  await ensureMaintenanceSettingsTable(env);
+  const routes = parseMaintenanceServerRoutes(env.MAINTENANCE_SERVER_ROUTES_JSON);
+
+  const rowResult = await env.DB.prepare(`
+    SELECT server_key, enabled, block_message, updated_at
+    FROM admin_server_maintenance_settings
+  `).all();
+  const rows = Array.isArray(rowResult?.results) ? rowResult.results : [];
+  const byKey = new Map(rows.map((row) => [String(row?.server_key || ''), row]));
+
+  const globalRow = await env.DB.prepare(`
+    SELECT allow_ips_raw, updated_at
+    FROM admin_server_maintenance_global
+    WHERE id = 1
+    LIMIT 1
+  `).first();
+
+  const servers = routes.map((route) => {
+    const existing = byKey.get(route.key);
+    return {
+      key: route.key,
+      label: route.label,
+      enabled: Number(existing?.enabled || 0) === 1,
+      blockMessage: String(existing?.block_message || ''),
+      updatedAt: String(existing?.updated_at || ''),
+      pushConfigured: String(route.pushUrl || '').trim() !== '',
+    };
+  });
+
+  return json({
+    ok: true,
+    servers,
+    allowIpsRaw: String(globalRow?.allow_ips_raw || ''),
+    allowIpsUpdatedAt: String(globalRow?.updated_at || ''),
+  });
+}
+
+async function handleAdminServerMaintenanceSet(context) {
+  const { env, request } = context;
+  const auth = await requireOperator(context);
+  if(auth.error) {
+    return auth.error;
+  }
+
+  await ensureMaintenanceSettingsTable(env);
+
+  const body = await parseRequestBody(request);
+  const data = typeof body === 'string' ? {} : (body || {});
+  const routes = parseMaintenanceServerRoutes(env.MAINTENANCE_SERVER_ROUTES_JSON);
+  const routeByKey = new Map(routes.map((entry) => [entry.key, entry]));
+
+  const serverKey = String(data.serverKey || '').trim();
+  if(!serverKey || !routeByKey.has(serverKey)) {
+    return json({ ok: false, message: 'Invalid serverKey.' }, 400);
+  }
+
+  const enabled = Number(data.enabled ? 1 : 0) === 1;
+  const blockMessage = String(data.blockMessage || '').trim().slice(0, 180);
+  const hasAllowIpsRaw = Object.prototype.hasOwnProperty.call(data, 'allowIpsRaw');
+  const allowIpsRaw = hasAllowIpsRaw ? normalizeMaintenanceAllowIps(data.allowIpsRaw) : null;
+  const now = nowIso();
+
+  await env.DB.prepare(`
+    INSERT INTO admin_server_maintenance_settings (
+      server_key, enabled, block_message, updated_by_account_id, updated_at
+    ) VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(server_key) DO UPDATE SET
+      enabled = excluded.enabled,
+      block_message = excluded.block_message,
+      updated_by_account_id = excluded.updated_by_account_id,
+      updated_at = excluded.updated_at
+  `).bind(serverKey, enabled ? 1 : 0, blockMessage || null, auth.user.id, now).run();
+
+  if(allowIpsRaw !== null) {
+    await env.DB.prepare(`
+      UPDATE admin_server_maintenance_global
+      SET allow_ips_raw = ?, updated_by_account_id = ?, updated_at = ?
+      WHERE id = 1
+    `).bind(allowIpsRaw, auth.user.id, now).run();
+  }
+
+  const globalRow = await env.DB.prepare(`
+    SELECT allow_ips_raw
+    FROM admin_server_maintenance_global
+    WHERE id = 1
+    LIMIT 1
+  `).first();
+  const effectiveAllowIpsRaw = String(globalRow?.allow_ips_raw || '');
+
+  const route = routeByKey.get(serverKey);
+  const pushResult = await dispatchMaintenancePush(route, {
+    serverKey,
+    enabled,
+    blockMessage,
+    allowIpsRaw: effectiveAllowIpsRaw,
+    updatedAt: now,
+  });
+
+  return json({
+    ok: true,
+    serverKey,
+    enabled,
+    blockMessage,
+    allowIpsRaw: effectiveAllowIpsRaw,
+    push: pushResult,
+  });
+}
+
 async function handleAdminMapsUpload(context) {
   const { env, request } = context;
   const auth = await requireOperator(context);
@@ -4886,6 +5110,14 @@ export async function onRequest(context) {
 
   if(request.method === 'GET' && path === '/admin/map-targets') {
     return handleAdminMapTargets(context);
+  }
+
+  if(request.method === 'GET' && path === '/admin/server-maintenance') {
+    return handleAdminServerMaintenanceGet(context);
+  }
+
+  if(request.method === 'POST' && path === '/admin/server-maintenance') {
+    return handleAdminServerMaintenanceSet(context);
   }
 
   if(request.method === 'POST' && path === '/admin/maps/upload') {

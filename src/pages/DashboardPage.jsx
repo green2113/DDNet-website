@@ -4,11 +4,13 @@ import {
   adminBanAccount,
   adminDeletePatreonTier,
   adminGetMapTargets,
+  adminGetServerMaintenance,
   adminGrantSubscriptionMonths,
   adminGetPatreonTiers,
   adminListMapDeployJobs,
   adminRetryMapDeployJob,
   adminSearchUsers,
+  adminSetServerMaintenance,
   adminUnbanAccount,
   adminUploadMap,
   adminUpsertPatreonTier,
@@ -238,6 +240,14 @@ export default function DashboardPage() {
   const [adminMapJobsLoading, setAdminMapJobsLoading] = useState(false);
   const [adminMapJobs, setAdminMapJobs] = useState([]);
   const [adminMapRetryingJobId, setAdminMapRetryingJobId] = useState(0);
+  const [adminMaintenanceLoading, setAdminMaintenanceLoading] = useState(false);
+  const [adminMaintenanceSubmitting, setAdminMaintenanceSubmitting] = useState(false);
+  const [adminMaintenanceServers, setAdminMaintenanceServers] = useState([]);
+  const [adminMaintenanceServerKey, setAdminMaintenanceServerKey] = useState('');
+  const [adminMaintenanceEnabled, setAdminMaintenanceEnabled] = useState(false);
+  const [adminMaintenanceMessage, setAdminMaintenanceMessage] = useState('');
+  const [adminMaintenanceAllowIps, setAdminMaintenanceAllowIps] = useState('');
+  const [adminMaintenanceLastPush, setAdminMaintenanceLastPush] = useState(null);
   const [autoLoginEnabled, setAutoLoginEnabled] = useState(Number(user?.auto_login_enabled ?? 1) === 1);
   const [autoLoginStrict, setAutoLoginStrict] = useState(
     Number(user?.auto_login_enabled ?? 1) === 1 && Number(user?.auto_login_strict ?? 0) === 1,
@@ -280,7 +290,7 @@ export default function DashboardPage() {
   const adminLevel = Number(user?.is_admin || 0);
   const isManager = Number.isFinite(adminLevel) && adminLevel >= 1;
   const isOperator = Number.isFinite(adminLevel) && adminLevel >= 2;
-  const isAdminSection = activeSection === 'admin-ban' || activeSection === 'admin-plan-grant' || activeSection === 'admin-map-upload';
+  const isAdminSection = activeSection === 'admin-ban' || activeSection === 'admin-plan-grant' || activeSection === 'admin-map-upload' || activeSection === 'admin-maintenance';
   const canUseInvite = signupCountry === 'TW' || signupCountry === 'KR' || plusActive || hasInviteCode;
   const trailFeatureLocked = subscriptionStateLoading || !plusActive;
   const plusSubscription = subscriptionInfo?.subscription || null;
@@ -460,7 +470,7 @@ export default function DashboardPage() {
   }, [isManager, isAdminSection]);
 
   useEffect(() => {
-    if(!isOperator && (activeSection === 'admin-plan-grant' || activeSection === 'admin-map-upload')) {
+    if(!isOperator && (activeSection === 'admin-plan-grant' || activeSection === 'admin-map-upload' || activeSection === 'admin-maintenance')) {
       setActiveSection(isManager ? 'admin-ban' : 'account');
     }
   }, [isOperator, isManager, activeSection]);
@@ -476,7 +486,7 @@ export default function DashboardPage() {
   }, [plusActive, activeSection]);
 
   useEffect(() => {
-    if(!isManager || (activeSection !== 'admin-ban' && activeSection !== 'admin-plan-grant' && activeSection !== 'admin-map-upload')) {
+    if(!isManager || (activeSection !== 'admin-ban' && activeSection !== 'admin-plan-grant' && activeSection !== 'admin-map-upload' && activeSection !== 'admin-maintenance')) {
       setAdminPickerOpen(false);
       adminUsersRequestIdRef.current += 1;
       return undefined;
@@ -575,6 +585,80 @@ export default function DashboardPage() {
     return () => window.clearInterval(timer);
   }, [isOperator, activeSection]);
 
+  const refreshAdminMaintenance = async () => {
+    setAdminMaintenanceLoading(true);
+    try {
+      const result = await adminGetServerMaintenance();
+      const servers = Array.isArray(result?.servers) ? result.servers : [];
+      const allowIpsRaw = String(result?.allowIpsRaw || '');
+      setAdminMaintenanceServers(servers);
+      setAdminMaintenanceAllowIps(allowIpsRaw);
+
+      const selectedKey = String(adminMaintenanceServerKey || '');
+      const selectedServer = servers.find((entry) => String(entry?.key || '') === selectedKey) || servers[0] || null;
+      const nextKey = String(selectedServer?.key || '');
+      setAdminMaintenanceServerKey(nextKey);
+      setAdminMaintenanceEnabled(Boolean(selectedServer?.enabled));
+      setAdminMaintenanceMessage(String(selectedServer?.blockMessage || 'Server is under maintenance.'));
+      setAdminMaintenanceLastPush(null);
+    } catch (err) {
+      setAdminMaintenanceServers([]);
+      setFeedback({ type: 'error', message: err.message });
+    } finally {
+      setAdminMaintenanceLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if(!isOperator || activeSection !== 'admin-maintenance') {
+      return;
+    }
+    refreshAdminMaintenance();
+  }, [isOperator, activeSection]);
+
+  useEffect(() => {
+    if(activeSection !== 'admin-maintenance') {
+      return;
+    }
+    const selectedServer = adminMaintenanceServers.find((entry) => String(entry?.key || '') === String(adminMaintenanceServerKey || ''));
+    if(!selectedServer) {
+      return;
+    }
+    setAdminMaintenanceEnabled(Boolean(selectedServer?.enabled));
+    setAdminMaintenanceMessage(String(selectedServer?.blockMessage || 'Server is under maintenance.'));
+  }, [activeSection, adminMaintenanceServerKey, adminMaintenanceServers]);
+
+  const onAdminMaintenanceApply = async () => {
+    const serverKey = String(adminMaintenanceServerKey || '').trim();
+    if(!serverKey) {
+      setFeedback({ type: 'error', message: 'Select a server first.' });
+      return;
+    }
+
+    setAdminMaintenanceSubmitting(true);
+    setFeedback(null);
+    try {
+      const result = await adminSetServerMaintenance({
+        serverKey,
+        enabled: adminMaintenanceEnabled ? 1 : 0,
+        blockMessage: String(adminMaintenanceMessage || '').trim(),
+        allowIpsRaw: String(adminMaintenanceAllowIps || ''),
+      });
+      const push = result?.push || null;
+      setAdminMaintenanceLastPush(push);
+      if(push && push.ok === false) {
+        setFeedback({ type: 'error', message: `Saved, but push failed: ${String(push.message || 'unknown error')}` });
+      } else {
+        setFeedback({ type: 'ok', message: 'Maintenance settings updated.' });
+      }
+      await refreshAdminMaintenance();
+    } catch (err) {
+      setFeedback({ type: 'error', message: err.message });
+    } finally {
+      setAdminMaintenanceSubmitting(false);
+    }
+  };
+
   useEffect(() => {
     if(!adminTrailMenuOpen) {
       return undefined;
@@ -605,7 +689,7 @@ export default function DashboardPage() {
   }, [trailModeDisabled, adminTrailMenuOpen]);
 
   useEffect(() => {
-    if(!isManager || (activeSection !== 'admin-ban' && activeSection !== 'admin-plan-grant' && activeSection !== 'admin-map-upload') || !adminPickerOpen) {
+    if(!isManager || (activeSection !== 'admin-ban' && activeSection !== 'admin-plan-grant' && activeSection !== 'admin-map-upload' && activeSection !== 'admin-maintenance') || !adminPickerOpen) {
       return;
     }
     refreshAdminUsers();
@@ -1657,6 +1741,16 @@ ${t('dashboard.accessReasonLine', { reason: banReasonText || '-' })}`
                   <span>{t('dashboard.adminMapUploadNav')}</span>
                 </button>
               ) : null}
+              {isOperator ? (
+                <button
+                  className={`dashboard-nav-btn${activeSection === 'admin-maintenance' ? ' active' : ''}`}
+                  type="button"
+                  onClick={() => setActiveSection('admin-maintenance')}
+                >
+                  <span className="dashboard-nav-icon" aria-hidden="true"><img src={iconSiren} alt="" /></span>
+                  <span>Server Maintenance</span>
+                </button>
+              ) : null}
             </div>
           ) : null}
         </aside>
@@ -2641,6 +2735,121 @@ ${t('dashboard.accessReasonLine', { reason: banReasonText || '-' })}`
                           </div>
                         ))}
                       </div>
+                    </section>
+                  ))
+                )}
+              </div>
+            </article>
+          ) : null}
+
+          {activeSection === 'admin-maintenance' && isOperator ? (
+            <article className="panel">
+              <h3>Server Maintenance</h3>
+              <p className="muted">Toggle maintenance per server, set allowlist IPs and block message, then push instantly.</p>
+
+              <div className="admin-form-grid">
+                <label>
+                  Server
+                  <select
+                    value={adminMaintenanceServerKey}
+                    onChange={(event) => setAdminMaintenanceServerKey(event.target.value)}
+                    disabled={adminMaintenanceLoading || adminMaintenanceSubmitting}
+                  >
+                    {adminMaintenanceServers.length === 0 ? (
+                      <option value="">No servers configured</option>
+                    ) : (
+                      adminMaintenanceServers.map((entry) => (
+                        <option key={String(entry?.key || '')} value={String(entry?.key || '')}>
+                          {String(entry?.label || entry?.key || '-')}
+                        </option>
+                      ))
+                    )}
+                  </select>
+                </label>
+
+                <label>
+                  Maintenance Enabled
+                  <button
+                    className={`trail-toggle${adminMaintenanceEnabled ? ' is-on' : ''}`}
+                    type="button"
+                    role="switch"
+                    aria-checked={adminMaintenanceEnabled}
+                    onClick={() => setAdminMaintenanceEnabled((prev) => !prev)}
+                    disabled={adminMaintenanceLoading || adminMaintenanceSubmitting || !adminMaintenanceServerKey}
+                  >
+                    <span className="trail-toggle-knob" />
+                  </button>
+                </label>
+
+                <label>
+                  Block Message
+                  <input
+                    value={adminMaintenanceMessage}
+                    maxLength={180}
+                    onChange={(event) => setAdminMaintenanceMessage(event.target.value)}
+                    placeholder="Server is under maintenance."
+                    disabled={adminMaintenanceLoading || adminMaintenanceSubmitting || !adminMaintenanceServerKey}
+                  />
+                </label>
+
+                <label>
+                  Allow IPs (semicolon separated)
+                  <input
+                    value={adminMaintenanceAllowIps}
+                    onChange={(event) => setAdminMaintenanceAllowIps(event.target.value)}
+                    placeholder="127.0.0.1;10.0.0.5"
+                    disabled={adminMaintenanceLoading || adminMaintenanceSubmitting}
+                  />
+                </label>
+              </div>
+
+              <div className="admin-actions">
+                <button
+                  className="btn ghost"
+                  type="button"
+                  onClick={refreshAdminMaintenance}
+                  disabled={adminMaintenanceLoading || adminMaintenanceSubmitting}
+                >
+                  {adminMaintenanceLoading ? 'Refreshing...' : 'Refresh'}
+                </button>
+                <button
+                  className="btn admin-main-action"
+                  type="button"
+                  onClick={onAdminMaintenanceApply}
+                  disabled={adminMaintenanceLoading || adminMaintenanceSubmitting || !adminMaintenanceServerKey}
+                >
+                  {adminMaintenanceSubmitting ? 'Applying...' : 'Apply'}
+                </button>
+              </div>
+
+              {adminMaintenanceLastPush ? (
+                <p className={adminMaintenanceLastPush.ok ? 'status-text status-normal' : 'status-text status-permanent'}>
+                  Push: {String(adminMaintenanceLastPush.message || (adminMaintenanceLastPush.ok ? 'ok' : 'failed'))}
+                </p>
+              ) : null}
+
+              <div className="dashboard-nav-divider" />
+              <h3>Server Status</h3>
+              <div className="admin-map-job-list">
+                {adminMaintenanceServers.length === 0 ? (
+                  <div className="admin-user-list-empty">No maintenance server routes configured.</div>
+                ) : (
+                  adminMaintenanceServers.map((entry) => (
+                    <section className="admin-map-job-card" key={String(entry?.key || '')}>
+                      <div className="admin-map-job-head">
+                        <div>
+                          <strong>{String(entry?.label || entry?.key || '-')}</strong>
+                          <p className="muted">{String(entry?.key || '-')}</p>
+                        </div>
+                        <span className={entry?.enabled ? 'status-text status-permanent' : 'status-text status-normal'}>
+                          {entry?.enabled ? 'Maintenance ON' : 'Maintenance OFF'}
+                        </span>
+                      </div>
+                      <div className="admin-map-job-meta">
+                        <span>{entry?.pushConfigured ? 'Push configured' : 'Push not configured'}</span>
+                        <span>{entry?.updatedAt ? formatDateTimeShort(entry.updatedAt, locale) : '-'}</span>
+                      </div>
+                      <p className="muted">{String(entry?.blockMessage || '-')}</p>
                     </section>
                   ))
                 )}
