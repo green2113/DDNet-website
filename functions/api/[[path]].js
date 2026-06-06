@@ -4245,7 +4245,16 @@ async function handleAdminMapsUpload(context) {
     SELECT id FROM admin_maps WHERE map_name = ? LIMIT 1
   `).bind(mapName).first();
   if(existing) {
-    return json({ ok: false, message: 'A map with that name already exists.' }, 409);
+    const activeTarget = await env.DB.prepare(`
+      SELECT 1
+      FROM admin_map_deploy_targets t
+      JOIN admin_map_deploy_jobs j ON j.id = t.job_id
+      WHERE j.map_id = ? AND t.deploy_status != 'cancelled'
+      LIMIT 1
+    `).bind(existing.id).first();
+    if(activeTarget) {
+      return json({ ok: false, message: 'A map with that name already exists.' }, 409);
+    }
   }
 
   const bytes = await mapFile.arrayBuffer();
@@ -4264,29 +4273,53 @@ async function handleAdminMapsUpload(context) {
   });
 
   const now = nowIso();
-  const insertMap = await env.DB.prepare(`
-    INSERT INTO admin_maps (
-      map_name, r2_object_key, file_name, file_sha256, file_size, category, stars, points, author, source_label, notes, enabled, created_by_account_id, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
-  `).bind(
-    mapName,
-    objectKey,
-    fileName,
-    sha256,
-    Number(mapFile.size || 0),
-    category,
-    stars,
-    points,
-    author,
-    sourceLabel || null,
-    notes || null,
-    auth.user.id,
-    now,
-    now,
-  ).run();
-  const mapId = Number(insertMap.meta?.last_row_id || 0);
-  if(!Number.isFinite(mapId) || mapId <= 0) {
-    return json({ ok: false, message: 'Failed to create map record.' }, 500);
+  let mapId = 0;
+
+  if(existing) {
+    await env.DB.prepare(`
+      UPDATE admin_maps
+      SET r2_object_key = ?, file_name = ?, file_sha256 = ?, file_size = ?, category = ?, stars = ?, points = ?, author = ?, source_label = ?, notes = ?, enabled = 1, updated_at = ?
+      WHERE id = ?
+    `).bind(
+      objectKey,
+      fileName,
+      sha256,
+      Number(mapFile.size || 0),
+      category,
+      stars,
+      points,
+      author,
+      sourceLabel || null,
+      notes || null,
+      now,
+      existing.id,
+    ).run();
+    mapId = existing.id;
+  } else {
+    const insertMap = await env.DB.prepare(`
+      INSERT INTO admin_maps (
+        map_name, r2_object_key, file_name, file_sha256, file_size, category, stars, points, author, source_label, notes, enabled, created_by_account_id, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
+    `).bind(
+      mapName,
+      objectKey,
+      fileName,
+      sha256,
+      Number(mapFile.size || 0),
+      category,
+      stars,
+      points,
+      author,
+      sourceLabel || null,
+      notes || null,
+      auth.user.id,
+      now,
+      now,
+    ).run();
+    mapId = Number(insertMap.meta?.last_row_id || 0);
+    if(!Number.isFinite(mapId) || mapId <= 0) {
+      return json({ ok: false, message: 'Failed to create map record.' }, 500);
+    }
   }
 
   const insertJob = await env.DB.prepare(`
