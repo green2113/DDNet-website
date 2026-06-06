@@ -53,8 +53,8 @@ const PATREON_SYNC_STALE_DEFAULT_SECONDS = 6 * 60 * 60;
 const TRAIL_MODE_MIN = 1;
 const TRAIL_MODE_MAX = 3;
 const MAP_UPLOAD_MAX_BYTES = 20 * 1024 * 1024;
-const MAP_DEPLOY_STATUS_VALUES = new Set(['queued', 'copying_map', 'updating_config', 'generating_votes', 'syncing_database', 'completed', 'failed']);
-const MAP_JOB_STATUS_VALUES = new Set(['queued', 'running', 'completed', 'failed']);
+const MAP_DEPLOY_STATUS_VALUES = new Set(['queued', 'copying_map', 'updating_config', 'generating_votes', 'syncing_database', 'completed', 'failed', 'cancelled']);
+const MAP_JOB_STATUS_VALUES = new Set(['queued', 'running', 'completed', 'failed', 'cancelled']);
 const MAP_CATEGORY_VALUES = new Set(['Easy', 'Main', 'Hard', 'Insane', 'Extreme', 'Mod', 'Unknown']);
 
 let s_TrailSettingsReady = false;
@@ -4427,7 +4427,8 @@ async function refreshMapDeployJobStatus(env, jobId) {
   const statuses = targets.map((entry) => String(entry?.deploy_status || ''));
   const allCompleted = statuses.every((status) => status === 'completed');
   const hasFailed = statuses.some((status) => status === 'failed');
-  const hasRunning = statuses.some((status) => status !== 'queued' && status !== 'completed' && status !== 'failed');
+  const hasCancelled = statuses.some((status) => status === 'cancelled');
+  const hasRunning = statuses.some((status) => status !== 'queued' && status !== 'completed' && status !== 'failed' && status !== 'cancelled');
   const hasQueued = statuses.some((status) => status === 'queued');
 
   let nextJobStatus = 'queued';
@@ -4435,6 +4436,8 @@ async function refreshMapDeployJobStatus(env, jobId) {
     nextJobStatus = 'completed';
   } else if(!hasRunning && !hasQueued && hasFailed) {
     nextJobStatus = 'failed';
+  } else if(!hasRunning && !hasQueued && hasCancelled && !hasFailed) {
+    nextJobStatus = 'cancelled';
   } else if(hasRunning || hasFailed || statuses.some((status) => status === 'completed')) {
     nextJobStatus = 'running';
   }
@@ -4552,6 +4555,41 @@ async function handleAdminMapDeployJobRetry(context, jobIdRaw) {
     WHERE id = ?
   `).bind(jobId).run();
 
+  const refreshed = await loadMapDeployJobDetails(env, jobId);
+  return json({ ok: true, job: refreshed });
+}
+
+async function handleAdminMapDeployJobCancel(context, jobIdRaw) {
+  const { env } = context;
+  const auth = await requireOperator(context);
+  if(auth.error) {
+    return auth.error;
+  }
+  await ensureMapAdminTables(env);
+
+  const jobId = Math.floor(Number(jobIdRaw || 0));
+  if(!Number.isFinite(jobId) || jobId <= 0) {
+    return json({ ok: false, message: 'Invalid job id.' }, 400);
+  }
+
+  const job = await loadMapDeployJobDetails(env, jobId);
+  if(!job) {
+    return json({ ok: false, message: 'Deploy job not found.' }, 404);
+  }
+
+  const queuedTargets = (job.targets || []).filter((entry) => String(entry?.deploy_status || '') === 'queued');
+  if(queuedTargets.length === 0) {
+    return json({ ok: false, message: 'No queued deploy targets to cancel.' }, 400);
+  }
+
+  const now = nowIso();
+  await env.DB.prepare(`
+    UPDATE admin_map_deploy_targets
+    SET deploy_status = 'cancelled', error_message = 'Cancelled by admin', updated_at = ?
+    WHERE job_id = ? AND deploy_status = 'queued'
+  `).bind(now, jobId).run();
+
+  await refreshMapDeployJobStatus(env, jobId);
   const refreshed = await loadMapDeployJobDetails(env, jobId);
   return json({ ok: true, job: refreshed });
 }
@@ -5146,6 +5184,11 @@ export async function onRequest(context) {
   if(request.method === 'POST' && path.startsWith('/admin/maps/deploy-jobs/') && path.endsWith('/retry')) {
     const jobIdRaw = decodeURIComponent(path.slice('/admin/maps/deploy-jobs/'.length, -'/retry'.length));
     return handleAdminMapDeployJobRetry(context, jobIdRaw);
+  }
+
+  if(request.method === 'POST' && path.startsWith('/admin/maps/deploy-jobs/') && path.endsWith('/cancel')) {
+    const jobIdRaw = decodeURIComponent(path.slice('/admin/maps/deploy-jobs/'.length, -'/cancel'.length));
+    return handleAdminMapDeployJobCancel(context, jobIdRaw);
   }
 
   if(request.method === 'POST' && path === '/internal/map-deploy/claim') {

@@ -260,13 +260,184 @@ export async function adminRetryMapDeployJob(jobId) {
   });
 }
 
+export async function adminCancelMapDeployJob(jobId) {
+  return api(`/api/admin/maps/deploy-jobs/${encodeURIComponent(String(jobId || ''))}/cancel`, {
+    method: 'POST',
+  });
+}
+
+function parseMaintenanceRoutes() {
+  const raw = import.meta.env.VITE_MAINTENANCE_SERVER_ROUTES_JSON || '[]';
+  try {
+    const parsed = JSON.parse(raw);
+    const entries = Array.isArray(parsed) ? parsed : [];
+    return entries
+      .map((entry) => ({
+        key: String(entry?.key || '').trim(),
+        label: String(entry?.label || entry?.key || '').trim(),
+        url: String(entry?.url || entry?.pushUrl || entry?.maintenanceUrl || '').trim(),
+        secret: String(entry?.secret || entry?.pushSecret || '').trim(),
+      }))
+      .filter((entry) => entry.key && entry.url);
+  } catch {
+    return [];
+  }
+}
+
+function maintenanceHeaders(route) {
+  const headers = {
+    'content-type': 'application/json',
+  };
+  if(route?.secret) {
+    headers['x-maintenance-secret'] = route.secret;
+  }
+  return headers;
+}
+
+async function fetchMaintenanceRoute(route, path, options = {}) {
+  const response = await fetch(`${route.url}${path}`, {
+    ...options,
+    headers: {
+      ...(options.headers || {}),
+      ...maintenanceHeaders(route),
+    },
+  });
+
+  const data = await response.json().catch(() => ({ ok: false, message: 'Invalid API response' }));
+  if(!response.ok) {
+    const error = new Error(data.message || `Request failed (${response.status})`);
+    error.status = response.status;
+    error.payload = data;
+    throw error;
+  }
+
+  return data;
+}
+
 export async function adminGetServerMaintenance() {
-  return api('/api/admin/server-maintenance', { method: 'GET' });
+  const routes = parseMaintenanceRoutes();
+  const results = await Promise.all(routes.map(async (route) => {
+    try {
+      const response = await fetchMaintenanceRoute(route, '', { method: 'GET' });
+      const state = response?.state || {};
+      return {
+        key: route.key,
+        label: route.label,
+        url: route.url,
+        pushConfigured: Boolean(route.url),
+        enabled: Boolean(state?.maintenance?.enabled),
+        allowIpsRaw: String(state?.maintenance?.allowIpsRaw || ''),
+        blockMessage: String(state?.maintenance?.blockMessage || ''),
+        updatedAt: String(state?.maintenance?.updatedAt || ''),
+        schedules: Array.isArray(state?.schedules) ? state.schedules : [],
+        announcement: state?.announcement || null,
+        rawState: state,
+        ok: true,
+      };
+    } catch (error) {
+      return {
+        key: route.key,
+        label: route.label,
+        url: route.url,
+        pushConfigured: Boolean(route.url),
+        enabled: false,
+        allowIpsRaw: '',
+        blockMessage: '',
+        updatedAt: '',
+        schedules: [],
+        announcement: null,
+        rawState: null,
+        ok: false,
+        error: error?.message || 'Request failed',
+      };
+    }
+  }));
+
+  return {
+    ok: true,
+    servers: results,
+    schedules: results.flatMap((entry) => (Array.isArray(entry.schedules) ? entry.schedules.map((schedule) => ({
+      ...schedule,
+      serverKey: entry.key,
+      serverLabel: entry.label,
+    })) : [])),
+  };
 }
 
 export async function adminSetServerMaintenance(payload) {
-  return api('/api/admin/server-maintenance', {
+  const routes = parseMaintenanceRoutes();
+  const serverKey = String(payload?.serverKey || '').trim();
+  const route = routes.find((entry) => entry.key === serverKey);
+  if(!route) {
+    throw new Error('Maintenance server route not configured');
+  }
+
+  return fetchMaintenanceRoute(route, '', {
     method: 'POST',
-    body: JSON.stringify(payload || {}),
+    body: JSON.stringify({
+      kind: 'manual',
+      serverKey,
+      enabled: Number(payload?.enabled ? 1 : 0) === 1,
+      blockMessage: String(payload?.blockMessage || '').trim(),
+      allowIpsRaw: String(payload?.allowIpsRaw || '').trim(),
+    }),
+  });
+}
+
+export async function adminCreateServerMaintenanceSchedule(payload) {
+  const routes = parseMaintenanceRoutes();
+  const serverKeys = Array.isArray(payload?.serverKeys)
+    ? payload.serverKeys.map((entry) => String(entry || '').trim()).filter(Boolean)
+    : [];
+  if(serverKeys.length === 0) {
+    throw new Error('Select at least one server');
+  }
+
+  const results = [];
+  for(const serverKey of serverKeys) {
+    const route = routes.find((entry) => entry.key === serverKey);
+    if(!route) {
+      throw new Error(`Maintenance route not configured for ${serverKey}`);
+    }
+    try {
+      const response = await fetchMaintenanceRoute(route, '', {
+        method: 'POST',
+        body: JSON.stringify({
+          kind: 'schedule',
+          serverKey,
+          startAt: String(payload?.startAt || ''),
+          announcementIntervalMinutes: Number(payload?.announcementIntervalMinutes || 5),
+          blockMessage: String(payload?.blockMessage || '').trim(),
+          allowIpsRaw: String(payload?.allowIpsRaw || '').trim(),
+        }),
+      });
+      results.push({ serverKey, ok: true, response });
+    } catch (error) {
+      results.push({ serverKey, ok: false, error: error?.message || 'Request failed' });
+    }
+  }
+
+  return { ok: true, results };
+}
+
+export async function adminCancelServerMaintenanceSchedule(payload) {
+  const routes = parseMaintenanceRoutes();
+  const serverKey = String(payload?.serverKey || '').trim();
+  const scheduleId = String(payload?.scheduleId || '').trim();
+  if(!serverKey || !scheduleId) {
+    throw new Error('serverKey and scheduleId are required');
+  }
+  const route = routes.find((entry) => entry.key === serverKey);
+  if(!route) {
+    throw new Error('Maintenance server route not configured');
+  }
+
+  return fetchMaintenanceRoute(route, '', {
+    method: 'POST',
+    body: JSON.stringify({
+      kind: 'cancel-schedule',
+      serverKey,
+      scheduleId,
+    }),
   });
 }

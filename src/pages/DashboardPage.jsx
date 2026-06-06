@@ -9,7 +9,10 @@ import {
   adminGetPatreonTiers,
   adminListMapDeployJobs,
   adminRetryMapDeployJob,
+  adminCancelMapDeployJob,
   adminSearchUsers,
+  adminCreateServerMaintenanceSchedule,
+  adminCancelServerMaintenanceSchedule,
   adminSetServerMaintenance,
   adminUnbanAccount,
   adminUploadMap,
@@ -90,6 +93,256 @@ function formatDateTimeShort(value, locale) {
   }).format(new Date(valueMs));
 }
 
+const MAINTENANCE_UI_TEXT = {
+  en: {
+    nav: 'Server Maintenance',
+    title: 'Server Maintenance',
+    body: 'Toggle maintenance per server, set allowlist IPs and block message, then push instantly.',
+    server: 'Server',
+    enabled: 'Maintenance Enabled',
+    blockMessage: 'Block Message',
+    allowIps: 'Allow IPs (semicolon separated)',
+    refresh: 'Refresh',
+    refreshing: 'Refreshing...',
+    apply: 'Apply',
+    applying: 'Applying...',
+    result: 'Result',
+    scheduleTitle: 'Maintenance Schedule',
+    scheduleBody: 'Select one or more servers, choose a date and time, and maintenance can be planned from the dashboard.',
+    servers: 'Servers',
+    startDate: 'Start Date',
+    startTime: 'Start Time',
+    interval: 'Announcement interval (minutes)',
+    scheduleBlockMessage: 'Schedule block message',
+    scheduleAllowIps: 'Schedule allow IPs',
+    saveSchedule: 'Save Schedule',
+    scheduling: 'Scheduling...',
+    serverStatus: 'Server Status',
+    noRoutes: 'No maintenance server routes configured.',
+    maintenanceOn: 'Maintenance ON',
+    maintenanceOff: 'Maintenance OFF',
+    pushConfigured: 'Push configured',
+    pushNotConfigured: 'Push not configured',
+    scheduledJobs: 'Scheduled Jobs',
+    noSchedules: 'No maintenance schedules yet.',
+    start: 'Start',
+    activate: 'Activate',
+    intervalShort: 'Interval',
+    canceled: 'Canceled',
+    active: 'Active',
+    scheduled: 'Scheduled',
+    cancel: 'Cancel',
+    canceling: 'Canceling...',
+    errSelectServer: 'Select a server first.',
+    errSelectAtLeastOne: 'Select at least one server.',
+    errDateTime: 'Set a valid date and time.',
+    okUpdated: 'Maintenance settings updated.',
+    okScheduled: 'Maintenance schedule saved.',
+    okCanceled: 'Maintenance schedule canceled.',
+  },
+  'zh-TW': {
+    nav: '伺服器維護',
+    title: '伺服器維護',
+    body: '可針對各伺服器切換維護模式、設定允許 IP 與封鎖訊息，並立即套用。',
+    server: '伺服器',
+    enabled: '維護模式',
+    blockMessage: '封鎖訊息',
+    allowIps: '允許 IP（以分號分隔）',
+    refresh: '重新整理',
+    refreshing: '重新整理中...',
+    apply: '套用',
+    applying: '套用中...',
+    result: '結果',
+    scheduleTitle: '維護排程',
+    scheduleBody: '可選擇一個以上伺服器，設定日期與時間後由儀表板管理排程。',
+    servers: '伺服器清單',
+    startDate: '開始日期',
+    startTime: '開始時間',
+    interval: '公告間隔（分鐘）',
+    scheduleBlockMessage: '排程封鎖訊息',
+    scheduleAllowIps: '排程允許 IP',
+    saveSchedule: '儲存排程',
+    scheduling: '儲存中...',
+    serverStatus: '伺服器狀態',
+    noRoutes: '尚未設定維護伺服器路由。',
+    maintenanceOn: '維護 ON',
+    maintenanceOff: '維護 OFF',
+    pushConfigured: '已設定推送',
+    pushNotConfigured: '未設定推送',
+    scheduledJobs: '排程列表',
+    noSchedules: '目前沒有維護排程。',
+    start: '開始',
+    activate: '啟用',
+    intervalShort: '間隔',
+    canceled: '已取消',
+    active: '啟用中',
+    scheduled: '已排程',
+    cancel: '取消',
+    canceling: '取消中...',
+    errSelectServer: '請先選擇伺服器。',
+    errSelectAtLeastOne: '請至少選擇一個伺服器。',
+    errDateTime: '請輸入有效的日期與時間。',
+    okUpdated: '維護設定已更新。',
+    okScheduled: '維護排程已儲存。',
+    okCanceled: '維護排程已取消。',
+  },
+  'zh-CN': {
+    nav: '服务器维护',
+    title: '服务器维护',
+    body: '可按服务器切换维护、设置允许 IP 与拦截消息，并立即应用。',
+    server: '服务器',
+    enabled: '维护模式',
+    blockMessage: '拦截消息',
+    allowIps: '允许 IP（分号分隔）',
+    refresh: '刷新',
+    refreshing: '刷新中...',
+    apply: '应用',
+    applying: '应用中...',
+    result: '结果',
+    scheduleTitle: '维护计划',
+    scheduleBody: '可选择一个或多个服务器并设置日期时间，在仪表盘统一管理。',
+    servers: '服务器列表',
+    startDate: '开始日期',
+    startTime: '开始时间',
+    interval: '公告间隔（分钟）',
+    scheduleBlockMessage: '计划拦截消息',
+    scheduleAllowIps: '计划允许 IP',
+    saveSchedule: '保存计划',
+    scheduling: '保存中...',
+    serverStatus: '服务器状态',
+    noRoutes: '未配置维护服务器路由。',
+    maintenanceOn: '维护 ON',
+    maintenanceOff: '维护 OFF',
+    pushConfigured: '已配置推送',
+    pushNotConfigured: '未配置推送',
+    scheduledJobs: '计划列表',
+    noSchedules: '暂无维护计划。',
+    start: '开始',
+    activate: '启用',
+    intervalShort: '间隔',
+    canceled: '已取消',
+    active: '进行中',
+    scheduled: '已计划',
+    cancel: '取消',
+    canceling: '取消中...',
+    errSelectServer: '请先选择服务器。',
+    errSelectAtLeastOne: '请至少选择一个服务器。',
+    errDateTime: '请设置有效的日期和时间。',
+    okUpdated: '维护设置已更新。',
+    okScheduled: '维护计划已保存。',
+    okCanceled: '维护计划已取消。',
+  },
+  ko: {
+    nav: '서버 점검',
+    title: '서버 점검',
+    body: '서버별 점검 토글, 허용 IP, 차단 메시지를 설정하고 즉시 적용할 수 있습니다.',
+    server: '서버',
+    enabled: '점검 모드',
+    blockMessage: '차단 메시지',
+    allowIps: '허용 IP (세미콜론 구분)',
+    refresh: '새로고침',
+    refreshing: '새로고침 중...',
+    apply: '적용',
+    applying: '적용 중...',
+    result: '결과',
+    scheduleTitle: '점검 예약',
+    scheduleBody: '서버를 선택하고 날짜/시간을 지정해 대시보드에서 점검 일정을 등록할 수 있습니다.',
+    servers: '서버 선택',
+    startDate: '시작 날짜',
+    startTime: '시작 시간',
+    interval: '공지 간격(분)',
+    scheduleBlockMessage: '예약 차단 메시지',
+    scheduleAllowIps: '예약 허용 IP',
+    saveSchedule: '예약 저장',
+    scheduling: '예약 저장 중...',
+    serverStatus: '서버 상태',
+    noRoutes: '설정된 점검 서버 경로가 없습니다.',
+    maintenanceOn: '점검 ON',
+    maintenanceOff: '점검 OFF',
+    pushConfigured: '푸시 설정됨',
+    pushNotConfigured: '푸시 미설정',
+    scheduledJobs: '예약 목록',
+    noSchedules: '등록된 점검 예약이 없습니다.',
+    start: '시작',
+    activate: '활성화',
+    intervalShort: '간격',
+    canceled: '취소됨',
+    active: '활성',
+    scheduled: '예약됨',
+    cancel: '취소',
+    canceling: '취소 중...',
+    errSelectServer: '먼저 서버를 선택해 주세요.',
+    errSelectAtLeastOne: '최소 1개 서버를 선택해 주세요.',
+    errDateTime: '유효한 날짜와 시간을 입력해 주세요.',
+    okUpdated: '점검 설정이 업데이트되었습니다.',
+    okScheduled: '점검 예약이 저장되었습니다.',
+    okCanceled: '점검 예약이 취소되었습니다.',
+  },
+  ja: {
+    nav: 'サーバーメンテナンス',
+    title: 'サーバーメンテナンス',
+    body: 'サーバーごとにメンテナンス切替、許可 IP、ブロックメッセージを設定して即時反映できます。',
+    server: 'サーバー',
+    enabled: 'メンテナンス有効',
+    blockMessage: 'ブロックメッセージ',
+    allowIps: '許可 IP（セミコロン区切り）',
+    refresh: '更新',
+    refreshing: '更新中...',
+    apply: '適用',
+    applying: '適用中...',
+    result: '結果',
+    scheduleTitle: 'メンテナンス予約',
+    scheduleBody: 'サーバーを選択し、日付と時刻を指定してダッシュボードから予約できます。',
+    servers: 'サーバー選択',
+    startDate: '開始日',
+    startTime: '開始時刻',
+    interval: '告知間隔（分）',
+    scheduleBlockMessage: '予約時ブロックメッセージ',
+    scheduleAllowIps: '予約時許可 IP',
+    saveSchedule: '予約を保存',
+    scheduling: '保存中...',
+    serverStatus: 'サーバー状態',
+    noRoutes: 'メンテナンス対象サーバーの設定がありません。',
+    maintenanceOn: 'メンテ ON',
+    maintenanceOff: 'メンテ OFF',
+    pushConfigured: 'Push 設定済み',
+    pushNotConfigured: 'Push 未設定',
+    scheduledJobs: '予約一覧',
+    noSchedules: '予約はまだありません。',
+    start: '開始',
+    activate: '有効化',
+    intervalShort: '間隔',
+    canceled: 'キャンセル済み',
+    active: '実行中',
+    scheduled: '予約済み',
+    cancel: 'キャンセル',
+    canceling: 'キャンセル中...',
+    errSelectServer: '先にサーバーを選択してください。',
+    errSelectAtLeastOne: '少なくとも 1 台のサーバーを選択してください。',
+    errDateTime: '有効な日付と時刻を設定してください。',
+    okUpdated: 'メンテナンス設定を更新しました。',
+    okScheduled: 'メンテナンス予約を保存しました。',
+    okCanceled: 'メンテナンス予約をキャンセルしました。',
+  },
+};
+
+function getMaintenanceUiText(locale) {
+  const key = String(locale || '').toLowerCase();
+  if(key.startsWith('zh-tw')) {
+    return MAINTENANCE_UI_TEXT['zh-TW'];
+  }
+  if(key.startsWith('zh-cn')) {
+    return MAINTENANCE_UI_TEXT['zh-CN'];
+  }
+  if(key.startsWith('ko')) {
+    return MAINTENANCE_UI_TEXT.ko;
+  }
+  if(key.startsWith('ja')) {
+    return MAINTENANCE_UI_TEXT.ja;
+  }
+  return MAINTENANCE_UI_TEXT.en;
+}
+
 function EyeIcon() {
   return (
     <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
@@ -157,6 +410,7 @@ function LockIcon() {
 export default function DashboardPage() {
   const { user, refresh, logout } = useAuth();
   const { t, locale } = useI18n();
+  const maintenanceText = getMaintenanceUiText(locale);
   const navigate = useNavigate();
   const [activeSection, setActiveSection] = useState('account');
   const [feedback, setFeedback] = useState(null);
@@ -240,6 +494,7 @@ export default function DashboardPage() {
   const [adminMapJobsLoading, setAdminMapJobsLoading] = useState(false);
   const [adminMapJobs, setAdminMapJobs] = useState([]);
   const [adminMapRetryingJobId, setAdminMapRetryingJobId] = useState(0);
+  const [adminMapCancelingJobId, setAdminMapCancelingJobId] = useState(0);
   const [adminMaintenanceLoading, setAdminMaintenanceLoading] = useState(false);
   const [adminMaintenanceSubmitting, setAdminMaintenanceSubmitting] = useState(false);
   const [adminMaintenanceServers, setAdminMaintenanceServers] = useState([]);
@@ -248,6 +503,15 @@ export default function DashboardPage() {
   const [adminMaintenanceMessage, setAdminMaintenanceMessage] = useState('');
   const [adminMaintenanceAllowIps, setAdminMaintenanceAllowIps] = useState('');
   const [adminMaintenanceLastPush, setAdminMaintenanceLastPush] = useState(null);
+  const [adminMaintenanceSchedules, setAdminMaintenanceSchedules] = useState([]);
+  const [adminMaintenanceScheduleServerKeys, setAdminMaintenanceScheduleServerKeys] = useState([]);
+  const [adminMaintenanceScheduleDate, setAdminMaintenanceScheduleDate] = useState('');
+  const [adminMaintenanceScheduleTime, setAdminMaintenanceScheduleTime] = useState('');
+  const [adminMaintenanceScheduleInterval, setAdminMaintenanceScheduleInterval] = useState('5');
+  const [adminMaintenanceScheduleMessage, setAdminMaintenanceScheduleMessage] = useState('');
+  const [adminMaintenanceScheduleAllowIps, setAdminMaintenanceScheduleAllowIps] = useState('');
+  const [adminMaintenanceScheduleSubmitting, setAdminMaintenanceScheduleSubmitting] = useState(false);
+  const [adminMaintenanceCancelingScheduleId, setAdminMaintenanceCancelingScheduleId] = useState('');
   const [autoLoginEnabled, setAutoLoginEnabled] = useState(Number(user?.auto_login_enabled ?? 1) === 1);
   const [autoLoginStrict, setAutoLoginStrict] = useState(
     Number(user?.auto_login_enabled ?? 1) === 1 && Number(user?.auto_login_strict ?? 0) === 1,
@@ -353,6 +617,8 @@ export default function DashboardPage() {
       return t('dashboard.adminMapStatusCompleted');
     case 'failed':
       return t('dashboard.adminMapStatusFailed');
+    case 'cancelled':
+      return t('dashboard.adminMapStatusCancelled');
     case 'running':
       return t('dashboard.adminMapJobRunning');
     default:
@@ -364,6 +630,7 @@ export default function DashboardPage() {
     case 'completed':
       return 'status-text status-normal';
     case 'failed':
+    case 'cancelled':
       return 'status-text status-permanent';
     default:
       return 'status-text status-temporary';
@@ -590,9 +857,9 @@ export default function DashboardPage() {
     try {
       const result = await adminGetServerMaintenance();
       const servers = Array.isArray(result?.servers) ? result.servers : [];
-      const allowIpsRaw = String(result?.allowIpsRaw || '');
       setAdminMaintenanceServers(servers);
-      setAdminMaintenanceAllowIps(allowIpsRaw);
+      const schedules = Array.isArray(result?.schedules) ? result.schedules : [];
+      setAdminMaintenanceSchedules(schedules);
 
       const selectedKey = String(adminMaintenanceServerKey || '');
       const selectedServer = servers.find((entry) => String(entry?.key || '') === selectedKey) || servers[0] || null;
@@ -600,7 +867,27 @@ export default function DashboardPage() {
       setAdminMaintenanceServerKey(nextKey);
       setAdminMaintenanceEnabled(Boolean(selectedServer?.enabled));
       setAdminMaintenanceMessage(String(selectedServer?.blockMessage || 'Server is under maintenance.'));
-      setAdminMaintenanceLastPush(null);
+      setAdminMaintenanceAllowIps(String(selectedServer?.allowIpsRaw || ''));
+      setAdminMaintenanceScheduleMessage((prev) => String(prev || selectedServer?.blockMessage || 'Server is under maintenance.'));
+      setAdminMaintenanceScheduleAllowIps((prev) => String(prev || selectedServer?.allowIpsRaw || ''));
+
+      const nextScheduleServerKeys = adminMaintenanceScheduleServerKeys.filter((key) => servers.some((entry) => String(entry?.key || '') === String(key || '')));
+      setAdminMaintenanceScheduleServerKeys(nextScheduleServerKeys.length > 0 ? nextScheduleServerKeys : (nextKey ? [nextKey] : []));
+
+      if(!adminMaintenanceScheduleDate && !adminMaintenanceScheduleTime && schedules.length > 0) {
+        const firstScheduleStart = String(schedules[0]?.startAt || '');
+        const startMs = Date.parse(firstScheduleStart);
+        if(Number.isFinite(startMs) && startMs > 0) {
+          const local = new Date(startMs);
+          const yyyy = local.getFullYear();
+          const mm = String(local.getMonth() + 1).padStart(2, '0');
+          const dd = String(local.getDate()).padStart(2, '0');
+          const hh = String(local.getHours()).padStart(2, '0');
+          const min = String(local.getMinutes()).padStart(2, '0');
+          setAdminMaintenanceScheduleDate(`${yyyy}-${mm}-${dd}`);
+          setAdminMaintenanceScheduleTime(`${hh}:${min}`);
+        }
+      }
     } catch (err) {
       setAdminMaintenanceServers([]);
       setFeedback({ type: 'error', message: err.message });
@@ -626,12 +913,13 @@ export default function DashboardPage() {
     }
     setAdminMaintenanceEnabled(Boolean(selectedServer?.enabled));
     setAdminMaintenanceMessage(String(selectedServer?.blockMessage || 'Server is under maintenance.'));
+    setAdminMaintenanceAllowIps(String(selectedServer?.allowIpsRaw || ''));
   }, [activeSection, adminMaintenanceServerKey, adminMaintenanceServers]);
 
   const onAdminMaintenanceApply = async () => {
     const serverKey = String(adminMaintenanceServerKey || '').trim();
     if(!serverKey) {
-      setFeedback({ type: 'error', message: 'Select a server first.' });
+      setFeedback({ type: 'error', message: maintenanceText.errSelectServer });
       return;
     }
 
@@ -644,18 +932,83 @@ export default function DashboardPage() {
         blockMessage: String(adminMaintenanceMessage || '').trim(),
         allowIpsRaw: String(adminMaintenanceAllowIps || ''),
       });
-      const push = result?.push || null;
-      setAdminMaintenanceLastPush(push);
-      if(push && push.ok === false) {
-        setFeedback({ type: 'error', message: `Saved, but push failed: ${String(push.message || 'unknown error')}` });
+      setAdminMaintenanceLastPush(result || null);
+      if(result && result.ok === false) {
+        setFeedback({ type: 'error', message: `Saved, but push failed: ${String(result.message || 'unknown error')}` });
       } else {
-        setFeedback({ type: 'ok', message: 'Maintenance settings updated.' });
+        setFeedback({ type: 'ok', message: maintenanceText.okUpdated });
       }
       await refreshAdminMaintenance();
     } catch (err) {
       setFeedback({ type: 'error', message: err.message });
     } finally {
       setAdminMaintenanceSubmitting(false);
+    }
+  };
+
+  const buildAdminMaintenanceScheduleStartAt = () => {
+    const date = String(adminMaintenanceScheduleDate || '').trim();
+    const time = String(adminMaintenanceScheduleTime || '').trim();
+    if(!date || !time) {
+      return '';
+    }
+    const startAt = new Date(`${date}T${time}`);
+    if(Number.isNaN(startAt.getTime())) {
+      return '';
+    }
+    return startAt.toISOString();
+  };
+
+  const onAdminMaintenanceScheduleApply = async () => {
+    const serverKeys = Array.isArray(adminMaintenanceScheduleServerKeys)
+      ? adminMaintenanceScheduleServerKeys.map((entry) => String(entry || '').trim()).filter(Boolean)
+      : [];
+    if(serverKeys.length === 0) {
+      setFeedback({ type: 'error', message: maintenanceText.errSelectAtLeastOne });
+      return;
+    }
+
+    const startAt = buildAdminMaintenanceScheduleStartAt();
+    if(!startAt) {
+      setFeedback({ type: 'error', message: maintenanceText.errDateTime });
+      return;
+    }
+
+    setAdminMaintenanceScheduleSubmitting(true);
+    setFeedback(null);
+    try {
+      await adminCreateServerMaintenanceSchedule({
+        serverKeys,
+        startAt,
+        announcementIntervalMinutes: Number(adminMaintenanceScheduleInterval || 5),
+        blockMessage: String(adminMaintenanceScheduleMessage || adminMaintenanceMessage || '').trim(),
+        allowIpsRaw: String(adminMaintenanceScheduleAllowIps || adminMaintenanceAllowIps || '').trim(),
+      });
+      setFeedback({ type: 'ok', message: maintenanceText.okScheduled });
+      await refreshAdminMaintenance();
+    } catch (err) {
+      setFeedback({ type: 'error', message: err.message });
+    } finally {
+      setAdminMaintenanceScheduleSubmitting(false);
+    }
+  };
+
+  const onAdminMaintenanceCancelSchedule = async (schedule) => {
+    const scheduleId = String(schedule?.id || '').trim();
+    const serverKey = String(schedule?.serverKey || schedule?.server_key || '').trim();
+    if(!scheduleId || !serverKey) {
+      return;
+    }
+    setAdminMaintenanceCancelingScheduleId(scheduleId);
+    setFeedback(null);
+    try {
+      await adminCancelServerMaintenanceSchedule({ serverKey, scheduleId });
+      setFeedback({ type: 'ok', message: maintenanceText.okCanceled });
+      await refreshAdminMaintenance();
+    } catch (err) {
+      setFeedback({ type: 'error', message: err.message });
+    } finally {
+      setAdminMaintenanceCancelingScheduleId('');
     }
   };
 
@@ -1424,6 +1777,23 @@ export default function DashboardPage() {
     }
   };
 
+  const onAdminMapCancel = async (jobId) => {
+    const normalizedJobId = Math.floor(Number(jobId || 0));
+    if(!Number.isFinite(normalizedJobId) || normalizedJobId <= 0 || adminMapRetryingJobId > 0 || adminMapCancelingJobId > 0) {
+      return;
+    }
+    setAdminMapCancelingJobId(normalizedJobId);
+    setFeedback(null);
+    try {
+      await adminCancelMapDeployJob(normalizedJobId);
+      await refreshAdminMapJobs();
+    } catch (err) {
+      setFeedback({ type: 'error', message: err.message });
+    } finally {
+      setAdminMapCancelingJobId(0);
+    }
+  };
+
   const getCurrentTrailSettingsState = () => ({
     enabled: adminTrailEnabled,
     mode: adminTrailMode,
@@ -1748,7 +2118,7 @@ ${t('dashboard.accessReasonLine', { reason: banReasonText || '-' })}`
                   onClick={() => setActiveSection('admin-maintenance')}
                 >
                   <span className="dashboard-nav-icon" aria-hidden="true"><img src={iconSiren} alt="" /></span>
-                  <span>Server Maintenance</span>
+                  <span>{maintenanceText.nav}</span>
                 </button>
               ) : null}
             </div>
@@ -2715,16 +3085,28 @@ ${t('dashboard.accessReasonLine', { reason: banReasonText || '-' })}`
                         <span>{t('dashboard.adminMapStars')}: {job?.map?.stars ?? '-'}</span>
                         <span>{t('dashboard.adminMapPoints')}: {job?.map?.points ?? '-'}</span>
                       </div>
-                      {job?.status === 'failed' ? (
+                      {((Array.isArray(job?.targets) && job.targets.some((target) => String(target?.deploy_status || '') === 'queued')) || job?.status === 'failed') ? (
                         <div className="admin-actions">
-                          <button
-                            className="btn ghost"
-                            type="button"
-                            onClick={() => onAdminMapRetry(job.id)}
-                            disabled={adminMapRetryingJobId === job.id}
-                          >
-                            {adminMapRetryingJobId === job.id ? t('dashboard.adminMapRetrying') : t('dashboard.adminMapRetry')}
-                          </button>
+                          {job?.status === 'failed' ? (
+                            <button
+                              className="btn ghost"
+                              type="button"
+                              onClick={() => onAdminMapRetry(job.id)}
+                              disabled={adminMapRetryingJobId === job.id || adminMapCancelingJobId === job.id}
+                            >
+                              {adminMapRetryingJobId === job.id ? t('dashboard.adminMapRetrying') : t('dashboard.adminMapRetry')}
+                            </button>
+                          ) : null}
+                          {(Array.isArray(job?.targets) && job.targets.some((target) => String(target?.deploy_status || '') === 'queued')) ? (
+                            <button
+                              className="btn ghost"
+                              type="button"
+                              onClick={() => onAdminMapCancel(job.id)}
+                              disabled={adminMapCancelingJobId === job.id || adminMapRetryingJobId === job.id}
+                            >
+                              {adminMapCancelingJobId === job.id ? t('dashboard.adminMapCancelling') : t('dashboard.adminMapCancel')}
+                            </button>
+                          ) : null}
                         </div>
                       ) : null}
                       <div className="admin-map-job-targets">
@@ -2744,12 +3126,12 @@ ${t('dashboard.accessReasonLine', { reason: banReasonText || '-' })}`
 
           {activeSection === 'admin-maintenance' && isOperator ? (
             <article className="panel">
-              <h3>Server Maintenance</h3>
-              <p className="muted">Toggle maintenance per server, set allowlist IPs and block message, then push instantly.</p>
+              <h3>{maintenanceText.title}</h3>
+              <p className="muted">{maintenanceText.body}</p>
 
               <div className="admin-form-grid">
                 <label>
-                  Server
+                  {maintenanceText.server}
                   <select
                     value={adminMaintenanceServerKey}
                     onChange={(event) => setAdminMaintenanceServerKey(event.target.value)}
@@ -2768,7 +3150,7 @@ ${t('dashboard.accessReasonLine', { reason: banReasonText || '-' })}`
                 </label>
 
                 <label>
-                  Maintenance Enabled
+                  {maintenanceText.enabled}
                   <button
                     className={`trail-toggle${adminMaintenanceEnabled ? ' is-on' : ''}`}
                     type="button"
@@ -2782,7 +3164,7 @@ ${t('dashboard.accessReasonLine', { reason: banReasonText || '-' })}`
                 </label>
 
                 <label>
-                  Block Message
+                  {maintenanceText.blockMessage}
                   <input
                     value={adminMaintenanceMessage}
                     maxLength={180}
@@ -2793,7 +3175,7 @@ ${t('dashboard.accessReasonLine', { reason: banReasonText || '-' })}`
                 </label>
 
                 <label>
-                  Allow IPs (semicolon separated)
+                  {maintenanceText.allowIps}
                   <input
                     value={adminMaintenanceAllowIps}
                     onChange={(event) => setAdminMaintenanceAllowIps(event.target.value)}
@@ -2810,7 +3192,7 @@ ${t('dashboard.accessReasonLine', { reason: banReasonText || '-' })}`
                   onClick={refreshAdminMaintenance}
                   disabled={adminMaintenanceLoading || adminMaintenanceSubmitting}
                 >
-                  {adminMaintenanceLoading ? 'Refreshing...' : 'Refresh'}
+                  {adminMaintenanceLoading ? maintenanceText.refreshing : maintenanceText.refresh}
                 </button>
                 <button
                   className="btn admin-main-action"
@@ -2818,21 +3200,119 @@ ${t('dashboard.accessReasonLine', { reason: banReasonText || '-' })}`
                   onClick={onAdminMaintenanceApply}
                   disabled={adminMaintenanceLoading || adminMaintenanceSubmitting || !adminMaintenanceServerKey}
                 >
-                  {adminMaintenanceSubmitting ? 'Applying...' : 'Apply'}
+                  {adminMaintenanceSubmitting ? maintenanceText.applying : maintenanceText.apply}
                 </button>
               </div>
 
               {adminMaintenanceLastPush ? (
                 <p className={adminMaintenanceLastPush.ok ? 'status-text status-normal' : 'status-text status-permanent'}>
-                  Push: {String(adminMaintenanceLastPush.message || (adminMaintenanceLastPush.ok ? 'ok' : 'failed'))}
+                  {maintenanceText.result}: {String(adminMaintenanceLastPush.message || (adminMaintenanceLastPush.ok ? 'ok' : 'failed'))}
                 </p>
               ) : null}
 
               <div className="dashboard-nav-divider" />
-              <h3>Server Status</h3>
+              <h3>{maintenanceText.scheduleTitle}</h3>
+              <p className="muted">{maintenanceText.scheduleBody}</p>
+
+              <div className="admin-form-grid">
+                <label>
+                  {maintenanceText.servers}
+                  <div className="admin-map-target-grid">
+                    {adminMaintenanceServers.length === 0 ? (
+                      <p className="muted">No maintenance server routes configured.</p>
+                    ) : (
+                      adminMaintenanceServers.map((entry) => {
+                        const key = String(entry?.key || '');
+                        const selected = adminMaintenanceScheduleServerKeys.includes(key);
+                        return (
+                          <button
+                            key={key}
+                            className={`trail-extra-option${selected ? ' is-selected' : ''}`}
+                            type="button"
+                            onClick={() => {
+                              setAdminMaintenanceScheduleServerKeys((prev) => (
+                                prev.includes(key)
+                                  ? prev.filter((value) => value !== key)
+                                  : [...prev, key]
+                              ));
+                            }}
+                            aria-pressed={selected}
+                            disabled={adminMaintenanceLoading || adminMaintenanceScheduleSubmitting}
+                          >
+                            <span className="trail-extra-label">{String(entry?.label || entry?.key || '-')}</span>
+                            <span className="trail-extra-check" aria-hidden="true" />
+                          </button>
+                        );
+                      })
+                    )}
+                  </div>
+                </label>
+                <label>
+                  {maintenanceText.startDate}
+                  <input
+                    type="date"
+                    value={adminMaintenanceScheduleDate}
+                    onChange={(event) => setAdminMaintenanceScheduleDate(event.target.value)}
+                    disabled={adminMaintenanceLoading || adminMaintenanceScheduleSubmitting}
+                  />
+                </label>
+                <label>
+                  {maintenanceText.startTime}
+                  <input
+                    type="time"
+                    value={adminMaintenanceScheduleTime}
+                    onChange={(event) => setAdminMaintenanceScheduleTime(event.target.value)}
+                    disabled={adminMaintenanceLoading || adminMaintenanceScheduleSubmitting}
+                  />
+                </label>
+                <label>
+                  {maintenanceText.interval}
+                  <input
+                    type="number"
+                    min={1}
+                    max={120}
+                    step={1}
+                    value={adminMaintenanceScheduleInterval}
+                    onChange={(event) => setAdminMaintenanceScheduleInterval(event.target.value)}
+                    disabled={adminMaintenanceLoading || adminMaintenanceScheduleSubmitting}
+                  />
+                </label>
+                <label>
+                  {maintenanceText.scheduleBlockMessage}
+                  <input
+                    value={adminMaintenanceScheduleMessage}
+                    onChange={(event) => setAdminMaintenanceScheduleMessage(event.target.value)}
+                    placeholder={adminMaintenanceMessage || 'Server is under maintenance.'}
+                    disabled={adminMaintenanceLoading || adminMaintenanceScheduleSubmitting}
+                  />
+                </label>
+                <label>
+                  {maintenanceText.scheduleAllowIps}
+                  <input
+                    value={adminMaintenanceScheduleAllowIps}
+                    onChange={(event) => setAdminMaintenanceScheduleAllowIps(event.target.value)}
+                    placeholder={adminMaintenanceAllowIps || '127.0.0.1;10.0.0.5'}
+                    disabled={adminMaintenanceLoading || adminMaintenanceScheduleSubmitting}
+                  />
+                </label>
+              </div>
+
+              <div className="admin-actions">
+                <button
+                  className="btn admin-main-action"
+                  type="button"
+                  onClick={onAdminMaintenanceScheduleApply}
+                  disabled={adminMaintenanceLoading || adminMaintenanceScheduleSubmitting || adminMaintenanceScheduleServerKeys.length === 0}
+                >
+                  {adminMaintenanceScheduleSubmitting ? maintenanceText.scheduling : maintenanceText.saveSchedule}
+                </button>
+              </div>
+
+              <div className="dashboard-nav-divider" />
+              <h3>{maintenanceText.serverStatus}</h3>
               <div className="admin-map-job-list">
                 {adminMaintenanceServers.length === 0 ? (
-                  <div className="admin-user-list-empty">No maintenance server routes configured.</div>
+                  <div className="admin-user-list-empty">{maintenanceText.noRoutes}</div>
                 ) : (
                   adminMaintenanceServers.map((entry) => (
                     <section className="admin-map-job-card" key={String(entry?.key || '')}>
@@ -2842,16 +3322,61 @@ ${t('dashboard.accessReasonLine', { reason: banReasonText || '-' })}`
                           <p className="muted">{String(entry?.key || '-')}</p>
                         </div>
                         <span className={entry?.enabled ? 'status-text status-permanent' : 'status-text status-normal'}>
-                          {entry?.enabled ? 'Maintenance ON' : 'Maintenance OFF'}
+                          {entry?.enabled ? maintenanceText.maintenanceOn : maintenanceText.maintenanceOff}
                         </span>
                       </div>
                       <div className="admin-map-job-meta">
-                        <span>{entry?.pushConfigured ? 'Push configured' : 'Push not configured'}</span>
+                        <span>{entry?.pushConfigured ? maintenanceText.pushConfigured : maintenanceText.pushNotConfigured}</span>
                         <span>{entry?.updatedAt ? formatDateTimeShort(entry.updatedAt, locale) : '-'}</span>
                       </div>
                       <p className="muted">{String(entry?.blockMessage || '-')}</p>
                     </section>
                   ))
+                )}
+              </div>
+
+              <div className="dashboard-nav-divider" />
+              <h3>{maintenanceText.scheduledJobs}</h3>
+              <div className="admin-map-job-list">
+                {adminMaintenanceSchedules.length === 0 ? (
+                  <div className="admin-user-list-empty">{maintenanceText.noSchedules}</div>
+                ) : (
+                  adminMaintenanceSchedules.map((schedule) => {
+                    const startAt = formatDateTimeShort(schedule?.startAt, locale);
+                    const activationAt = formatDateTimeShort(schedule?.activationAt, locale);
+                    const isCanceled = String(schedule?.state || '') === 'canceled';
+                    const isActive = String(schedule?.state || '') === 'active';
+                    return (
+                      <section className="admin-map-job-card" key={String(schedule?.id || `${schedule?.serverKey}-${schedule?.startAt}`)}>
+                        <div className="admin-map-job-head">
+                          <div>
+                            <strong>{String(schedule?.serverLabel || schedule?.serverKey || '-')}</strong>
+                            <p className="muted">{maintenanceText.start}: {startAt}</p>
+                          </div>
+                          <span className={isCanceled ? 'status-text status-temporary' : (isActive ? 'status-text status-normal' : 'status-text status-permanent')}>
+                            {isCanceled ? maintenanceText.canceled : (isActive ? maintenanceText.active : maintenanceText.scheduled)}
+                          </span>
+                        </div>
+                        <div className="admin-map-job-meta">
+                          <span>{maintenanceText.activate}: {activationAt}</span>
+                          <span>{maintenanceText.intervalShort}: {Number(schedule?.announcementIntervalMinutes || 5)}m</span>
+                        </div>
+                        <p className="muted">{String(schedule?.blockMessage || '-')}</p>
+                        {isCanceled ? null : (
+                          <div className="admin-actions">
+                            <button
+                              className="btn ghost"
+                              type="button"
+                              onClick={() => onAdminMaintenanceCancelSchedule(schedule)}
+                              disabled={adminMaintenanceScheduleSubmitting || adminMaintenanceCancelingScheduleId === String(schedule?.id || '')}
+                            >
+                              {adminMaintenanceCancelingScheduleId === String(schedule?.id || '') ? maintenanceText.canceling : maintenanceText.cancel}
+                            </button>
+                          </div>
+                        )}
+                      </section>
+                    );
+                  })
                 )}
               </div>
             </article>
