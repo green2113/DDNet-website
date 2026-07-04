@@ -4,11 +4,13 @@ import { getGeo, register } from '../lib/api';
 import { useAuth } from '../components/AuthProvider';
 import { useI18n } from '../components/I18nProvider';
 import { Feedback, LanguageSelector } from '../components/Layout';
+import { readReturnUrl, withReturnParam } from '../lib/redirect';
 
 export default function RegisterPage() {
   const navigate = useNavigate();
   const { refresh } = useAuth();
   const { t } = useI18n();
+  const returnUrl = readReturnUrl();
   const [form, setForm] = useState({
     name: '',
     email: '',
@@ -67,7 +69,14 @@ export default function RegisterPage() {
       });
       await refresh();
       setFeedback({ type: 'ok', message: data.emailVerificationRequired ? t('register.verifyRequired') : t('register.success', { code: data.gameCode }) });
-      setTimeout(() => navigate('/dashboard'), data.emailVerificationRequired ? 600 : 900);
+      const delay = data.emailVerificationRequired ? 600 : 900;
+      setTimeout(() => {
+        if(returnUrl) {
+          window.location.replace(returnUrl);
+        } else {
+          navigate('/dashboard');
+        }
+      }, delay);
     } catch (err) {
       if(err.status === 403 && err.payload?.code === 'VPN_PROXY_BLOCKED') {
         navigate('/blocked', { replace: true });
@@ -120,7 +129,7 @@ export default function RegisterPage() {
           <button className="btn" type="submit" disabled={submitting}>{submitting ? t('common.creating') : t('register.submit')}</button>
         </form>
 
-        <p className="switch-line">{t('common.alreadyHaveAccount')} <Link to="/login">{t('common.login')}</Link></p>
+        <p className="switch-line">{t('common.alreadyHaveAccount')} <Link to={withReturnParam('/login', returnUrl)}>{t('common.login')}</Link></p>
         <Feedback feedback={feedback} />
       </section>
     </main>

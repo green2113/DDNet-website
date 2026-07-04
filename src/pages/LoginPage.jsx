@@ -4,11 +4,13 @@ import { checkPasswordResetCode, getGeo, login, requestPasswordResetCode, resetP
 import { useAuth } from '../components/AuthProvider';
 import { useI18n } from '../components/I18nProvider';
 import { LanguageSelector } from '../components/Layout';
+import { readReturnUrl, withReturnParam } from '../lib/redirect';
 
 export default function LoginPage() {
   const navigate = useNavigate();
   const { refresh } = useAuth();
   const { t, language } = useI18n();
+  const returnUrl = readReturnUrl();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [submitting, setSubmitting] = useState(false);
@@ -74,7 +76,13 @@ export default function LoginPage() {
     try {
       await login({ email: email.trim(), password });
       await refresh();
-      setTimeout(() => navigate('/dashboard'), 450);
+      setTimeout(() => {
+        if(returnUrl) {
+          window.location.replace(returnUrl);
+        } else {
+          navigate('/dashboard');
+        }
+      }, 450);
     } catch (err) {
       if(err.status === 403 && err.payload?.code === 'VPN_PROXY_BLOCKED') {
         navigate('/blocked', { replace: true });
@@ -273,7 +281,7 @@ export default function LoginPage() {
               <button className="btn" type="submit" disabled={submitting}>{submitting ? t('common.loggingIn') : t('login.submit')}</button>
             </form>
 
-            <p className="switch-line">{t('common.notLoggedInYet')} <Link to="/register">{t('common.register')}</Link></p>
+            <p className="switch-line">{t('common.notLoggedInYet')} <Link to={withReturnParam('/register', returnUrl)}>{t('common.register')}</Link></p>
             <p className="switch-line">
               {t('login.lostAccount')}
               {' · '}
