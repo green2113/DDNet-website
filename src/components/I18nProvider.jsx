@@ -1884,11 +1884,14 @@ export function I18nProvider({ children }) {
 
   const t = (key, params = {}) => {
     const chosen = lookupText(language, key);
-    if(chosen) {
+    if(chosen !== null) {
       return applyParams(chosen, params);
     }
     const fallback = lookupText('en', key);
-    return applyParams(fallback || key, params);
+    if(fallback !== null) {
+      return applyParams(fallback, params);
+    }
+    return key;
   };
 
   const value = useMemo(() => ({
