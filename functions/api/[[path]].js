@@ -2699,8 +2699,8 @@ async function handleGameCasinoBalance(context) {
   return json({ ok: false, message: 'Invalid casino balance mode' }, 400);
 }
 
-const BANK_HOURLY_RATE = 0.005;
-const BANK_INTEREST_RATE_PERCENT = 0.5;
+const BANK_HOURLY_RATE = 0.05;
+const BANK_INTEREST_RATE_PERCENT = 5;
 
 let bankBalanceTableReady = false;
 

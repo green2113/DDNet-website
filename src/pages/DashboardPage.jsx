@@ -9,7 +9,6 @@ import {
   adminGetPatreonTiers,
   adminListMapDeployJobs,
   adminRetryMapDeployJob,
-  adminCancelMapDeployJob,
   adminSearchUsers,
   adminCreateServerMaintenanceSchedule,
   adminCancelServerMaintenanceSchedule,
@@ -494,7 +493,6 @@ export default function DashboardPage() {
   const [adminMapJobsLoading, setAdminMapJobsLoading] = useState(false);
   const [adminMapJobs, setAdminMapJobs] = useState([]);
   const [adminMapRetryingJobId, setAdminMapRetryingJobId] = useState(0);
-  const [adminMapCancelingJobId, setAdminMapCancelingJobId] = useState(0);
   const [adminMaintenanceLoading, setAdminMaintenanceLoading] = useState(false);
   const [adminMaintenanceSubmitting, setAdminMaintenanceSubmitting] = useState(false);
   const [adminMaintenanceServers, setAdminMaintenanceServers] = useState([]);
@@ -617,8 +615,6 @@ export default function DashboardPage() {
       return t('dashboard.adminMapStatusCompleted');
     case 'failed':
       return t('dashboard.adminMapStatusFailed');
-    case 'cancelled':
-      return t('dashboard.adminMapStatusCancelled');
     case 'running':
       return t('dashboard.adminMapJobRunning');
     default:
@@ -630,7 +626,6 @@ export default function DashboardPage() {
     case 'completed':
       return 'status-text status-normal';
     case 'failed':
-    case 'cancelled':
       return 'status-text status-permanent';
     default:
       return 'status-text status-temporary';
@@ -1774,23 +1769,6 @@ export default function DashboardPage() {
       setFeedback({ type: 'error', message: err.message });
     } finally {
       setAdminMapRetryingJobId(0);
-    }
-  };
-
-  const onAdminMapCancel = async (jobId) => {
-    const normalizedJobId = Math.floor(Number(jobId || 0));
-    if(!Number.isFinite(normalizedJobId) || normalizedJobId <= 0 || adminMapRetryingJobId > 0 || adminMapCancelingJobId > 0) {
-      return;
-    }
-    setAdminMapCancelingJobId(normalizedJobId);
-    setFeedback(null);
-    try {
-      await adminCancelMapDeployJob(normalizedJobId);
-      await refreshAdminMapJobs();
-    } catch (err) {
-      setFeedback({ type: 'error', message: err.message });
-    } finally {
-      setAdminMapCancelingJobId(0);
     }
   };
 
@@ -3085,28 +3063,16 @@ ${t('dashboard.accessReasonLine', { reason: banReasonText || '-' })}`
                         <span>{t('dashboard.adminMapStars')}: {job?.map?.stars ?? '-'}</span>
                         <span>{t('dashboard.adminMapPoints')}: {job?.map?.points ?? '-'}</span>
                       </div>
-                      {((Array.isArray(job?.targets) && job.targets.some((target) => String(target?.deploy_status || '') === 'queued')) || job?.status === 'failed') ? (
+                      {job?.status === 'failed' ? (
                         <div className="admin-actions">
-                          {job?.status === 'failed' ? (
-                            <button
-                              className="btn ghost"
-                              type="button"
-                              onClick={() => onAdminMapRetry(job.id)}
-                              disabled={adminMapRetryingJobId === job.id || adminMapCancelingJobId === job.id}
-                            >
-                              {adminMapRetryingJobId === job.id ? t('dashboard.adminMapRetrying') : t('dashboard.adminMapRetry')}
-                            </button>
-                          ) : null}
-                          {(Array.isArray(job?.targets) && job.targets.some((target) => String(target?.deploy_status || '') === 'queued')) ? (
-                            <button
-                              className="btn ghost"
-                              type="button"
-                              onClick={() => onAdminMapCancel(job.id)}
-                              disabled={adminMapCancelingJobId === job.id || adminMapRetryingJobId === job.id}
-                            >
-                              {adminMapCancelingJobId === job.id ? t('dashboard.adminMapCancelling') : t('dashboard.adminMapCancel')}
-                            </button>
-                          ) : null}
+                          <button
+                            className="btn ghost"
+                            type="button"
+                            onClick={() => onAdminMapRetry(job.id)}
+                            disabled={adminMapRetryingJobId === job.id}
+                          >
+                            {adminMapRetryingJobId === job.id ? t('dashboard.adminMapRetrying') : t('dashboard.adminMapRetry')}
+                          </button>
                         </div>
                       ) : null}
                       <div className="admin-map-job-targets">

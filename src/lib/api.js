@@ -260,12 +260,6 @@ export async function adminRetryMapDeployJob(jobId) {
   });
 }
 
-export async function adminCancelMapDeployJob(jobId) {
-  return api(`/api/admin/maps/deploy-jobs/${encodeURIComponent(String(jobId || ''))}/cancel`, {
-    method: 'POST',
-  });
-}
-
 function parseMaintenanceRoutes() {
   const raw = import.meta.env.VITE_MAINTENANCE_SERVER_ROUTES_JSON || '[]';
   try {
