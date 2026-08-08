@@ -53,13 +53,12 @@ const PATREON_SYNC_STALE_DEFAULT_SECONDS = 6 * 60 * 60;
 const TRAIL_MODE_MIN = 1;
 const TRAIL_MODE_MAX = 3;
 const MAP_UPLOAD_MAX_BYTES = 20 * 1024 * 1024;
-const MAP_DEPLOY_STATUS_VALUES = new Set(['queued', 'copying_map', 'updating_config', 'generating_votes', 'syncing_database', 'completed', 'failed', 'cancelled']);
-const MAP_JOB_STATUS_VALUES = new Set(['queued', 'running', 'completed', 'failed', 'cancelled']);
+const MAP_DEPLOY_STATUS_VALUES = new Set(['queued', 'copying_map', 'updating_config', 'generating_votes', 'syncing_database', 'completed', 'failed']);
+const MAP_JOB_STATUS_VALUES = new Set(['queued', 'running', 'completed', 'failed']);
 const MAP_CATEGORY_VALUES = new Set(['Easy', 'Main', 'Hard', 'Insane', 'Extreme', 'Mod', 'Unknown']);
 
 let s_TrailSettingsReady = false;
 let s_MapAdminTablesReady = false;
-let s_MaintenanceSettingsReady = false;
 
 function cookieSecure(request) {
   return new URL(request.url).protocol === 'https:';
@@ -240,78 +239,6 @@ function resolveSelectedMapTargets(rawTargets, requestedKeys) {
     return [];
   }
   return rawTargets.filter((entry) => requested.has(entry.key));
-}
-
-function parseMaintenanceServerRoutes(rawValue) {
-  const raw = String(rawValue || '').trim();
-  if(!raw) {
-    return [];
-  }
-
-  try {
-    const parsed = JSON.parse(raw);
-    const items = Array.isArray(parsed) ? parsed : (Array.isArray(parsed?.servers) ? parsed.servers : []);
-    return items
-      .map((entry) => ({
-        key: String(entry?.key || '').trim(),
-        label: String(entry?.label || entry?.key || '').trim(),
-        pushUrl: String(entry?.pushUrl || '').trim(),
-        pushSecret: String(entry?.pushSecret || '').trim(),
-      }))
-      .filter((entry) => entry.key && entry.label);
-  } catch {
-    return [];
-  }
-}
-
-function normalizeMaintenanceAllowIps(rawValue) {
-  return String(rawValue || '')
-    .split(';')
-    .map((entry) => String(entry || '').trim())
-    .filter(Boolean)
-    .join(';');
-}
-
-async function dispatchMaintenancePush(route, payload) {
-  const pushUrl = String(route?.pushUrl || '').trim();
-  if(!pushUrl) {
-    return {
-      ok: false,
-      message: `No pushUrl configured for server '${String(route?.key || '')}'.`,
-    };
-  }
-
-  const headers = {
-    'content-type': 'application/json',
-  };
-  const pushSecret = String(route?.pushSecret || '').trim();
-  if(pushSecret) {
-    headers['x-maintenance-secret'] = pushSecret;
-  }
-
-  try {
-    const response = await fetch(pushUrl, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(payload || {}),
-    });
-    if(!response.ok) {
-      const responseText = await response.text().catch(() => '');
-      return {
-        ok: false,
-        message: `Push failed (${response.status}): ${responseText}`,
-      };
-    }
-    return {
-      ok: true,
-      message: 'Push applied',
-    };
-  } catch(err) {
-    return {
-      ok: false,
-      message: String(err?.message || err || 'Push request failed'),
-    };
-  }
 }
 
 function parseMapDeployPushUrls(rawValue) {
@@ -2423,42 +2350,6 @@ async function ensureMapAdminTables(env) {
   s_MapAdminTablesReady = true;
 }
 
-async function ensureMaintenanceSettingsTable(env) {
-  if(s_MaintenanceSettingsReady) {
-    return;
-  }
-
-  await env.DB.prepare(`
-    CREATE TABLE IF NOT EXISTS admin_server_maintenance_settings (
-      server_key TEXT PRIMARY KEY,
-      enabled INTEGER NOT NULL DEFAULT 0,
-      block_message TEXT,
-      updated_by_account_id INTEGER,
-      updated_at TEXT NOT NULL,
-      FOREIGN KEY (updated_by_account_id) REFERENCES users(id)
-    )
-  `).run();
-
-  await env.DB.prepare(`
-    CREATE TABLE IF NOT EXISTS admin_server_maintenance_global (
-      id INTEGER PRIMARY KEY CHECK (id = 1),
-      allow_ips_raw TEXT NOT NULL DEFAULT '',
-      updated_by_account_id INTEGER,
-      updated_at TEXT NOT NULL,
-      FOREIGN KEY (updated_by_account_id) REFERENCES users(id)
-    )
-  `).run();
-
-  const now = nowIso();
-  await env.DB.prepare(`
-    INSERT INTO admin_server_maintenance_global (id, allow_ips_raw, updated_by_account_id, updated_at)
-    VALUES (1, '', NULL, ?)
-    ON CONFLICT(id) DO NOTHING
-  `).bind(now).run();
-
-  s_MaintenanceSettingsReady = true;
-}
-
 function entitlementRowIsActive(row) {
   if(!row) {
     return false;
@@ -2678,6 +2569,280 @@ function gameClientNameFromRequest(request) {
   return String(request.headers.get('X-Game-Client-Name') || '').trim();
 }
 
+const DEFAULT_CASINO_BALANCE = 500;
+let casinoBalanceTableReady = false;
+
+async function ensureCasinoBalanceTable(env) {
+  if(casinoBalanceTableReady) {
+    return;
+  }
+  await env.DB.prepare(`
+    CREATE TABLE IF NOT EXISTS user_casino_balances (
+      user_id INTEGER PRIMARY KEY,
+      balance INTEGER NOT NULL DEFAULT 0 CHECK(balance >= 0),
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (user_id) REFERENCES users(id)
+    )
+  `).run();
+  casinoBalanceTableReady = true;
+}
+
+function casinoDefaultFromRequest(request) {
+  const value = Number(request.headers.get('X-Game-Casino-Default') || DEFAULT_CASINO_BALANCE);
+  if(!Number.isFinite(value)) {
+    return DEFAULT_CASINO_BALANCE;
+  }
+  return Math.max(0, Math.floor(value));
+}
+
+async function loadOrCreateCasinoBalance(env, accountId, defaultBalance = DEFAULT_CASINO_BALANCE) {
+  await ensureCasinoBalanceTable(env);
+  const id = Number(accountId);
+  if(!Number.isFinite(id) || id <= 0) {
+    return 0;
+  }
+
+  const existing = await env.DB.prepare(`
+    SELECT balance
+    FROM user_casino_balances
+    WHERE user_id = ?
+    LIMIT 1
+  `).bind(id).first();
+  if(existing) {
+    return Math.max(0, Math.floor(Number(existing.balance) || 0));
+  }
+
+  const balance = Math.max(0, Math.floor(defaultBalance));
+  const now = nowIso();
+  await env.DB.prepare(`
+    INSERT INTO user_casino_balances (user_id, balance, updated_at)
+    VALUES (?, ?, ?)
+  `).bind(id, balance, now).run();
+  return balance;
+}
+
+async function handleGameCasinoBalance(context) {
+  const { request, env } = context;
+  const key = request.headers.get('X-Game-Server-Key') || '';
+  if(!env.GAME_SERVER_API_KEY || !timingSafeEqual(key, env.GAME_SERVER_API_KEY)) {
+    return json({ ok: false, message: 'Unauthorized game server key' }, 401);
+  }
+
+  const accountId = Number(request.headers.get('X-Game-Account-Id') || 0);
+  if(!Number.isFinite(accountId) || accountId <= 0) {
+    return json({ ok: false, message: 'Invalid account id' }, 400);
+  }
+
+  const user = await env.DB.prepare(`
+    SELECT id
+    FROM users
+    WHERE id = ?
+    LIMIT 1
+  `).bind(accountId).first();
+  if(!user) {
+    return json({ ok: false, message: 'Account not found' }, 404);
+  }
+
+  const mode = String(request.headers.get('X-Game-Casino-Mode') || 'get').trim().toLowerCase();
+  const amount = Math.floor(Number(request.headers.get('X-Game-Casino-Amount') || 0));
+  const defaultBalance = casinoDefaultFromRequest(request);
+  await ensureCasinoBalanceTable(env);
+
+  if(mode === 'get') {
+    const balance = await loadOrCreateCasinoBalance(env, accountId, defaultBalance);
+    return json({ ok: true, accountId, balance });
+  }
+
+  if(mode === 'set') {
+    const balance = Math.max(0, amount);
+    const now = nowIso();
+    await env.DB.prepare(`
+      INSERT INTO user_casino_balances (user_id, balance, updated_at)
+      VALUES (?, ?, ?)
+      ON CONFLICT(user_id) DO UPDATE SET
+        balance = excluded.balance,
+        updated_at = excluded.updated_at
+    `).bind(accountId, balance, now).run();
+    return json({ ok: true, accountId, balance });
+  }
+
+  if(mode === 'adjust') {
+    await loadOrCreateCasinoBalance(env, accountId, defaultBalance);
+    const now = nowIso();
+    if(amount < 0) {
+      const updated = await env.DB.prepare(`
+        UPDATE user_casino_balances
+        SET balance = balance + ?, updated_at = ?
+        WHERE user_id = ? AND balance + ? >= 0
+      `).bind(amount, now, accountId, amount).run();
+      if((updated.meta?.changes || 0) !== 1) {
+        return json({ ok: false, code: 'INSUFFICIENT_BALANCE', message: 'Insufficient casino balance' }, 400);
+      }
+    } else if(amount > 0) {
+      await env.DB.prepare(`
+        UPDATE user_casino_balances
+        SET balance = balance + ?, updated_at = ?
+        WHERE user_id = ?
+      `).bind(amount, now, accountId).run();
+    }
+
+    const row = await env.DB.prepare(`
+      SELECT balance
+      FROM user_casino_balances
+      WHERE user_id = ?
+      LIMIT 1
+    `).bind(accountId).first();
+    const balance = Math.max(0, Math.floor(Number(row?.balance) || 0));
+    return json({ ok: true, accountId, balance });
+  }
+
+  return json({ ok: false, message: 'Invalid casino balance mode' }, 400);
+}
+
+const BANK_HOURLY_RATE = 0.005;
+const BANK_INTEREST_RATE_PERCENT = 0.5;
+
+let bankBalanceTableReady = false;
+
+async function ensureBankBalanceTable(env) {
+  if(bankBalanceTableReady) {
+    return;
+  }
+  await env.DB.prepare(`
+    CREATE TABLE IF NOT EXISTS user_bank_balances (
+      user_id INTEGER PRIMARY KEY,
+      balance INTEGER NOT NULL DEFAULT 0 CHECK(balance >= 0),
+      last_interest_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (user_id) REFERENCES users(id)
+    )
+  `).run();
+  bankBalanceTableReady = true;
+}
+
+async function applyBankInterest(env, accountId) {
+  await ensureBankBalanceTable(env);
+  const id = Number(accountId);
+  const now = nowIso();
+  const nowMs = Date.now();
+
+  const row = await env.DB.prepare(`
+    SELECT balance, last_interest_at
+    FROM user_bank_balances
+    WHERE user_id = ?
+    LIMIT 1
+  `).bind(id).first();
+
+  if(!row) {
+    await env.DB.prepare(`
+      INSERT INTO user_bank_balances (user_id, balance, last_interest_at, updated_at)
+      VALUES (?, 0, ?, ?)
+    `).bind(id, now, now).run();
+    return { balance: 0, interestEarned: 0, interestRatePercent: BANK_INTEREST_RATE_PERCENT };
+  }
+
+  const balance = Math.max(0, Math.floor(Number(row.balance) || 0));
+  const lastMs = Date.parse(row.last_interest_at || '') || nowMs;
+  const hours = Math.max(0, (nowMs - lastMs) / 3600000);
+  let interestEarned = 0;
+  if(balance > 0 && hours > 0) {
+    interestEarned = Math.floor(balance * BANK_HOURLY_RATE * hours);
+  }
+  const newBalance = balance + interestEarned;
+
+  if(interestEarned > 0 || !row.last_interest_at) {
+    await env.DB.prepare(`
+      UPDATE user_bank_balances
+      SET balance = ?, last_interest_at = ?, updated_at = ?
+      WHERE user_id = ?
+    `).bind(newBalance, now, now, id).run();
+  }
+
+  return {
+    balance: newBalance,
+    interestEarned,
+    interestRatePercent: BANK_INTEREST_RATE_PERCENT,
+  };
+}
+
+async function handleGameBankBalance(context) {
+  const { request, env } = context;
+  const key = request.headers.get('X-Game-Server-Key') || '';
+  if(!env.GAME_SERVER_API_KEY || !timingSafeEqual(key, env.GAME_SERVER_API_KEY)) {
+    return json({ ok: false, message: 'Unauthorized game server key' }, 401);
+  }
+
+  const accountId = Number(request.headers.get('X-Game-Account-Id') || 0);
+  if(!Number.isFinite(accountId) || accountId <= 0) {
+    return json({ ok: false, message: 'Invalid account id' }, 400);
+  }
+
+  const user = await env.DB.prepare(`
+    SELECT id
+    FROM users
+    WHERE id = ?
+    LIMIT 1
+  `).bind(accountId).first();
+  if(!user) {
+    return json({ ok: false, message: 'Account not found' }, 404);
+  }
+
+  const mode = String(request.headers.get('X-Game-Bank-Mode') || 'get').trim().toLowerCase();
+  const amount = Math.floor(Number(request.headers.get('X-Game-Bank-Amount') || 0));
+
+  if(mode === 'get') {
+    const result = await applyBankInterest(env, accountId);
+    return json({ ok: true, accountId, ...result });
+  }
+
+  if(mode === 'deposit') {
+    if(amount <= 0) {
+      return json({ ok: false, message: 'Invalid deposit amount' }, 400);
+    }
+    const interest = await applyBankInterest(env, accountId);
+    const newBalance = interest.balance + amount;
+    const now = nowIso();
+    await env.DB.prepare(`
+      UPDATE user_bank_balances
+      SET balance = ?, updated_at = ?
+      WHERE user_id = ?
+    `).bind(newBalance, now, accountId).run();
+    return json({
+      ok: true,
+      accountId,
+      balance: newBalance,
+      interestEarned: interest.interestEarned,
+      interestRatePercent: BANK_INTEREST_RATE_PERCENT,
+    });
+  }
+
+  if(mode === 'withdraw') {
+    if(amount <= 0) {
+      return json({ ok: false, message: 'Invalid withdraw amount' }, 400);
+    }
+    const interest = await applyBankInterest(env, accountId);
+    if(amount > interest.balance) {
+      return json({ ok: false, code: 'INSUFFICIENT_BALANCE', message: 'Insufficient bank balance' }, 400);
+    }
+    const newBalance = interest.balance - amount;
+    const now = nowIso();
+    await env.DB.prepare(`
+      UPDATE user_bank_balances
+      SET balance = ?, updated_at = ?
+      WHERE user_id = ?
+    `).bind(newBalance, now, accountId).run();
+    return json({
+      ok: true,
+      accountId,
+      balance: newBalance,
+      interestEarned: interest.interestEarned,
+      interestRatePercent: BANK_INTEREST_RATE_PERCENT,
+    });
+  }
+
+  return json({ ok: false, message: 'Invalid bank balance mode' }, 400);
+}
+
 function buildGameAuthPayload(user, trailState, { dummyCode = false } = {}) {
   const dummyName = String(user?.dummy_name || '').trim();
   const username = String(user?.username || '').trim();
@@ -2890,7 +3055,8 @@ async function handleGameVerify(context) {
     await upsertAutoLoginBinding(env, user.id, clientIp, clientName);
   }
 
-  return json(buildGameAuthPayload(user, trailState, { dummyCode: matchedDummyCode }));
+  const casinoBalance = await loadOrCreateCasinoBalance(env, user.id, casinoDefaultFromRequest(request));
+  return json({ ...buildGameAuthPayload(user, trailState, { dummyCode: matchedDummyCode }), casinoBalance });
 }
 
 async function handleGameAutoLogin(context) {
@@ -2959,6 +3125,7 @@ async function handleGameAutoLogin(context) {
 
   return json({
     matched: true,
+    casinoBalance: await loadOrCreateCasinoBalance(env, user.id, casinoDefaultFromRequest(request)),
     ...buildGameAuthPayload(user, trailState, { dummyCode: false }),
   });
 }
@@ -4068,121 +4235,6 @@ async function handleAdminMapTargets(context) {
   return json({ ok: true, targets });
 }
 
-async function handleAdminServerMaintenanceGet(context) {
-  const { env } = context;
-  const auth = await requireOperator(context);
-  if(auth.error) {
-    return auth.error;
-  }
-
-  await ensureMaintenanceSettingsTable(env);
-  const routes = parseMaintenanceServerRoutes(env.MAINTENANCE_SERVER_ROUTES_JSON);
-
-  const rowResult = await env.DB.prepare(`
-    SELECT server_key, enabled, block_message, updated_at
-    FROM admin_server_maintenance_settings
-  `).all();
-  const rows = Array.isArray(rowResult?.results) ? rowResult.results : [];
-  const byKey = new Map(rows.map((row) => [String(row?.server_key || ''), row]));
-
-  const globalRow = await env.DB.prepare(`
-    SELECT allow_ips_raw, updated_at
-    FROM admin_server_maintenance_global
-    WHERE id = 1
-    LIMIT 1
-  `).first();
-
-  const servers = routes.map((route) => {
-    const existing = byKey.get(route.key);
-    return {
-      key: route.key,
-      label: route.label,
-      enabled: Number(existing?.enabled || 0) === 1,
-      blockMessage: String(existing?.block_message || ''),
-      updatedAt: String(existing?.updated_at || ''),
-      pushConfigured: String(route.pushUrl || '').trim() !== '',
-    };
-  });
-
-  return json({
-    ok: true,
-    servers,
-    allowIpsRaw: String(globalRow?.allow_ips_raw || ''),
-    allowIpsUpdatedAt: String(globalRow?.updated_at || ''),
-  });
-}
-
-async function handleAdminServerMaintenanceSet(context) {
-  const { env, request } = context;
-  const auth = await requireOperator(context);
-  if(auth.error) {
-    return auth.error;
-  }
-
-  await ensureMaintenanceSettingsTable(env);
-
-  const body = await parseRequestBody(request);
-  const data = typeof body === 'string' ? {} : (body || {});
-  const routes = parseMaintenanceServerRoutes(env.MAINTENANCE_SERVER_ROUTES_JSON);
-  const routeByKey = new Map(routes.map((entry) => [entry.key, entry]));
-
-  const serverKey = String(data.serverKey || '').trim();
-  if(!serverKey || !routeByKey.has(serverKey)) {
-    return json({ ok: false, message: 'Invalid serverKey.' }, 400);
-  }
-
-  const enabled = Number(data.enabled ? 1 : 0) === 1;
-  const blockMessage = String(data.blockMessage || '').trim().slice(0, 180);
-  const hasAllowIpsRaw = Object.prototype.hasOwnProperty.call(data, 'allowIpsRaw');
-  const allowIpsRaw = hasAllowIpsRaw ? normalizeMaintenanceAllowIps(data.allowIpsRaw) : null;
-  const now = nowIso();
-
-  await env.DB.prepare(`
-    INSERT INTO admin_server_maintenance_settings (
-      server_key, enabled, block_message, updated_by_account_id, updated_at
-    ) VALUES (?, ?, ?, ?, ?)
-    ON CONFLICT(server_key) DO UPDATE SET
-      enabled = excluded.enabled,
-      block_message = excluded.block_message,
-      updated_by_account_id = excluded.updated_by_account_id,
-      updated_at = excluded.updated_at
-  `).bind(serverKey, enabled ? 1 : 0, blockMessage || null, auth.user.id, now).run();
-
-  if(allowIpsRaw !== null) {
-    await env.DB.prepare(`
-      UPDATE admin_server_maintenance_global
-      SET allow_ips_raw = ?, updated_by_account_id = ?, updated_at = ?
-      WHERE id = 1
-    `).bind(allowIpsRaw, auth.user.id, now).run();
-  }
-
-  const globalRow = await env.DB.prepare(`
-    SELECT allow_ips_raw
-    FROM admin_server_maintenance_global
-    WHERE id = 1
-    LIMIT 1
-  `).first();
-  const effectiveAllowIpsRaw = String(globalRow?.allow_ips_raw || '');
-
-  const route = routeByKey.get(serverKey);
-  const pushResult = await dispatchMaintenancePush(route, {
-    serverKey,
-    enabled,
-    blockMessage,
-    allowIpsRaw: effectiveAllowIpsRaw,
-    updatedAt: now,
-  });
-
-  return json({
-    ok: true,
-    serverKey,
-    enabled,
-    blockMessage,
-    allowIpsRaw: effectiveAllowIpsRaw,
-    push: pushResult,
-  });
-}
-
 async function handleAdminMapsUpload(context) {
   const { env, request } = context;
   const auth = await requireOperator(context);
@@ -4245,16 +4297,7 @@ async function handleAdminMapsUpload(context) {
     SELECT id FROM admin_maps WHERE map_name = ? LIMIT 1
   `).bind(mapName).first();
   if(existing) {
-    const activeTarget = await env.DB.prepare(`
-      SELECT 1
-      FROM admin_map_deploy_targets t
-      JOIN admin_map_deploy_jobs j ON j.id = t.job_id
-      WHERE j.map_id = ? AND t.deploy_status != 'cancelled'
-      LIMIT 1
-    `).bind(existing.id).first();
-    if(activeTarget) {
-      return json({ ok: false, message: 'A map with that name already exists.' }, 409);
-    }
+    return json({ ok: false, message: 'A map with that name already exists.' }, 409);
   }
 
   const bytes = await mapFile.arrayBuffer();
@@ -4273,53 +4316,29 @@ async function handleAdminMapsUpload(context) {
   });
 
   const now = nowIso();
-  let mapId = 0;
-
-  if(existing) {
-    await env.DB.prepare(`
-      UPDATE admin_maps
-      SET r2_object_key = ?, file_name = ?, file_sha256 = ?, file_size = ?, category = ?, stars = ?, points = ?, author = ?, source_label = ?, notes = ?, enabled = 1, updated_at = ?
-      WHERE id = ?
-    `).bind(
-      objectKey,
-      fileName,
-      sha256,
-      Number(mapFile.size || 0),
-      category,
-      stars,
-      points,
-      author,
-      sourceLabel || null,
-      notes || null,
-      now,
-      existing.id,
-    ).run();
-    mapId = existing.id;
-  } else {
-    const insertMap = await env.DB.prepare(`
-      INSERT INTO admin_maps (
-        map_name, r2_object_key, file_name, file_sha256, file_size, category, stars, points, author, source_label, notes, enabled, created_by_account_id, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
-    `).bind(
-      mapName,
-      objectKey,
-      fileName,
-      sha256,
-      Number(mapFile.size || 0),
-      category,
-      stars,
-      points,
-      author,
-      sourceLabel || null,
-      notes || null,
-      auth.user.id,
-      now,
-      now,
-    ).run();
-    mapId = Number(insertMap.meta?.last_row_id || 0);
-    if(!Number.isFinite(mapId) || mapId <= 0) {
-      return json({ ok: false, message: 'Failed to create map record.' }, 500);
-    }
+  const insertMap = await env.DB.prepare(`
+    INSERT INTO admin_maps (
+      map_name, r2_object_key, file_name, file_sha256, file_size, category, stars, points, author, source_label, notes, enabled, created_by_account_id, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
+  `).bind(
+    mapName,
+    objectKey,
+    fileName,
+    sha256,
+    Number(mapFile.size || 0),
+    category,
+    stars,
+    points,
+    author,
+    sourceLabel || null,
+    notes || null,
+    auth.user.id,
+    now,
+    now,
+  ).run();
+  const mapId = Number(insertMap.meta?.last_row_id || 0);
+  if(!Number.isFinite(mapId) || mapId <= 0) {
+    return json({ ok: false, message: 'Failed to create map record.' }, 500);
   }
 
   const insertJob = await env.DB.prepare(`
@@ -4460,8 +4479,7 @@ async function refreshMapDeployJobStatus(env, jobId) {
   const statuses = targets.map((entry) => String(entry?.deploy_status || ''));
   const allCompleted = statuses.every((status) => status === 'completed');
   const hasFailed = statuses.some((status) => status === 'failed');
-  const hasCancelled = statuses.some((status) => status === 'cancelled');
-  const hasRunning = statuses.some((status) => status !== 'queued' && status !== 'completed' && status !== 'failed' && status !== 'cancelled');
+  const hasRunning = statuses.some((status) => status !== 'queued' && status !== 'completed' && status !== 'failed');
   const hasQueued = statuses.some((status) => status === 'queued');
 
   let nextJobStatus = 'queued';
@@ -4469,8 +4487,6 @@ async function refreshMapDeployJobStatus(env, jobId) {
     nextJobStatus = 'completed';
   } else if(!hasRunning && !hasQueued && hasFailed) {
     nextJobStatus = 'failed';
-  } else if(!hasRunning && !hasQueued && hasCancelled && !hasFailed) {
-    nextJobStatus = 'cancelled';
   } else if(hasRunning || hasFailed || statuses.some((status) => status === 'completed')) {
     nextJobStatus = 'running';
   }
@@ -4588,41 +4604,6 @@ async function handleAdminMapDeployJobRetry(context, jobIdRaw) {
     WHERE id = ?
   `).bind(jobId).run();
 
-  const refreshed = await loadMapDeployJobDetails(env, jobId);
-  return json({ ok: true, job: refreshed });
-}
-
-async function handleAdminMapDeployJobCancel(context, jobIdRaw) {
-  const { env } = context;
-  const auth = await requireOperator(context);
-  if(auth.error) {
-    return auth.error;
-  }
-  await ensureMapAdminTables(env);
-
-  const jobId = Math.floor(Number(jobIdRaw || 0));
-  if(!Number.isFinite(jobId) || jobId <= 0) {
-    return json({ ok: false, message: 'Invalid job id.' }, 400);
-  }
-
-  const job = await loadMapDeployJobDetails(env, jobId);
-  if(!job) {
-    return json({ ok: false, message: 'Deploy job not found.' }, 404);
-  }
-
-  const queuedTargets = (job.targets || []).filter((entry) => String(entry?.deploy_status || '') === 'queued');
-  if(queuedTargets.length === 0) {
-    return json({ ok: false, message: 'No queued deploy targets to cancel.' }, 400);
-  }
-
-  const now = nowIso();
-  await env.DB.prepare(`
-    UPDATE admin_map_deploy_targets
-    SET deploy_status = 'cancelled', error_message = 'Cancelled by admin', updated_at = ?
-    WHERE job_id = ? AND deploy_status = 'queued'
-  `).bind(now, jobId).run();
-
-  await refreshMapDeployJobStatus(env, jobId);
   const refreshed = await loadMapDeployJobDetails(env, jobId);
   return json({ ok: true, job: refreshed });
 }
@@ -5114,6 +5095,14 @@ export async function onRequest(context) {
     return handleGameAccountStatus(context);
   }
 
+  if(request.method === 'POST' && path === '/game/casino-balance') {
+    return handleGameCasinoBalance(context);
+  }
+
+  if(request.method === 'POST' && path === '/game/bank-balance') {
+    return handleGameBankBalance(context);
+  }
+
   if(request.method === 'GET' && path === '/billing/patreon/start') {
     return handlePatreonStart(context);
   }
@@ -5183,14 +5172,6 @@ export async function onRequest(context) {
     return handleAdminMapTargets(context);
   }
 
-  if(request.method === 'GET' && path === '/admin/server-maintenance') {
-    return handleAdminServerMaintenanceGet(context);
-  }
-
-  if(request.method === 'POST' && path === '/admin/server-maintenance') {
-    return handleAdminServerMaintenanceSet(context);
-  }
-
   if(request.method === 'POST' && path === '/admin/maps/upload') {
     return handleAdminMapsUpload(context);
   }
@@ -5217,11 +5198,6 @@ export async function onRequest(context) {
   if(request.method === 'POST' && path.startsWith('/admin/maps/deploy-jobs/') && path.endsWith('/retry')) {
     const jobIdRaw = decodeURIComponent(path.slice('/admin/maps/deploy-jobs/'.length, -'/retry'.length));
     return handleAdminMapDeployJobRetry(context, jobIdRaw);
-  }
-
-  if(request.method === 'POST' && path.startsWith('/admin/maps/deploy-jobs/') && path.endsWith('/cancel')) {
-    const jobIdRaw = decodeURIComponent(path.slice('/admin/maps/deploy-jobs/'.length, -'/cancel'.length));
-    return handleAdminMapDeployJobCancel(context, jobIdRaw);
   }
 
   if(request.method === 'POST' && path === '/internal/map-deploy/claim') {
