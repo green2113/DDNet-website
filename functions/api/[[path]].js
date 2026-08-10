@@ -2843,6 +2843,222 @@ async function handleGameBankBalance(context) {
   return json({ ok: false, message: 'Invalid bank balance mode' }, 400);
 }
 
+const STOCK_TICKERS = ['NOVA', 'PIXEL', 'FLUX', 'MIRA'];
+const STOCK_INITIAL_PRICES = {
+  NOVA: 120,
+  PIXEL: 200,
+  FLUX: 180,
+  MIRA: 90,
+};
+
+let stockMarketTableReady = false;
+
+async function ensureStockMarketTables(env) {
+  if(stockMarketTableReady) {
+    return;
+  }
+  await env.DB.prepare(`
+    CREATE TABLE IF NOT EXISTS stock_market_state (
+      ticker TEXT PRIMARY KEY,
+      price INTEGER NOT NULL CHECK(price >= 0),
+      updated_at TEXT NOT NULL
+    )
+  `).run();
+  await env.DB.prepare(`
+    CREATE TABLE IF NOT EXISTS user_stock_holdings (
+      user_id INTEGER NOT NULL,
+      ticker TEXT NOT NULL,
+      shares INTEGER NOT NULL DEFAULT 0 CHECK(shares >= 0),
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (user_id, ticker),
+      FOREIGN KEY (user_id) REFERENCES users(id)
+    )
+  `).run();
+  stockMarketTableReady = true;
+}
+
+async function ensureStockPriceSeeds(env) {
+  await ensureStockMarketTables(env);
+  const now = nowIso();
+  for(const ticker of STOCK_TICKERS) {
+    await env.DB.prepare(`
+      INSERT INTO stock_market_state (ticker, price, updated_at)
+      VALUES (?, ?, ?)
+      ON CONFLICT(ticker) DO NOTHING
+    `).bind(ticker, STOCK_INITIAL_PRICES[ticker], now).run();
+  }
+}
+
+async function loadStockPrices(env) {
+  await ensureStockPriceSeeds(env);
+  const prices = {};
+  for(const ticker of STOCK_TICKERS) {
+    const row = await env.DB.prepare(`
+      SELECT price
+      FROM stock_market_state
+      WHERE ticker = ?
+      LIMIT 1
+    `).bind(ticker).first();
+    prices[ticker] = Math.max(0, Math.floor(Number(row?.price) || STOCK_INITIAL_PRICES[ticker]));
+  }
+  return prices;
+}
+
+async function loadUserStockHoldings(env, accountId) {
+  await ensureStockMarketTables(env);
+  const holdings = {};
+  for(const ticker of STOCK_TICKERS) {
+    holdings[ticker] = 0;
+  }
+  const rows = await env.DB.prepare(`
+    SELECT ticker, shares
+    FROM user_stock_holdings
+    WHERE user_id = ?
+  `).bind(accountId).all();
+  for(const row of rows.results || []) {
+    const ticker = String(row.ticker || '').trim().toUpperCase();
+    if(STOCK_TICKERS.includes(ticker)) {
+      holdings[ticker] = Math.max(0, Math.floor(Number(row.shares) || 0));
+    }
+  }
+  return holdings;
+}
+
+function normalizeStockTicker(raw) {
+  const ticker = String(raw || '').trim().toUpperCase();
+  if(!STOCK_TICKERS.includes(ticker)) {
+    return null;
+  }
+  return ticker;
+}
+
+async function loadCasinoBalanceForAccount(env, accountId, defaultBalance = DEFAULT_CASINO_BALANCE) {
+  return loadOrCreateCasinoBalance(env, accountId, defaultBalance);
+}
+
+async function handleGameStockMarket(context) {
+  const { request, env } = context;
+  const key = request.headers.get('X-Game-Server-Key') || '';
+  if(!env.GAME_SERVER_API_KEY || !timingSafeEqual(key, env.GAME_SERVER_API_KEY)) {
+    return json({ ok: false, message: 'Unauthorized game server key' }, 401);
+  }
+
+  const mode = String(request.headers.get('X-Game-Stock-Mode') || 'get').trim().toLowerCase();
+  const defaultBalance = casinoDefaultFromRequest(request);
+
+  if(mode === 'get_market') {
+    const prices = await loadStockPrices(env);
+    return json({ ok: true, prices });
+  }
+
+  if(mode === 'sync_prices') {
+    await ensureStockPriceSeeds(env);
+    const now = nowIso();
+    for(const ticker of STOCK_TICKERS) {
+      const headerName = `X-Game-Stock-Price-${ticker}`;
+      const price = Math.floor(Number(request.headers.get(headerName) || 0));
+      if(price > 0) {
+        await env.DB.prepare(`
+          UPDATE stock_market_state
+          SET price = ?, updated_at = ?
+          WHERE ticker = ?
+        `).bind(price, now, ticker).run();
+      }
+    }
+    const prices = await loadStockPrices(env);
+    return json({ ok: true, prices });
+  }
+
+  const accountId = Number(request.headers.get('X-Game-Account-Id') || 0);
+  if(!Number.isFinite(accountId) || accountId <= 0) {
+    return json({ ok: false, message: 'Invalid account id' }, 400);
+  }
+
+  const user = await env.DB.prepare(`
+    SELECT id
+    FROM users
+    WHERE id = ?
+    LIMIT 1
+  `).bind(accountId).first();
+  if(!user) {
+    return json({ ok: false, message: 'Account not found' }, 404);
+  }
+
+  if(mode === 'get') {
+    const balance = await loadCasinoBalanceForAccount(env, accountId, defaultBalance);
+    const holdings = await loadUserStockHoldings(env, accountId);
+    const prices = await loadStockPrices(env);
+    return json({ ok: true, accountId, balance, holdings, prices });
+  }
+
+  if(mode === 'buy' || mode === 'sell') {
+    const ticker = normalizeStockTicker(request.headers.get('X-Game-Stock-Ticker'));
+    const shares = Math.floor(Number(request.headers.get('X-Game-Stock-Shares') || 0));
+    const price = Math.floor(Number(request.headers.get('X-Game-Stock-Price') || 0));
+    if(!ticker || shares <= 0 || price <= 0) {
+      return json({ ok: false, message: 'Invalid trade parameters' }, 400);
+    }
+
+    await ensureCasinoBalanceTable(env);
+    await ensureStockMarketTables(env);
+    await loadOrCreateCasinoBalance(env, accountId, defaultBalance);
+    const now = nowIso();
+
+    if(mode === 'buy') {
+      const cost = shares * price;
+      const updated = await env.DB.prepare(`
+        UPDATE user_casino_balances
+        SET balance = balance - ?, updated_at = ?
+        WHERE user_id = ? AND balance >= ?
+      `).bind(cost, now, accountId, cost).run();
+      if((updated.meta?.changes || 0) !== 1) {
+        return json({ ok: false, code: 'INSUFFICIENT_BALANCE', message: 'Insufficient casino balance' }, 400);
+      }
+      await env.DB.prepare(`
+        INSERT INTO user_stock_holdings (user_id, ticker, shares, updated_at)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(user_id, ticker) DO UPDATE SET
+          shares = shares + excluded.shares,
+          updated_at = excluded.updated_at
+      `).bind(accountId, ticker, shares, now).run();
+    } else {
+      const row = await env.DB.prepare(`
+        SELECT shares
+        FROM user_stock_holdings
+        WHERE user_id = ? AND ticker = ?
+        LIMIT 1
+      `).bind(accountId, ticker).first();
+      const held = Math.max(0, Math.floor(Number(row?.shares) || 0));
+      if(held < shares) {
+        return json({ ok: false, code: 'INSUFFICIENT_SHARES', message: 'Insufficient shares' }, 400);
+      }
+      const proceeds = shares * price;
+      await env.DB.prepare(`
+        UPDATE user_stock_holdings
+        SET shares = shares - ?, updated_at = ?
+        WHERE user_id = ? AND ticker = ?
+      `).bind(shares, now, accountId, ticker).run();
+      await env.DB.prepare(`
+        UPDATE user_casino_balances
+        SET balance = balance + ?, updated_at = ?
+        WHERE user_id = ?
+      `).bind(proceeds, now, accountId).run();
+    }
+
+    const balanceRow = await env.DB.prepare(`
+      SELECT balance
+      FROM user_casino_balances
+      WHERE user_id = ?
+      LIMIT 1
+    `).bind(accountId).first();
+    const balance = Math.max(0, Math.floor(Number(balanceRow?.balance) || 0));
+    const holdings = await loadUserStockHoldings(env, accountId);
+    return json({ ok: true, accountId, balance, holdings, ticker, shares, price });
+  }
+
+  return json({ ok: false, message: 'Invalid stock market mode' }, 400);
+}
+
 function buildGameAuthPayload(user, trailState, { dummyCode = false } = {}) {
   const dummyName = String(user?.dummy_name || '').trim();
   const username = String(user?.username || '').trim();
@@ -5101,6 +5317,10 @@ export async function onRequest(context) {
 
   if(request.method === 'POST' && path === '/game/bank-balance') {
     return handleGameBankBalance(context);
+  }
+
+  if(request.method === 'POST' && path === '/game/stock-market') {
+    return handleGameStockMarket(context);
   }
 
   if(request.method === 'GET' && path === '/billing/patreon/start') {
