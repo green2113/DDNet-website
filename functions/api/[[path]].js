@@ -2853,6 +2853,32 @@ const STOCK_INITIAL_PRICES = {
 
 let stockMarketTableReady = false;
 
+async function hasStockHoldingsColumn(env, columnName) {
+  const row = await env.DB.prepare(`
+    SELECT 1 AS ok
+    FROM pragma_table_info('user_stock_holdings')
+    WHERE name = ?
+    LIMIT 1
+  `).bind(columnName).first();
+  return !!row;
+}
+
+async function ensureStockHoldingsAvgCostColumn(env) {
+  if(await hasStockHoldingsColumn(env, 'avg_cost')) {
+    return;
+  }
+  try {
+    await env.DB.prepare(`
+      ALTER TABLE user_stock_holdings ADD COLUMN avg_cost INTEGER NOT NULL DEFAULT 0
+    `).run();
+  } catch(err) {
+    const message = String(err?.message || err).toLowerCase();
+    if(!message.includes('duplicate column')) {
+      throw err;
+    }
+  }
+}
+
 async function ensureStockMarketTables(env) {
   if(stockMarketTableReady) {
     return;
@@ -2869,11 +2895,13 @@ async function ensureStockMarketTables(env) {
       user_id INTEGER NOT NULL,
       ticker TEXT NOT NULL,
       shares INTEGER NOT NULL DEFAULT 0 CHECK(shares >= 0),
+      avg_cost INTEGER NOT NULL DEFAULT 0 CHECK(avg_cost >= 0),
       updated_at TEXT NOT NULL,
       PRIMARY KEY (user_id, ticker),
       FOREIGN KEY (user_id) REFERENCES users(id)
     )
   `).run();
+  await ensureStockHoldingsAvgCostColumn(env);
   stockMarketTableReady = true;
 }
 
@@ -3003,6 +3031,7 @@ async function handleGameStockMarket(context) {
     await ensureStockMarketTables(env);
     await loadOrCreateCasinoBalance(env, accountId, defaultBalance);
     const now = nowIso();
+    let profit = null;
 
     if(mode === 'buy') {
       const cost = shares * price;
@@ -3014,16 +3043,29 @@ async function handleGameStockMarket(context) {
       if((updated.meta?.changes || 0) !== 1) {
         return json({ ok: false, code: 'INSUFFICIENT_BALANCE', message: 'Insufficient casino balance' }, 400);
       }
+      const holdingRow = await env.DB.prepare(`
+        SELECT shares, avg_cost
+        FROM user_stock_holdings
+        WHERE user_id = ? AND ticker = ?
+        LIMIT 1
+      `).bind(accountId, ticker).first();
+      const oldShares = Math.max(0, Math.floor(Number(holdingRow?.shares) || 0));
+      const oldAvgCost = Math.max(0, Math.floor(Number(holdingRow?.avg_cost) || 0));
+      const newShares = oldShares + shares;
+      const newAvgCost = newShares > 0
+        ? Math.floor((oldShares * oldAvgCost + shares * price) / newShares)
+        : 0;
       await env.DB.prepare(`
-        INSERT INTO user_stock_holdings (user_id, ticker, shares, updated_at)
-        VALUES (?, ?, ?, ?)
+        INSERT INTO user_stock_holdings (user_id, ticker, shares, avg_cost, updated_at)
+        VALUES (?, ?, ?, ?, ?)
         ON CONFLICT(user_id, ticker) DO UPDATE SET
-          shares = shares + excluded.shares,
+          shares = excluded.shares,
+          avg_cost = excluded.avg_cost,
           updated_at = excluded.updated_at
-      `).bind(accountId, ticker, shares, now).run();
+      `).bind(accountId, ticker, newShares, newAvgCost, now).run();
     } else {
       const row = await env.DB.prepare(`
-        SELECT shares
+        SELECT shares, avg_cost
         FROM user_stock_holdings
         WHERE user_id = ? AND ticker = ?
         LIMIT 1
@@ -3032,7 +3074,10 @@ async function handleGameStockMarket(context) {
       if(held < shares) {
         return json({ ok: false, code: 'INSUFFICIENT_SHARES', message: 'Insufficient shares' }, 400);
       }
+      const avgCostPerShare = Math.max(0, Math.floor(Number(row?.avg_cost) || 0));
+      const costBasisPerShare = avgCostPerShare > 0 ? avgCostPerShare : price;
       const proceeds = shares * price;
+      profit = proceeds - shares * costBasisPerShare;
       await env.DB.prepare(`
         UPDATE user_stock_holdings
         SET shares = shares - ?, updated_at = ?
@@ -3053,7 +3098,11 @@ async function handleGameStockMarket(context) {
     `).bind(accountId).first();
     const balance = Math.max(0, Math.floor(Number(balanceRow?.balance) || 0));
     const holdings = await loadUserStockHoldings(env, accountId);
-    return json({ ok: true, accountId, balance, holdings, ticker, shares, price });
+    const payload = { ok: true, accountId, balance, holdings, ticker, shares, price };
+    if(profit !== null) {
+      payload.profit = profit;
+    }
+    return json(payload);
   }
 
   return json({ ok: false, message: 'Invalid stock market mode' }, 400);
