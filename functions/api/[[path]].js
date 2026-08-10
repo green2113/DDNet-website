@@ -2935,11 +2935,13 @@ async function loadStockPrices(env) {
 async function loadUserStockHoldings(env, accountId) {
   await ensureStockMarketTables(env);
   const holdings = {};
+  const avgCosts = {};
   for(const ticker of STOCK_TICKERS) {
     holdings[ticker] = 0;
+    avgCosts[ticker] = 0;
   }
   const rows = await env.DB.prepare(`
-    SELECT ticker, shares
+    SELECT ticker, shares, avg_cost
     FROM user_stock_holdings
     WHERE user_id = ?
   `).bind(accountId).all();
@@ -2947,9 +2949,10 @@ async function loadUserStockHoldings(env, accountId) {
     const ticker = String(row.ticker || '').trim().toUpperCase();
     if(STOCK_TICKERS.includes(ticker)) {
       holdings[ticker] = Math.max(0, Math.floor(Number(row.shares) || 0));
+      avgCosts[ticker] = Math.max(0, Math.floor(Number(row.avg_cost) || 0));
     }
   }
-  return holdings;
+  return { holdings, avgCosts };
 }
 
 function normalizeStockTicker(raw) {
@@ -3014,9 +3017,9 @@ async function handleGameStockMarket(context) {
 
   if(mode === 'get') {
     const balance = await loadCasinoBalanceForAccount(env, accountId, defaultBalance);
-    const holdings = await loadUserStockHoldings(env, accountId);
+    const { holdings, avgCosts } = await loadUserStockHoldings(env, accountId);
     const prices = await loadStockPrices(env);
-    return json({ ok: true, accountId, balance, holdings, prices });
+    return json({ ok: true, accountId, balance, holdings, avgCosts, prices });
   }
 
   if(mode === 'buy' || mode === 'sell') {
@@ -3097,8 +3100,8 @@ async function handleGameStockMarket(context) {
       LIMIT 1
     `).bind(accountId).first();
     const balance = Math.max(0, Math.floor(Number(balanceRow?.balance) || 0));
-    const holdings = await loadUserStockHoldings(env, accountId);
-    const payload = { ok: true, accountId, balance, holdings, ticker, shares, price };
+    const { holdings, avgCosts } = await loadUserStockHoldings(env, accountId);
+    const payload = { ok: true, accountId, balance, holdings, avgCosts, ticker, shares, price };
     if(profit !== null) {
       payload.profit = profit;
     }
