@@ -2843,6 +2843,172 @@ async function handleGameBankBalance(context) {
   return json({ ok: false, message: 'Invalid bank balance mode' }, 400);
 }
 
+async function resolveAccountByName(env, name) {
+  const normalized = lower(name || '').trim();
+  if(!normalized) {
+    return null;
+  }
+  const hasDisplayNameLower = await hasUsersColumn(env, 'display_name_lower');
+  let row = await env.DB.prepare('SELECT id FROM users WHERE username_lower = ? LIMIT 1').bind(normalized).first();
+  if(row) {
+    return Number(row.id);
+  }
+  if(hasDisplayNameLower) {
+    row = await env.DB.prepare('SELECT id FROM users WHERE display_name_lower = ? LIMIT 1').bind(normalized).first();
+    if(row) {
+      return Number(row.id);
+    }
+  }
+  return null;
+}
+
+function normalizeWealthCategory(raw) {
+  const category = String(raw || 'cash').trim().toLowerCase();
+  if(category === 'bank' || category === 'total') {
+    return category;
+  }
+  return 'cash';
+}
+
+function wealthCategoryAmount(entry, category) {
+  if(category === 'bank') {
+    return entry.bank;
+  }
+  if(category === 'total') {
+    return entry.total;
+  }
+  return entry.cash;
+}
+
+async function loadWealthEntries(env) {
+  await ensureCasinoBalanceTable(env);
+  await ensureBankBalanceTable(env);
+  const hasDisplayName = await hasUsersColumn(env, 'display_name');
+  const nameExpr = hasDisplayName ? 'COALESCE(u.display_name, u.username)' : 'u.username';
+  const result = await env.DB.prepare(`
+    SELECT u.id AS accountId, ${nameExpr} AS name,
+      COALESCE(c.balance, 0) AS cash,
+      COALESCE(b.balance, 0) AS bank
+    FROM users u
+    LEFT JOIN user_casino_balances c ON c.user_id = u.id
+    LEFT JOIN user_bank_balances b ON b.user_id = u.id
+  `).all();
+
+  return (result.results || []).map((row) => {
+    const cash = Math.max(0, Math.floor(Number(row.cash) || 0));
+    const bank = Math.max(0, Math.floor(Number(row.bank) || 0));
+    return {
+      accountId: Number(row.accountId),
+      name: String(row.name || ''),
+      cash,
+      bank,
+      total: cash + bank,
+    };
+  });
+}
+
+function buildWealthRankedList(entries, category) {
+  const sorted = [...entries].sort((a, b) => {
+    const diff = wealthCategoryAmount(b, category) - wealthCategoryAmount(a, category);
+    if(diff !== 0) {
+      return diff;
+    }
+    return a.name.localeCompare(b.name);
+  });
+
+  let rank = 0;
+  let lastAmount = null;
+  return sorted.map((entry, index) => {
+    const amount = wealthCategoryAmount(entry, category);
+    if(lastAmount === null || amount !== lastAmount) {
+      rank = index + 1;
+      lastAmount = amount;
+    }
+    return {
+      ...entry,
+      rank,
+      amount,
+    };
+  });
+}
+
+async function handleGameWealthRankings(context) {
+  const { request, env } = context;
+  const key = request.headers.get('X-Game-Server-Key') || '';
+  if(!env.GAME_SERVER_API_KEY || !timingSafeEqual(key, env.GAME_SERVER_API_KEY)) {
+    return json({ ok: false, message: 'Unauthorized game server key' }, 401);
+  }
+
+  const mode = String(request.headers.get('X-Game-Wealth-Mode') || 'top').trim().toLowerCase();
+  const category = normalizeWealthCategory(request.headers.get('X-Game-Wealth-Category'));
+  const entries = await loadWealthEntries(env);
+  const ranked = buildWealthRankedList(entries, category);
+
+  if(mode === 'top') {
+    const rawOffset = Number(request.headers.get('X-Game-Wealth-Offset') || 1);
+    const reverse = Number.isFinite(rawOffset) && rawOffset < 0;
+    const limitStart = Math.max(Math.abs(Number.isFinite(rawOffset) ? rawOffset : 1) - 1, 0);
+    const source = reverse ? [...ranked].reverse() : ranked;
+    const slice = source.slice(limitStart, limitStart + 5).map((entry) => ({
+      rank: entry.rank,
+      name: entry.name,
+      cash: entry.cash,
+      bank: entry.bank,
+      total: entry.total,
+      amount: entry.amount,
+    }));
+    return json({
+      ok: true,
+      mode: 'top',
+      category,
+      totalPlayers: ranked.length,
+      entries: slice,
+    });
+  }
+
+  if(mode === 'rank') {
+    let accountId = Number(request.headers.get('X-Game-Account-Id') || 0);
+    const lookupName = String(request.headers.get('X-Game-Wealth-Name') || '').trim();
+    if(lookupName) {
+      const resolved = await resolveAccountByName(env, lookupName);
+      if(!resolved) {
+        return json({ ok: false, code: 'NOT_FOUND', message: 'Player not found' }, 404);
+      }
+      accountId = resolved;
+    }
+    if(!Number.isFinite(accountId) || accountId <= 0) {
+      return json({ ok: false, message: 'Invalid account id' }, 400);
+    }
+
+    const entry = ranked.find((row) => row.accountId === accountId);
+    if(!entry) {
+      return json({
+        ok: true,
+        mode: 'rank',
+        category,
+        found: false,
+        totalPlayers: ranked.length,
+      });
+    }
+
+    return json({
+      ok: true,
+      mode: 'rank',
+      category,
+      found: true,
+      totalPlayers: ranked.length,
+      rank: entry.rank,
+      name: entry.name,
+      cash: entry.cash,
+      bank: entry.bank,
+      total: entry.total,
+      amount: entry.amount,
+    });
+  }
+
+  return json({ ok: false, message: 'Invalid wealth ranking mode' }, 400);
+}
+
 const STOCK_TICKERS = ['NOVA', 'PIXEL', 'FLUX', 'MIRA'];
 const STOCK_INITIAL_PRICES = {
   NOVA: 120,
@@ -5369,6 +5535,10 @@ export async function onRequest(context) {
 
   if(request.method === 'POST' && path === '/game/bank-balance') {
     return handleGameBankBalance(context);
+  }
+
+  if(request.method === 'POST' && path === '/game/wealth-rankings') {
+    return handleGameWealthRankings(context);
   }
 
   if(request.method === 'POST' && path === '/game/stock-market') {
