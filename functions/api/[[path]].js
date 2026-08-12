@@ -2699,8 +2699,23 @@ async function handleGameCasinoBalance(context) {
   return json({ ok: false, message: 'Invalid casino balance mode' }, 400);
 }
 
-const BANK_HOURLY_RATE = 0.05;
-const BANK_INTEREST_RATE_PERCENT = 5;
+const DEFAULT_BANK_INTEREST_RATE_PERCENT = 3;
+
+function parseBankInterestPercent(headerValue) {
+  const raw = String(headerValue ?? '').trim();
+  if(!raw) {
+    return DEFAULT_BANK_INTEREST_RATE_PERCENT;
+  }
+  const percent = Number(raw);
+  if(!Number.isFinite(percent) || percent < 0) {
+    return DEFAULT_BANK_INTEREST_RATE_PERCENT;
+  }
+  return Math.min(percent, 1000);
+}
+
+function bankHourlyRateFromPercent(percent) {
+  return percent / 100;
+}
 
 let bankBalanceTableReady = false;
 
@@ -2720,11 +2735,13 @@ async function ensureBankBalanceTable(env) {
   bankBalanceTableReady = true;
 }
 
-async function applyBankInterest(env, accountId) {
+async function applyBankInterest(env, accountId, interestRatePercent = DEFAULT_BANK_INTEREST_RATE_PERCENT) {
   await ensureBankBalanceTable(env);
   const id = Number(accountId);
   const now = nowIso();
   const nowMs = Date.now();
+  const ratePercent = parseBankInterestPercent(String(interestRatePercent));
+  const hourlyRate = bankHourlyRateFromPercent(ratePercent);
 
   const row = await env.DB.prepare(`
     SELECT balance, last_interest_at
@@ -2738,7 +2755,7 @@ async function applyBankInterest(env, accountId) {
       INSERT INTO user_bank_balances (user_id, balance, last_interest_at, updated_at)
       VALUES (?, 0, ?, ?)
     `).bind(id, now, now).run();
-    return { balance: 0, interestEarned: 0, interestRatePercent: BANK_INTEREST_RATE_PERCENT };
+    return { balance: 0, interestEarned: 0, interestRatePercent: ratePercent };
   }
 
   const balance = Math.max(0, Math.floor(Number(row.balance) || 0));
@@ -2746,7 +2763,7 @@ async function applyBankInterest(env, accountId) {
   const hours = Math.max(0, (nowMs - lastMs) / 3600000);
   let interestEarned = 0;
   if(balance > 0 && hours > 0) {
-    interestEarned = Math.floor(balance * BANK_HOURLY_RATE * hours);
+    interestEarned = Math.floor(balance * hourlyRate * hours);
   }
   const newBalance = balance + interestEarned;
 
@@ -2761,7 +2778,7 @@ async function applyBankInterest(env, accountId) {
   return {
     balance: newBalance,
     interestEarned,
-    interestRatePercent: BANK_INTEREST_RATE_PERCENT,
+    interestRatePercent: ratePercent,
   };
 }
 
@@ -2789,9 +2806,10 @@ async function handleGameBankBalance(context) {
 
   const mode = String(request.headers.get('X-Game-Bank-Mode') || 'get').trim().toLowerCase();
   const amount = Math.floor(Number(request.headers.get('X-Game-Bank-Amount') || 0));
+  const interestRatePercent = parseBankInterestPercent(request.headers.get('X-Game-Bank-Interest-Percent'));
 
   if(mode === 'get') {
-    const result = await applyBankInterest(env, accountId);
+    const result = await applyBankInterest(env, accountId, interestRatePercent);
     return json({ ok: true, accountId, ...result });
   }
 
@@ -2799,7 +2817,7 @@ async function handleGameBankBalance(context) {
     if(amount <= 0) {
       return json({ ok: false, message: 'Invalid deposit amount' }, 400);
     }
-    const interest = await applyBankInterest(env, accountId);
+    const interest = await applyBankInterest(env, accountId, interestRatePercent);
     const newBalance = interest.balance + amount;
     const now = nowIso();
     await env.DB.prepare(`
@@ -2812,7 +2830,7 @@ async function handleGameBankBalance(context) {
       accountId,
       balance: newBalance,
       interestEarned: interest.interestEarned,
-      interestRatePercent: BANK_INTEREST_RATE_PERCENT,
+      interestRatePercent: interest.interestRatePercent,
     });
   }
 
@@ -2820,7 +2838,7 @@ async function handleGameBankBalance(context) {
     if(amount <= 0) {
       return json({ ok: false, message: 'Invalid withdraw amount' }, 400);
     }
-    const interest = await applyBankInterest(env, accountId);
+    const interest = await applyBankInterest(env, accountId, interestRatePercent);
     if(amount > interest.balance) {
       return json({ ok: false, code: 'INSUFFICIENT_BALANCE', message: 'Insufficient bank balance' }, 400);
     }
@@ -2836,11 +2854,65 @@ async function handleGameBankBalance(context) {
       accountId,
       balance: newBalance,
       interestEarned: interest.interestEarned,
-      interestRatePercent: BANK_INTEREST_RATE_PERCENT,
+      interestRatePercent: interest.interestRatePercent,
     });
   }
 
   return json({ ok: false, message: 'Invalid bank balance mode' }, 400);
+}
+
+let casinoTaxPoolTableReady = false;
+
+async function ensureCasinoTaxPoolTable(env) {
+  if(casinoTaxPoolTableReady) {
+    return;
+  }
+  await env.DB.prepare(`
+    CREATE TABLE IF NOT EXISTS casino_tax_pool (
+      id INTEGER PRIMARY KEY CHECK(id = 1),
+      balance INTEGER NOT NULL DEFAULT 0 CHECK(balance >= 0),
+      updated_at TEXT NOT NULL
+    )
+  `).run();
+  casinoTaxPoolTableReady = true;
+}
+
+async function handleGameCasinoTax(context) {
+  const { request, env } = context;
+  const key = request.headers.get('X-Game-Server-Key') || '';
+  if(!env.GAME_SERVER_API_KEY || !timingSafeEqual(key, env.GAME_SERVER_API_KEY)) {
+    return json({ ok: false, message: 'Unauthorized game server key' }, 401);
+  }
+
+  const amount = Math.floor(Number(request.headers.get('X-Game-Tax-Amount') || 0));
+  const source = String(request.headers.get('X-Game-Tax-Source') || 'game').trim().toLowerCase();
+  if(!Number.isFinite(amount) || amount <= 0) {
+    return json({ ok: false, message: 'Invalid tax amount' }, 400);
+  }
+  if(source !== 'game' && source !== 'stock') {
+    return json({ ok: false, message: 'Invalid tax source' }, 400);
+  }
+
+  await ensureCasinoTaxPoolTable(env);
+  const now = nowIso();
+  await env.DB.prepare(`
+    INSERT OR IGNORE INTO casino_tax_pool (id, balance, updated_at)
+    VALUES (1, 0, ?)
+  `).bind(now).run();
+  await env.DB.prepare(`
+    UPDATE casino_tax_pool
+    SET balance = balance + ?, updated_at = ?
+    WHERE id = 1
+  `).bind(amount, now).run();
+
+  const row = await env.DB.prepare(`
+    SELECT balance
+    FROM casino_tax_pool
+    WHERE id = 1
+    LIMIT 1
+  `).first();
+  const balance = Math.max(0, Math.floor(Number(row?.balance) || 0));
+  return json({ ok: true, amount, source, balance });
 }
 
 async function resolveAccountByName(env, name) {
@@ -5535,6 +5607,10 @@ export async function onRequest(context) {
 
   if(request.method === 'POST' && path === '/game/bank-balance') {
     return handleGameBankBalance(context);
+  }
+
+  if(request.method === 'POST' && path === '/game/casino-tax') {
+    return handleGameCasinoTax(context);
   }
 
   if(request.method === 'POST' && path === '/game/wealth-rankings') {
