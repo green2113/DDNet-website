@@ -2886,24 +2886,55 @@ async function handleGameCasinoTax(context) {
 
   const amount = Math.floor(Number(request.headers.get('X-Game-Tax-Amount') || 0));
   const source = String(request.headers.get('X-Game-Tax-Source') || 'game').trim().toLowerCase();
-  if(!Number.isFinite(amount) || amount <= 0) {
-    return json({ ok: false, message: 'Invalid tax amount' }, 400);
-  }
-  if(source !== 'game' && source !== 'stock') {
+  const debitHeader = String(request.headers.get('X-Game-Tax-Debit') || '').trim().toLowerCase();
+  const debit = debitHeader === '1' || debitHeader === 'true';
+  const allowedSources = ['game', 'stock', 'fine', 'bail', 'lottery', 'lottery_payout'];
+  if(debit && !allowedSources.includes(source)) {
     return json({ ok: false, message: 'Invalid tax source' }, 400);
+  }
+  if(!Number.isFinite(amount) || amount < 0) {
+    return json({ ok: false, message: 'Invalid tax amount' }, 400);
   }
 
   await ensureCasinoTaxPoolTable(env);
   const now = nowIso();
-  await env.DB.prepare(`
-    INSERT OR IGNORE INTO casino_tax_pool (id, balance, updated_at)
-    VALUES (1, 0, ?)
-  `).bind(now).run();
-  await env.DB.prepare(`
-    UPDATE casino_tax_pool
-    SET balance = balance + ?, updated_at = ?
-    WHERE id = 1
-  `).bind(amount, now).run();
+
+  if(debit) {
+    if(amount <= 0) {
+      return json({ ok: false, message: 'Invalid tax amount' }, 400);
+    }
+    const result = await env.DB.prepare(`
+      UPDATE casino_tax_pool
+      SET balance = balance - ?, updated_at = ?
+      WHERE id = 1 AND balance >= ?
+    `).bind(amount, now, amount).run();
+    const row = await env.DB.prepare(`
+      SELECT balance
+      FROM casino_tax_pool
+      WHERE id = 1
+      LIMIT 1
+    `).first();
+    const balance = Math.max(0, Math.floor(Number(row?.balance) || 0));
+    if(!result?.meta?.changes) {
+      return json({ ok: false, message: 'Insufficient tax pool', amount, source, balance }, 409);
+    }
+    return json({ ok: true, amount, source, balance, debit: true });
+  }
+
+  if(amount > 0) {
+    await env.DB.prepare(`
+      INSERT INTO casino_tax_pool (id, balance, updated_at)
+      VALUES (1, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        balance = casino_tax_pool.balance + excluded.balance,
+        updated_at = excluded.updated_at
+    `).bind(amount, now).run();
+  } else {
+    await env.DB.prepare(`
+      INSERT OR IGNORE INTO casino_tax_pool (id, balance, updated_at)
+      VALUES (1, 0, ?)
+    `).bind(now).run();
+  }
 
   const row = await env.DB.prepare(`
     SELECT balance
@@ -2913,6 +2944,88 @@ async function handleGameCasinoTax(context) {
   `).first();
   const balance = Math.max(0, Math.floor(Number(row?.balance) || 0));
   return json({ ok: true, amount, source, balance });
+}
+
+let casinoLotteryTableReady = false;
+const CASINO_LOTTERY_PAYLOAD_MAX_BYTES = 2 * 1024 * 1024;
+
+async function ensureCasinoLotteryTable(env) {
+  if(casinoLotteryTableReady) {
+    return;
+  }
+  await env.DB.prepare(`
+    CREATE TABLE IF NOT EXISTS casino_lottery_state (
+      id INTEGER PRIMARY KEY CHECK(id = 1),
+      payload TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    )
+  `).run();
+  casinoLotteryTableReady = true;
+}
+
+function parseCasinoLotteryPayload(raw) {
+  if(raw == null || raw === '') {
+    return null;
+  }
+  if(typeof raw === 'object' && !Array.isArray(raw)) {
+    return raw;
+  }
+  if(typeof raw !== 'string') {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(raw);
+    if(!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return null;
+    }
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+async function handleGameCasinoLottery(context) {
+  const { request, env } = context;
+  const key = request.headers.get('X-Game-Server-Key') || '';
+  if(!env.GAME_SERVER_API_KEY || !timingSafeEqual(key, env.GAME_SERVER_API_KEY)) {
+    return json({ ok: false, message: 'Unauthorized game server key' }, 401);
+  }
+
+  const mode = String(request.headers.get('X-Game-Lottery-Mode') || 'get').trim().toLowerCase();
+  await ensureCasinoLotteryTable(env);
+
+  if(mode === 'get') {
+    const row = await env.DB.prepare(`
+      SELECT payload
+      FROM casino_lottery_state
+      WHERE id = 1
+      LIMIT 1
+    `).first();
+    return json({ ok: true, payload: parseCasinoLotteryPayload(row?.payload) });
+  }
+
+  if(mode === 'save') {
+    const body = await parseRequestBody(request);
+    const payload = parseCasinoLotteryPayload(body);
+    if(!payload) {
+      return json({ ok: false, message: 'Invalid lottery payload' }, 400);
+    }
+    const text = JSON.stringify(payload);
+    if(text.length > CASINO_LOTTERY_PAYLOAD_MAX_BYTES) {
+      return json({ ok: false, message: 'Lottery payload too large' }, 400);
+    }
+    const now = nowIso();
+    await env.DB.prepare(`
+      INSERT INTO casino_lottery_state (id, payload, updated_at)
+      VALUES (1, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        payload = excluded.payload,
+        updated_at = excluded.updated_at
+    `).bind(text, now).run();
+    return json({ ok: true });
+  }
+
+  return json({ ok: false, message: 'Invalid lottery mode' }, 400);
 }
 
 async function resolveAccountByName(env, name) {
@@ -5611,6 +5724,10 @@ export async function onRequest(context) {
 
   if(request.method === 'POST' && path === '/game/casino-tax') {
     return handleGameCasinoTax(context);
+  }
+
+  if(request.method === 'POST' && path === '/game/casino-lottery') {
+    return handleGameCasinoLottery(context);
   }
 
   if(request.method === 'POST' && path === '/game/wealth-rankings') {
