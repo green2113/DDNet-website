@@ -2861,6 +2861,112 @@ async function handleGameBankBalance(context) {
   return json({ ok: false, message: 'Invalid bank balance mode' }, 400);
 }
 
+let casinoJobRestrictTableReady = false;
+
+async function ensureCasinoJobRestrictTable(env) {
+  if(casinoJobRestrictTableReady) {
+    return;
+  }
+  await env.DB.prepare(`
+    CREATE TABLE IF NOT EXISTS casino_job_restrict (
+      account_id INTEGER NOT NULL,
+      job TEXT NOT NULL,
+      until_unix INTEGER NOT NULL,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (account_id, job)
+    )
+  `).run();
+  casinoJobRestrictTableReady = true;
+}
+
+function normalizeCasinoJobName(raw) {
+  const value = String(raw || '').trim().toLowerCase();
+  if(value === 'citizen' || value === 'c') {
+    return 'citizen';
+  }
+  if(value === 'police' || value === 'p') {
+    return 'police';
+  }
+  if(value === 'thief' || value === 't') {
+    return 'thief';
+  }
+  return '';
+}
+
+async function handleGameCasinoJobRestrict(context) {
+  const { request, env } = context;
+  const key = request.headers.get('X-Game-Server-Key') || '';
+  if(!env.GAME_SERVER_API_KEY || !timingSafeEqual(key, env.GAME_SERVER_API_KEY)) {
+    return json({ ok: false, message: 'Unauthorized game server key' }, 401);
+  }
+
+  const accountId = Math.floor(Number(request.headers.get('X-Game-Account-Id') || 0));
+  const action = String(request.headers.get('X-Game-Job-Restrict-Action') || 'get').trim().toLowerCase();
+  const job = normalizeCasinoJobName(request.headers.get('X-Game-Job'));
+  const untilUnix = Math.floor(Number(request.headers.get('X-Game-Until-Unix') || 0));
+  if(!Number.isFinite(accountId) || accountId <= 0) {
+    return json({ ok: false, message: 'Invalid account id' }, 400);
+  }
+
+  await ensureCasinoJobRestrictTable(env);
+  const nowUnix = Math.floor(Date.now() / 1000);
+  const now = nowIso();
+
+  if(action === 'get') {
+    await env.DB.prepare(`
+      DELETE FROM casino_job_restrict
+      WHERE account_id = ? AND until_unix <= ?
+    `).bind(accountId, nowUnix).run();
+    const rows = await env.DB.prepare(`
+      SELECT job, until_unix
+      FROM casino_job_restrict
+      WHERE account_id = ? AND until_unix > ?
+    `).bind(accountId, nowUnix).all();
+    const restrictions = (rows?.results || []).map((row) => ({
+      job: String(row.job || ''),
+      untilUnix: Math.max(0, Math.floor(Number(row.until_unix) || 0)),
+    })).filter((row) => row.job && row.untilUnix > nowUnix);
+    return json({ ok: true, accountId, restrictions });
+  }
+
+  const user = await env.DB.prepare(`
+    SELECT id
+    FROM users
+    WHERE id = ?
+    LIMIT 1
+  `).bind(accountId).first();
+  if(!user) {
+    return json({ ok: false, message: 'Account not found' }, 404);
+  }
+  if(!job) {
+    return json({ ok: false, message: 'Invalid job' }, 400);
+  }
+
+  if(action === 'clear') {
+    await env.DB.prepare(`
+      DELETE FROM casino_job_restrict
+      WHERE account_id = ? AND job = ?
+    `).bind(accountId, job).run();
+    return json({ ok: true, accountId, job, cleared: true, untilUnix: 0 });
+  }
+
+  if(action !== 'set') {
+    return json({ ok: false, message: 'Invalid action' }, 400);
+  }
+  if(!Number.isFinite(untilUnix) || untilUnix <= nowUnix) {
+    return json({ ok: false, message: 'Invalid until time' }, 400);
+  }
+
+  await env.DB.prepare(`
+    INSERT INTO casino_job_restrict (account_id, job, until_unix, updated_at)
+    VALUES (?, ?, ?, ?)
+    ON CONFLICT(account_id, job) DO UPDATE SET
+      until_unix = excluded.until_unix,
+      updated_at = excluded.updated_at
+  `).bind(accountId, job, untilUnix, now).run();
+  return json({ ok: true, accountId, job, untilUnix });
+}
+
 let casinoTaxPoolTableReady = false;
 
 async function ensureCasinoTaxPoolTable(env) {
@@ -2888,7 +2994,7 @@ async function handleGameCasinoTax(context) {
   const source = String(request.headers.get('X-Game-Tax-Source') || 'game').trim().toLowerCase();
   const debitHeader = String(request.headers.get('X-Game-Tax-Debit') || '').trim().toLowerCase();
   const debit = debitHeader === '1' || debitHeader === 'true';
-  const allowedSources = ['game', 'stock', 'fine', 'bail', 'lottery', 'lottery_payout'];
+  const allowedSources = ['game', 'stock', 'fine', 'bail', 'lottery', 'lottery_payout', 'police_reward', 'bounty_reward'];
   if(debit && !allowedSources.includes(source)) {
     return json({ ok: false, message: 'Invalid tax source' }, 400);
   }
@@ -3349,6 +3455,21 @@ async function handleGameStockMarket(context) {
     }
     const prices = await loadStockPrices(env);
     return json({ ok: true, prices });
+  }
+
+  if(mode === 'bankrupt') {
+    const ticker = normalizeStockTicker(request.headers.get('X-Game-Stock-Ticker'));
+    if(!ticker) {
+      return json({ ok: false, message: 'Invalid ticker' }, 400);
+    }
+    await ensureStockMarketTables(env);
+    const now = nowIso();
+    const wiped = await env.DB.prepare(`
+      UPDATE user_stock_holdings
+      SET shares = 0, avg_cost = 0, updated_at = ?
+      WHERE ticker = ? AND shares > 0
+    `).bind(now, ticker).run();
+    return json({ ok: true, ticker, wiped: wiped.meta?.changes || 0 });
   }
 
   const accountId = Number(request.headers.get('X-Game-Account-Id') || 0);
@@ -5728,6 +5849,10 @@ export async function onRequest(context) {
 
   if(request.method === 'POST' && path === '/game/casino-lottery') {
     return handleGameCasinoLottery(context);
+  }
+
+  if(request.method === 'POST' && path === '/game/casino-job-restrict') {
+    return handleGameCasinoJobRestrict(context);
   }
 
   if(request.method === 'POST' && path === '/game/wealth-rankings') {
