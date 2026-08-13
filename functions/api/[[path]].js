@@ -3359,7 +3359,32 @@ async function ensureStockMarketTables(env) {
     )
   `).run();
   await ensureStockHoldingsAvgCostColumn(env);
+  await env.DB.prepare(`
+    CREATE TABLE IF NOT EXISTS user_stock_bankrupt_snapshots (
+      ticker TEXT NOT NULL,
+      user_id INTEGER NOT NULL,
+      shares INTEGER NOT NULL CHECK(shares > 0),
+      avg_cost INTEGER NOT NULL DEFAULT 0 CHECK(avg_cost >= 0),
+      created_at TEXT NOT NULL,
+      PRIMARY KEY (ticker, user_id),
+      FOREIGN KEY (user_id) REFERENCES users(id)
+    )
+  `).run();
+  await env.DB.prepare(`
+    CREATE TABLE IF NOT EXISTS stock_bankrupt_meta (
+      ticker TEXT PRIMARY KEY,
+      price INTEGER NOT NULL CHECK(price >= 0),
+      created_at TEXT NOT NULL
+    )
+  `).run();
   stockMarketTableReady = true;
+}
+
+async function runStockDbBatch(env, stmts) {
+  const size = 50;
+  for(let i = 0; i < stmts.length; i += size) {
+    await env.DB.batch(stmts.slice(i, i + size));
+  }
 }
 
 async function ensureStockPriceSeeds(env) {
@@ -3464,12 +3489,112 @@ async function handleGameStockMarket(context) {
     }
     await ensureStockMarketTables(env);
     const now = nowIso();
+    let price = Math.floor(Number(request.headers.get('X-Game-Stock-Price') || 0));
+    if(price <= 0) {
+      const priceRow = await env.DB.prepare(`
+        SELECT price
+        FROM stock_market_state
+        WHERE ticker = ?
+        LIMIT 1
+      `).bind(ticker).first();
+      price = Math.max(0, Math.floor(Number(priceRow?.price) || 0));
+    }
+    const holders = await env.DB.prepare(`
+      SELECT user_id, shares, avg_cost
+      FROM user_stock_holdings
+      WHERE ticker = ? AND shares > 0
+    `).bind(ticker).all();
+    const holderRows = holders.results || [];
+    if(holderRows.length > 0) {
+      await env.DB.prepare(`
+        DELETE FROM user_stock_bankrupt_snapshots
+        WHERE ticker = ?
+      `).bind(ticker).run();
+      const snapshotStmts = holderRows.map((row) => env.DB.prepare(`
+        INSERT INTO user_stock_bankrupt_snapshots (ticker, user_id, shares, avg_cost, created_at)
+        VALUES (?, ?, ?, ?, ?)
+      `).bind(
+        ticker,
+        row.user_id,
+        Math.max(1, Math.floor(Number(row.shares) || 0)),
+        Math.max(0, Math.floor(Number(row.avg_cost) || 0)),
+        now,
+      ));
+      await runStockDbBatch(env, snapshotStmts);
+      await env.DB.prepare(`
+        INSERT INTO stock_bankrupt_meta (ticker, price, created_at)
+        VALUES (?, ?, ?)
+        ON CONFLICT(ticker) DO UPDATE SET
+          price = excluded.price,
+          created_at = excluded.created_at
+      `).bind(ticker, price, now).run();
+    }
     const wiped = await env.DB.prepare(`
       UPDATE user_stock_holdings
       SET shares = 0, avg_cost = 0, updated_at = ?
       WHERE ticker = ? AND shares > 0
     `).bind(now, ticker).run();
-    return json({ ok: true, ticker, wiped: wiped.meta?.changes || 0 });
+    return json({ ok: true, ticker, wiped: wiped.meta?.changes || 0, snapshotted: holderRows.length, price });
+  }
+
+  if(mode === 'restore_bankrupt') {
+    const ticker = normalizeStockTicker(request.headers.get('X-Game-Stock-Ticker'));
+    if(!ticker) {
+      return json({ ok: false, message: 'Invalid ticker' }, 400);
+    }
+    await ensureStockMarketTables(env);
+    const now = nowIso();
+    const meta = await env.DB.prepare(`
+      SELECT price
+      FROM stock_bankrupt_meta
+      WHERE ticker = ?
+      LIMIT 1
+    `).bind(ticker).first();
+    const snapshots = await env.DB.prepare(`
+      SELECT user_id, shares, avg_cost
+      FROM user_stock_bankrupt_snapshots
+      WHERE ticker = ? AND shares > 0
+    `).bind(ticker).all();
+    const snapshotRows = snapshots.results || [];
+    if(!meta && snapshotRows.length === 0) {
+      return json({ ok: false, code: 'NO_SNAPSHOT', message: 'No bankruptcy snapshot' }, 404);
+    }
+    const price = Math.max(0, Math.floor(Number(meta?.price) || 0));
+    if(snapshotRows.length > 0) {
+      const restoreStmts = snapshotRows.map((row) => env.DB.prepare(`
+        INSERT INTO user_stock_holdings (user_id, ticker, shares, avg_cost, updated_at)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(user_id, ticker) DO UPDATE SET
+          shares = excluded.shares,
+          avg_cost = excluded.avg_cost,
+          updated_at = excluded.updated_at
+      `).bind(
+        row.user_id,
+        ticker,
+        Math.max(1, Math.floor(Number(row.shares) || 0)),
+        Math.max(0, Math.floor(Number(row.avg_cost) || 0)),
+        now,
+      ));
+      await runStockDbBatch(env, restoreStmts);
+    }
+    if(price > 0) {
+      await env.DB.prepare(`
+        UPDATE stock_market_state
+        SET price = ?, updated_at = ?
+        WHERE ticker = ?
+      `).bind(price, now, ticker).run();
+    }
+    return json({
+      ok: true,
+      ticker,
+      price,
+      restored: snapshotRows.length,
+      accounts: snapshotRows.map((row) => ({
+        id: Math.floor(Number(row.user_id) || 0),
+        shares: Math.max(0, Math.floor(Number(row.shares) || 0)),
+        avgCost: Math.max(0, Math.floor(Number(row.avg_cost) || 0)),
+      })),
+    });
   }
 
   const accountId = Number(request.headers.get('X-Game-Account-Id') || 0);
