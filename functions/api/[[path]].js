@@ -3315,7 +3315,7 @@ async function ensureCasinoTrailTable(env) {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       account_id INTEGER NOT NULL,
       mode INTEGER NOT NULL CHECK(mode BETWEEN 1 AND 3),
-      days INTEGER NOT NULL CHECK(days IN (1, 7, 30)),
+      days INTEGER NOT NULL CHECK(days > 0),
       expires_unix INTEGER NOT NULL CHECK(expires_unix > 0),
       equipped INTEGER NOT NULL DEFAULT 0 CHECK(equipped IN (0, 1)),
       created_at TEXT NOT NULL,
@@ -3444,12 +3444,14 @@ async function handleGameCasinoTrails(context) {
     }
 
     // Clear first so the per-account unique index never sees two equipped rows.
-    await env.DB.prepare(`
-      UPDATE casino_trail_items SET equipped = 0 WHERE account_id = ? AND equipped = 1
-    `).bind(accountId).run();
-    await env.DB.prepare(`
-      UPDATE casino_trail_items SET equipped = 1 WHERE id = ? AND account_id = ?
-    `).bind(itemId, accountId).run();
+    await env.DB.batch([
+      env.DB.prepare(`
+        UPDATE casino_trail_items SET equipped = 0 WHERE account_id = ? AND equipped = 1
+      `).bind(accountId),
+      env.DB.prepare(`
+        UPDATE casino_trail_items SET equipped = 1 WHERE id = ? AND account_id = ?
+      `).bind(itemId, accountId),
+    ]);
 
     const inventory = await loadCasinoTrailInventory(env, accountId, nowUnix);
     return json({ ok: true, accountId, inventory });
