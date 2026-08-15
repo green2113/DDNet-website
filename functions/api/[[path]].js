@@ -3303,6 +3303,280 @@ async function handleGameCasinoLottery(context) {
   return json({ ok: false, message: 'Invalid lottery mode' }, 400);
 }
 
+let casinoTrailTableReady = false;
+const CASINO_TRAIL_PAYLOAD_MAX_BYTES = 256 * 1024;
+const CASINO_TRAIL_ALLOWED_DAYS = new Set([1, 7, 30]);
+
+async function ensureCasinoTrailTable(env) {
+  if(casinoTrailTableReady) {
+    return;
+  }
+  await env.DB.prepare(`
+    CREATE TABLE IF NOT EXISTS casino_trail_inventories (
+      account_id INTEGER PRIMARY KEY,
+      active_item_id INTEGER NOT NULL DEFAULT 0 CHECK(active_item_id >= 0),
+      next_item_id INTEGER NOT NULL DEFAULT 1 CHECK(next_item_id >= 1),
+      items_json TEXT NOT NULL DEFAULT '[]',
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (account_id) REFERENCES users(id)
+    )
+  `).run();
+  await env.DB.prepare(`
+    CREATE INDEX IF NOT EXISTS idx_casino_trail_inventories_updated_at
+    ON casino_trail_inventories(updated_at)
+  `).run();
+  casinoTrailTableReady = true;
+}
+
+function emptyCasinoTrailInventory(accountId) {
+  return {
+    accountId,
+    activeItemId: 0,
+    nextItemId: 1,
+    items: [],
+  };
+}
+
+function parseCasinoTrailItems(rawItems, nowUnix, keepExpired = false) {
+  const items = [];
+  if(!Array.isArray(rawItems)) {
+    return items;
+  }
+  for(const entry of rawItems) {
+    if(!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+      continue;
+    }
+    const id = Math.floor(Number(entry.id) || 0);
+    const mode = Math.floor(Number(entry.mode) || 0);
+    const days = Math.floor(Number(entry.days) || 0);
+    const expiresUnix = Math.floor(Number(entry.expiresUnix) || 0);
+    if(id <= 0 || mode < 1 || mode > 3) {
+      continue;
+    }
+    if(!CASINO_TRAIL_ALLOWED_DAYS.has(days)) {
+      continue;
+    }
+    if(expiresUnix <= 0) {
+      continue;
+    }
+    if(!keepExpired && expiresUnix <= nowUnix) {
+      continue;
+    }
+    items.push({ id, mode, days, expiresUnix });
+  }
+  items.sort((a, b) => a.id - b.id);
+  return items;
+}
+
+function normalizeCasinoTrailInventory(raw, accountId, options = {}) {
+  const nowUnix = Math.floor(Date.now() / 1000);
+  const keepExpired = options.keepExpired === true;
+  const inventory = emptyCasinoTrailInventory(accountId);
+  if(!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return inventory;
+  }
+
+  inventory.activeItemId = Math.max(0, Math.floor(Number(raw.activeItemId) || 0));
+  inventory.nextItemId = Math.max(1, Math.floor(Number(raw.nextItemId) || 1));
+  inventory.items = parseCasinoTrailItems(raw.items, nowUnix, keepExpired);
+
+  if(!inventory.items.some((item) => item.id === inventory.activeItemId)) {
+    inventory.activeItemId = 0;
+  }
+
+  for(const item of inventory.items) {
+    inventory.nextItemId = Math.max(inventory.nextItemId, item.id + 1);
+  }
+
+  return inventory;
+}
+
+function validateCasinoTrailInventory(inventory) {
+  if(!inventory || typeof inventory !== 'object') {
+    return 'Invalid trail inventory';
+  }
+  if(!Number.isFinite(inventory.accountId) || inventory.accountId <= 0) {
+    return 'Invalid account id';
+  }
+  if(!Number.isFinite(inventory.activeItemId) || inventory.activeItemId < 0) {
+    return 'Invalid active item id';
+  }
+  if(!Number.isFinite(inventory.nextItemId) || inventory.nextItemId < 1) {
+    return 'Invalid next item id';
+  }
+  if(!Array.isArray(inventory.items)) {
+    return 'Invalid trail items';
+  }
+
+  const nowUnix = Math.floor(Date.now() / 1000);
+  const seenIds = new Set();
+  const activeModes = new Set();
+  for(const item of inventory.items) {
+    if(!item || typeof item !== 'object') {
+      return 'Invalid trail item';
+    }
+    const id = Math.floor(Number(item.id) || 0);
+    const mode = Math.floor(Number(item.mode) || 0);
+    const days = Math.floor(Number(item.days) || 0);
+    const expiresUnix = Math.floor(Number(item.expiresUnix) || 0);
+    if(id <= 0 || seenIds.has(id)) {
+      return 'Invalid trail item id';
+    }
+    seenIds.add(id);
+    if(mode < 1 || mode > 3) {
+      return 'Invalid trail mode';
+    }
+    if(!CASINO_TRAIL_ALLOWED_DAYS.has(days)) {
+      return 'Invalid trail duration';
+    }
+    if(expiresUnix <= 0) {
+      return 'Invalid trail expiry';
+    }
+    if(expiresUnix <= nowUnix) {
+      continue;
+    }
+    if(activeModes.has(mode)) {
+      return 'Duplicate active trail mode';
+    }
+    activeModes.add(mode);
+  }
+
+  if(inventory.activeItemId > 0 && !seenIds.has(inventory.activeItemId)) {
+    return 'Active trail item not found';
+  }
+  if(inventory.activeItemId > 0) {
+    const activeItem = inventory.items.find((item) => item.id === inventory.activeItemId);
+    if(!activeItem || activeItem.expiresUnix <= nowUnix) {
+      return 'Active trail item expired';
+    }
+  }
+
+  return '';
+}
+
+async function loadCasinoTrailInventory(env, accountId) {
+  const row = await env.DB.prepare(`
+    SELECT active_item_id, next_item_id, items_json
+    FROM casino_trail_inventories
+    WHERE account_id = ?
+    LIMIT 1
+  `).bind(accountId).first();
+  if(!row) {
+    return emptyCasinoTrailInventory(accountId);
+  }
+
+  let items = [];
+  try {
+    const parsed = JSON.parse(String(row.items_json || '[]'));
+    items = parseCasinoTrailItems(parsed, Math.floor(Date.now() / 1000), false);
+  } catch {
+    items = [];
+  }
+
+  const inventory = {
+    accountId,
+    activeItemId: Math.max(0, Math.floor(Number(row.active_item_id) || 0)),
+    nextItemId: Math.max(1, Math.floor(Number(row.next_item_id) || 1)),
+    items,
+  };
+  if(!inventory.items.some((item) => item.id === inventory.activeItemId)) {
+    inventory.activeItemId = 0;
+  }
+  for(const item of inventory.items) {
+    inventory.nextItemId = Math.max(inventory.nextItemId, item.id + 1);
+  }
+  return inventory;
+}
+
+async function saveCasinoTrailInventory(env, inventory) {
+  const now = nowIso();
+  const itemsJson = JSON.stringify(inventory.items || []);
+  if(itemsJson.length > CASINO_TRAIL_PAYLOAD_MAX_BYTES) {
+    throw new Error('Trail payload too large');
+  }
+  await env.DB.prepare(`
+    INSERT INTO casino_trail_inventories (account_id, active_item_id, next_item_id, items_json, updated_at)
+    VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(account_id) DO UPDATE SET
+      active_item_id = excluded.active_item_id,
+      next_item_id = excluded.next_item_id,
+      items_json = excluded.items_json,
+      updated_at = excluded.updated_at
+  `).bind(
+    inventory.accountId,
+    inventory.activeItemId,
+    inventory.nextItemId,
+    itemsJson,
+    now,
+  ).run();
+}
+
+async function handleGameCasinoTrails(context) {
+  const { request, env } = context;
+  const key = request.headers.get('X-Game-Server-Key') || '';
+  if(!env.GAME_SERVER_API_KEY || !timingSafeEqual(key, env.GAME_SERVER_API_KEY)) {
+    return json({ ok: false, message: 'Unauthorized game server key' }, 401);
+  }
+
+  const accountId = Math.floor(Number(request.headers.get('X-Game-Account-Id') || 0));
+  if(!Number.isFinite(accountId) || accountId <= 0) {
+    return json({ ok: false, message: 'Invalid account id' }, 400);
+  }
+
+  const user = await env.DB.prepare(`
+    SELECT id
+    FROM users
+    WHERE id = ?
+    LIMIT 1
+  `).bind(accountId).first();
+  if(!user) {
+    return json({ ok: false, message: 'Account not found' }, 404);
+  }
+
+  const mode = String(request.headers.get('X-Game-Trail-Mode') || 'get').trim().toLowerCase();
+  await ensureCasinoTrailTable(env);
+
+  if(mode === 'get') {
+    const inventory = await loadCasinoTrailInventory(env, accountId);
+    return json({ ok: true, accountId, inventory });
+  }
+
+  if(mode === 'save') {
+    const body = await parseRequestBody(request);
+    const parsed = parseCasinoLotteryPayload(body);
+    if(!parsed) {
+      return json({ ok: false, message: 'Invalid trail payload' }, 400);
+    }
+
+    const payloadAccountId = Math.floor(Number(parsed.accountId) || 0);
+    if(payloadAccountId > 0 && payloadAccountId !== accountId) {
+      return json({ ok: false, message: 'Account id mismatch' }, 400);
+    }
+
+    const inventory = normalizeCasinoTrailInventory(parsed, accountId, { keepExpired: false });
+    inventory.accountId = accountId;
+    const validationError = validateCasinoTrailInventory(inventory);
+    if(validationError) {
+      return json({ ok: false, message: validationError }, 400);
+    }
+
+    const serialized = JSON.stringify(inventory);
+    if(serialized.length > CASINO_TRAIL_PAYLOAD_MAX_BYTES) {
+      return json({ ok: false, message: 'Trail payload too large' }, 400);
+    }
+
+    try {
+      await saveCasinoTrailInventory(env, inventory);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Trail save failed';
+      return json({ ok: false, message }, 400);
+    }
+    return json({ ok: true, accountId, inventory });
+  }
+
+  return json({ ok: false, message: 'Invalid trail mode' }, 400);
+}
+
 async function resolveAccountByName(env, name) {
   const normalized = lower(name || '').trim();
   if(!normalized) {
@@ -6143,6 +6417,10 @@ export async function onRequest(context) {
 
   if(request.method === 'POST' && path === '/game/casino-lottery') {
     return handleGameCasinoLottery(context);
+  }
+
+  if(request.method === 'POST' && path === '/game/casino-trails') {
+    return handleGameCasinoTrails(context);
   }
 
   if(request.method === 'POST' && path === '/game/casino-give-daily') {
