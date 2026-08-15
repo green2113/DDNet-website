@@ -2699,6 +2699,161 @@ async function handleGameCasinoBalance(context) {
   return json({ ok: false, message: 'Invalid casino balance mode' }, 400);
 }
 
+let casinoGiveDailyTableReady = false;
+
+async function ensureCasinoGiveDailyTable(env) {
+  if(casinoGiveDailyTableReady) {
+    return;
+  }
+  await env.DB.prepare(`
+    CREATE TABLE IF NOT EXISTS casino_give_daily (
+      account_id INTEGER PRIMARY KEY,
+      day INTEGER NOT NULL,
+      amount_sent INTEGER NOT NULL DEFAULT 0 CHECK(amount_sent >= 0),
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (account_id) REFERENCES users(id)
+    )
+  `).run();
+  casinoGiveDailyTableReady = true;
+}
+
+function utcDayNumber() {
+  return Math.floor(Date.now() / 1000 / 86400);
+}
+
+async function handleGameCasinoGiveDaily(context) {
+  const { request, env } = context;
+  const key = request.headers.get('X-Game-Server-Key') || '';
+  if(!env.GAME_SERVER_API_KEY || !timingSafeEqual(key, env.GAME_SERVER_API_KEY)) {
+    return json({ ok: false, message: 'Unauthorized game server key' }, 401);
+  }
+
+  const accountId = Math.floor(Number(request.headers.get('X-Game-Account-Id') || 0));
+  if(!Number.isFinite(accountId) || accountId <= 0) {
+    return json({ ok: false, message: 'Invalid account id' }, 400);
+  }
+
+  const user = await env.DB.prepare(`
+    SELECT id
+    FROM users
+    WHERE id = ?
+    LIMIT 1
+  `).bind(accountId).first();
+  if(!user) {
+    return json({ ok: false, message: 'Account not found' }, 404);
+  }
+
+  const mode = String(request.headers.get('X-Game-Give-Mode') || 'get').trim().toLowerCase();
+  const limit = Math.max(0, Math.floor(Number(request.headers.get('X-Game-Give-Limit') || 0)));
+  const amount = Math.max(0, Math.floor(Number(request.headers.get('X-Game-Give-Amount') || 0)));
+  const today = utcDayNumber();
+  const now = nowIso();
+
+  await ensureCasinoGiveDailyTable(env);
+
+  await env.DB.prepare(`
+    INSERT INTO casino_give_daily (account_id, day, amount_sent, updated_at)
+    VALUES (?, ?, 0, ?)
+    ON CONFLICT(account_id) DO UPDATE SET
+      day = CASE WHEN casino_give_daily.day != ? THEN ? ELSE casino_give_daily.day END,
+      amount_sent = CASE WHEN casino_give_daily.day != ? THEN 0 ELSE casino_give_daily.amount_sent END,
+      updated_at = excluded.updated_at
+  `).bind(accountId, today, now, today, today, today).run();
+
+  const row = await env.DB.prepare(`
+    SELECT day, amount_sent
+    FROM casino_give_daily
+    WHERE account_id = ?
+    LIMIT 1
+  `).bind(accountId).first();
+  const amountSent = row && Number(row.day) === today ? Math.max(0, Math.floor(Number(row.amount_sent) || 0)) : 0;
+  const remaining = limit > 0 ? Math.max(0, limit - amountSent) : null;
+
+  if(mode === 'get') {
+    return json({ ok: true, accountId, day: today, amountSent, remaining, limit });
+  }
+
+  if(mode !== 'consume' && mode !== 'release') {
+    return json({ ok: false, message: 'Invalid give daily mode' }, 400);
+  }
+
+  if(limit <= 0) {
+    return json({ ok: true, accountId, day: today, amountSent, remaining: null, limit });
+  }
+
+  if(amount <= 0) {
+    return json({ ok: false, message: 'Invalid amount' }, 400);
+  }
+
+  if(mode === 'release') {
+    const updated = await env.DB.prepare(`
+      UPDATE casino_give_daily
+      SET amount_sent = CASE WHEN amount_sent >= ? THEN amount_sent - ? ELSE 0 END,
+          updated_at = ?
+      WHERE account_id = ? AND day = ?
+      RETURNING amount_sent
+    `).bind(amount, amount, now, accountId, today).first();
+    const newAmountSent = updated ? Math.max(0, Math.floor(Number(updated.amount_sent) || 0)) : amountSent;
+    return json({
+      ok: true,
+      accountId,
+      day: today,
+      amountSent: newAmountSent,
+      remaining: Math.max(0, limit - newAmountSent),
+      limit,
+      released: amount,
+    });
+  }
+
+  if(amountSent + amount > limit) {
+    return json({
+      ok: false,
+      code: 'LIMIT_EXCEEDED',
+      accountId,
+      day: today,
+      amountSent,
+      remaining,
+      limit,
+    }, 409);
+  }
+
+  const updated = await env.DB.prepare(`
+    UPDATE casino_give_daily
+    SET amount_sent = amount_sent + ?, updated_at = ?
+    WHERE account_id = ? AND day = ? AND amount_sent + ? <= ?
+    RETURNING amount_sent
+  `).bind(amount, now, accountId, today, amount, limit).first();
+
+  if(!updated) {
+    const latest = await env.DB.prepare(`
+      SELECT day, amount_sent
+      FROM casino_give_daily
+      WHERE account_id = ?
+      LIMIT 1
+    `).bind(accountId).first();
+    const latestSent = latest && Number(latest.day) === today ? Math.max(0, Math.floor(Number(latest.amount_sent) || 0)) : 0;
+    return json({
+      ok: false,
+      code: 'LIMIT_EXCEEDED',
+      accountId,
+      day: today,
+      amountSent: latestSent,
+      remaining: Math.max(0, limit - latestSent),
+      limit,
+    }, 409);
+  }
+
+  const newAmountSent = Math.max(0, Math.floor(Number(updated.amount_sent) || 0));
+  return json({
+    ok: true,
+    accountId,
+    day: today,
+    amountSent: newAmountSent,
+    remaining: Math.max(0, limit - newAmountSent),
+    limit,
+  });
+}
+
 const DEFAULT_BANK_INTEREST_RATE_PERCENT = 3;
 
 function parseBankInterestPercent(headerValue) {
@@ -2715,6 +2870,14 @@ function parseBankInterestPercent(headerValue) {
 
 function bankHourlyRateFromPercent(percent) {
   return percent / 100;
+}
+
+function parseBankInterestMaxPerHour(value) {
+  const max = Math.floor(Number(value));
+  if(!Number.isFinite(max) || max < 0) {
+    return 0;
+  }
+  return max;
 }
 
 let bankBalanceTableReady = false;
@@ -2735,13 +2898,14 @@ async function ensureBankBalanceTable(env) {
   bankBalanceTableReady = true;
 }
 
-async function applyBankInterest(env, accountId, interestRatePercent = DEFAULT_BANK_INTEREST_RATE_PERCENT) {
+async function applyBankInterest(env, accountId, interestRatePercent = DEFAULT_BANK_INTEREST_RATE_PERCENT, interestMaxPerHour = 0) {
   await ensureBankBalanceTable(env);
   const id = Number(accountId);
   const now = nowIso();
   const nowMs = Date.now();
   const ratePercent = parseBankInterestPercent(String(interestRatePercent));
   const hourlyRate = bankHourlyRateFromPercent(ratePercent);
+  const maxPerHour = parseBankInterestMaxPerHour(interestMaxPerHour);
 
   const row = await env.DB.prepare(`
     SELECT balance, last_interest_at
@@ -2764,6 +2928,9 @@ async function applyBankInterest(env, accountId, interestRatePercent = DEFAULT_B
   let interestEarned = 0;
   if(balance > 0 && hours > 0) {
     interestEarned = Math.floor(balance * hourlyRate * hours);
+    if(maxPerHour > 0) {
+      interestEarned = Math.min(interestEarned, Math.floor(maxPerHour * hours));
+    }
   }
   const newBalance = balance + interestEarned;
 
@@ -2779,6 +2946,7 @@ async function applyBankInterest(env, accountId, interestRatePercent = DEFAULT_B
     balance: newBalance,
     interestEarned,
     interestRatePercent: ratePercent,
+    interestMaxPerHour: maxPerHour,
   };
 }
 
@@ -2807,9 +2975,10 @@ async function handleGameBankBalance(context) {
   const mode = String(request.headers.get('X-Game-Bank-Mode') || 'get').trim().toLowerCase();
   const amount = Math.floor(Number(request.headers.get('X-Game-Bank-Amount') || 0));
   const interestRatePercent = parseBankInterestPercent(request.headers.get('X-Game-Bank-Interest-Percent'));
+  const interestMaxPerHour = parseBankInterestMaxPerHour(request.headers.get('X-Game-Bank-Interest-Max-Per-Hour'));
 
   if(mode === 'get') {
-    const result = await applyBankInterest(env, accountId, interestRatePercent);
+    const result = await applyBankInterest(env, accountId, interestRatePercent, interestMaxPerHour);
     return json({ ok: true, accountId, ...result });
   }
 
@@ -2817,7 +2986,7 @@ async function handleGameBankBalance(context) {
     if(amount <= 0) {
       return json({ ok: false, message: 'Invalid deposit amount' }, 400);
     }
-    const interest = await applyBankInterest(env, accountId, interestRatePercent);
+    const interest = await applyBankInterest(env, accountId, interestRatePercent, interestMaxPerHour);
     const newBalance = interest.balance + amount;
     const now = nowIso();
     await env.DB.prepare(`
@@ -2838,7 +3007,7 @@ async function handleGameBankBalance(context) {
     if(amount <= 0) {
       return json({ ok: false, message: 'Invalid withdraw amount' }, 400);
     }
-    const interest = await applyBankInterest(env, accountId, interestRatePercent);
+    const interest = await applyBankInterest(env, accountId, interestRatePercent, interestMaxPerHour);
     if(amount > interest.balance) {
       return json({ ok: false, code: 'INSUFFICIENT_BALANCE', message: 'Insufficient bank balance' }, 400);
     }
@@ -5974,6 +6143,10 @@ export async function onRequest(context) {
 
   if(request.method === 'POST' && path === '/game/casino-lottery') {
     return handleGameCasinoLottery(context);
+  }
+
+  if(request.method === 'POST' && path === '/game/casino-give-daily') {
+    return handleGameCasinoGiveDaily(context);
   }
 
   if(request.method === 'POST' && path === '/game/casino-job-restrict') {
