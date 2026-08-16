@@ -3305,6 +3305,15 @@ async function handleGameCasinoLottery(context) {
 
 let casinoTrailTableReady = false;
 const CASINO_TRAIL_ALLOWED_DAYS = new Set([1, 7, 30]);
+// Modes 1-3 are trails, modes 4-5 gun skins. Each slot equips independently.
+const CASINO_COSMETIC_SLOTS = [
+  { slot: 0, minMode: 1, maxMode: 3 },
+  { slot: 1, minMode: 4, maxMode: 5 },
+];
+
+function casinoCosmeticSlotForMode(mode) {
+  return CASINO_COSMETIC_SLOTS.find((entry) => mode >= entry.minMode && mode <= entry.maxMode) || null;
+}
 
 async function ensureCasinoTrailTable(env) {
   if(casinoTrailTableReady) {
@@ -3314,7 +3323,7 @@ async function ensureCasinoTrailTable(env) {
     CREATE TABLE IF NOT EXISTS casino_trail_items (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       account_id INTEGER NOT NULL,
-      mode INTEGER NOT NULL CHECK(mode BETWEEN 1 AND 3),
+      mode INTEGER NOT NULL CHECK(mode BETWEEN 1 AND 5),
       days INTEGER NOT NULL CHECK(days > 0),
       expires_unix INTEGER NOT NULL CHECK(expires_unix > 0),
       equipped INTEGER NOT NULL DEFAULT 0 CHECK(equipped IN (0, 1)),
@@ -3332,7 +3341,8 @@ async function ensureCasinoTrailTable(env) {
   `).run();
   await env.DB.prepare(`
     CREATE UNIQUE INDEX IF NOT EXISTS idx_casino_trail_items_equipped
-    ON casino_trail_items(account_id) WHERE equipped = 1
+    ON casino_trail_items(account_id, (CASE WHEN mode <= 3 THEN 0 ELSE 1 END))
+    WHERE equipped = 1
   `).run();
   casinoTrailTableReady = true;
 }
@@ -3358,12 +3368,21 @@ async function loadCasinoTrailInventory(env, accountId, nowUnix) {
     mode: Math.floor(Number(row.mode) || 0),
     days: Math.floor(Number(row.days) || 0),
     expiresUnix: Math.floor(Number(row.expires_unix) || 0),
+    equipped: Math.floor(Number(row.equipped) || 0) === 1 ? 1 : 0,
   }));
-  const equipped = rows.find((row) => Math.floor(Number(row.equipped) || 0) === 1);
+
+  const activeBySlot = [0, 0];
+  for(const item of items) {
+    const entry = casinoCosmeticSlotForMode(item.mode);
+    if(item.equipped && entry) {
+      activeBySlot[entry.slot] = item.id;
+    }
+  }
 
   return {
     accountId,
-    activeItemId: equipped ? Math.floor(Number(equipped.id) || 0) : 0,
+    activeTrailItemId: activeBySlot[0],
+    activeGunItemId: activeBySlot[1],
     items,
   };
 }
@@ -3399,7 +3418,7 @@ async function handleGameCasinoTrails(context) {
   if(mode === 'buy') {
     const trailMode = Math.floor(Number(request.headers.get('X-Game-Trail-Type') || 0));
     const days = Math.floor(Number(request.headers.get('X-Game-Trail-Days') || 0));
-    if(!Number.isFinite(trailMode) || trailMode < 1 || trailMode > 3) {
+    if(!Number.isFinite(trailMode) || !casinoCosmeticSlotForMode(trailMode)) {
       return json({ ok: false, message: 'Invalid trail type' }, 400);
     }
     if(!CASINO_TRAIL_ALLOWED_DAYS.has(days)) {
@@ -3433,21 +3452,23 @@ async function handleGameCasinoTrails(context) {
     }
 
     const owned = await env.DB.prepare(`
-      SELECT id
+      SELECT id, mode
       FROM casino_trail_items
       WHERE id = ? AND account_id = ? AND expires_unix > ?
       LIMIT 1
     `).bind(itemId, accountId, nowUnix).first();
-    if(!owned) {
+    const slot = owned ? casinoCosmeticSlotForMode(Math.floor(Number(owned.mode) || 0)) : null;
+    if(!owned || !slot) {
       const inventory = await loadCasinoTrailInventory(env, accountId, nowUnix);
       return json({ ok: false, code: 'NOT_OWNED', accountId, inventory }, 404);
     }
 
-    // Clear first so the per-account unique index never sees two equipped rows.
+    // Clear the slot first so the per-slot unique index never sees two equipped rows.
     await env.DB.batch([
       env.DB.prepare(`
-        UPDATE casino_trail_items SET equipped = 0 WHERE account_id = ? AND equipped = 1
-      `).bind(accountId),
+        UPDATE casino_trail_items SET equipped = 0
+        WHERE account_id = ? AND equipped = 1 AND mode BETWEEN ? AND ?
+      `).bind(accountId, slot.minMode, slot.maxMode),
       env.DB.prepare(`
         UPDATE casino_trail_items SET equipped = 1 WHERE id = ? AND account_id = ?
       `).bind(itemId, accountId),
@@ -3458,9 +3479,14 @@ async function handleGameCasinoTrails(context) {
   }
 
   if(mode === 'unequip') {
+    const itemId = Math.floor(Number(request.headers.get('X-Game-Trail-Item-Id') || 0));
+    if(!Number.isFinite(itemId) || itemId <= 0) {
+      return json({ ok: false, message: 'Invalid trail item id' }, 400);
+    }
+
     await env.DB.prepare(`
-      UPDATE casino_trail_items SET equipped = 0 WHERE account_id = ? AND equipped = 1
-    `).bind(accountId).run();
+      UPDATE casino_trail_items SET equipped = 0 WHERE id = ? AND account_id = ?
+    `).bind(itemId, accountId).run();
 
     const inventory = await loadCasinoTrailInventory(env, accountId, nowUnix);
     return json({ ok: true, accountId, inventory });
