@@ -2923,23 +2923,39 @@ async function applyBankInterest(env, accountId, interestRatePercent = DEFAULT_B
   }
 
   const balance = Math.max(0, Math.floor(Number(row.balance) || 0));
-  const lastMs = Date.parse(row.last_interest_at || '') || nowMs;
-  const hours = Math.max(0, (nowMs - lastMs) / 3600000);
-  let interestEarned = 0;
-  if(balance > 0 && hours > 0) {
-    interestEarned = Math.floor(balance * hourlyRate * hours);
-    if(maxPerHour > 0) {
-      interestEarned = Math.min(interestEarned, Math.floor(maxPerHour * hours));
-    }
+  // Clamped so that a clock skew cannot park the timestamp in the future, which
+  // would block interest until real time caught up again.
+  const lastMs = Math.min(Date.parse(row.last_interest_at || '') || nowMs, nowMs);
+  const hours = (nowMs - lastMs) / 3600000;
+
+  // What holding this balance is worth per hour right now. Zero means interest
+  // cannot accrue at all, which is what decides whether the clock may keep
+  // running.
+  let perHour = balance * hourlyRate;
+  if(maxPerHour > 0) {
+    perHour = Math.min(perHour, maxPerHour);
   }
+
+  let interestEarned = 0;
+  // An empty account, or one whose rate is turned off, banks no time: the clock
+  // restarts at now so the idle period is never paid out later.
+  let nextLastInterestAt = now;
+  if(perHour > 0) {
+    interestEarned = Math.floor(perHour * hours);
+    // Consume only the time that was actually paid for. Carrying the remainder
+    // keeps short intervals from being lost to rounding, and stops a player who
+    // checks their balance often from earning more than one who does not.
+    nextLastInterestAt = new Date(lastMs + (interestEarned / perHour) * 3600000).toISOString();
+  }
+
   const newBalance = balance + interestEarned;
 
-  if(interestEarned > 0 || !row.last_interest_at) {
+  if(interestEarned > 0 || nextLastInterestAt !== row.last_interest_at) {
     await env.DB.prepare(`
       UPDATE user_bank_balances
       SET balance = ?, last_interest_at = ?, updated_at = ?
       WHERE user_id = ?
-    `).bind(newBalance, now, now, id).run();
+    `).bind(newBalance, nextLastInterestAt, now, id).run();
   }
 
   return {
