@@ -1,9 +1,13 @@
 import {
+  buildDeviceCookie,
   buildSetCookie,
   clearCookie,
   getClientIp,
   getCountryCode,
+  getDeviceId,
   hashPassword,
+  ipPrefix,
+  newDeviceId,
   isValidEmail,
   isValidPassword,
   isValidUsername,
@@ -1182,8 +1186,27 @@ async function handleRegister(context) {
     secure: cookieSecure(request),
   });
 
+  // Registration is the moment a ban evader is most likely to reuse a browser
+  // they already used, so the signup itself is recorded for every account and
+  // not only for the invite based ones.
+  const deviceId = getDeviceId(request) || newDeviceId();
+  const recordEvidence = (async () => {
+    await recordAccountActivity(env, userId, {
+      source: 'web_signup',
+      ip: signupIp,
+      deviceId,
+      userAgent: request.headers.get('user-agent') || '',
+    });
+    await flagAbuseIfLinkedToBanned(env, userId, 'web_signup');
+  })().catch((err) => console.log('activity record failed', String(err)));
+  if(typeof context.waitUntil === 'function') {
+    context.waitUntil(recordEvidence);
+  } else {
+    await recordEvidence;
+  }
+
   const user = await publicUserById(env, userId);
-  return json(
+  const response = json(
     {
       ok: true,
       message: 'Registered. Please verify your email.',
@@ -1195,6 +1218,8 @@ async function handleRegister(context) {
       'set-cookie': setCookie,
     },
   );
+  response.headers.append('set-cookie', buildDeviceCookie(deviceId, { secure: cookieSecure(request) }));
+  return response;
 }
 
 async function handleLogin(context) {
@@ -1286,12 +1311,33 @@ async function handleLogin(context) {
     secure: cookieSecure(request),
   });
 
+  // A browser that keeps showing up under different accounts is the single
+  // most useful thing the review queue has, so the id is issued here and then
+  // reused for every later login from this browser.
+  const deviceId = getDeviceId(request) || newDeviceId();
+  const recordEvidence = (async () => {
+    await recordAccountActivity(env, row.id, {
+      source: 'web_login',
+      ip,
+      deviceId,
+      userAgent: request.headers.get('user-agent') || '',
+    });
+    await flagAbuseIfLinkedToBanned(env, row.id, 'web_login');
+  })().catch((err) => console.log('activity record failed', String(err)));
+  if(typeof context.waitUntil === 'function') {
+    context.waitUntil(recordEvidence);
+  } else {
+    await recordEvidence;
+  }
+
   const user = await publicUserById(env, row.id);
-  return json({
+  const response = json({
     ok: true,
     user,
     emailVerificationRequired: !isEmailVerified(user),
   }, 200, { 'set-cookie': setCookie });
+  response.headers.append('set-cookie', buildDeviceCookie(deviceId, { secure: cookieSecure(request) }));
+  return response;
 }
 
 async function handleLogout(context) {
@@ -4300,6 +4346,22 @@ async function handleGameVerify(context) {
 
   if(!matchedDummyCode) {
     await upsertAutoLoginBinding(env, user.id, clientIp, clientName);
+    // Kept off the critical path: a slow evidence write must not delay the
+    // player getting into the server.
+    const recordEvidence = (async () => {
+      await recordAccountActivity(env, user.id, {
+        source: 'game_verify',
+        ip: clientIp,
+        clientName,
+      });
+      await recordAccountPresence(env, user.id);
+      await flagAbuseIfLinkedToBanned(env, user.id, 'game_verify');
+    })().catch((err) => console.log('activity record failed', String(err)));
+    if(typeof context.waitUntil === 'function') {
+      context.waitUntil(recordEvidence);
+    } else {
+      await recordEvidence;
+    }
   }
 
   const casinoBalance = await loadOrCreateCasinoBalance(env, user.id, casinoDefaultFromRequest(request));
@@ -4368,6 +4430,19 @@ async function handleGameAutoLogin(context) {
       dummyCode: false,
       ...trailState,
     });
+  }
+
+  const recordEvidence = (async () => {
+    await recordAccountActivity(env, user.id, {
+      source: 'game_auto_login',
+      ip: clientIp,
+      clientName,
+    });
+    await recordAccountPresence(env, user.id);
+    await flagAbuseIfLinkedToBanned(env, user.id, 'game_auto_login');
+  })().catch((err) => console.log('activity record failed', String(err)));
+  if(typeof context.waitUntil === 'function') {
+    context.waitUntil(recordEvidence);
   }
 
   return json({
@@ -4464,6 +4539,15 @@ async function handleGameAccountStatus(context) {
     return json({ ok: false, message: 'Account not found' }, 404);
   }
   const trailState = await loadGameTrailState(env, accountId);
+
+  // This runs once a second per logged in player and is the only signal that
+  // says who was online at the same time, which is what separates "two people
+  // in one house" from "one person on two accounts".
+  const heartbeat = recordAccountPresence(env, accountId)
+    .catch((err) => console.log('presence record failed', String(err)));
+  if(typeof context.waitUntil === 'function') {
+    context.waitUntil(heartbeat);
+  }
 
   const now = Date.now();
   const permanent = Number(user.ban_is_permanent || 0) !== 0;
@@ -6014,6 +6098,572 @@ async function handleInternalMapDeployFile(context, jobIdRaw) {
   });
 }
 
+// ---------------------------------------------------------------------------
+// Ban evasion / multi account review
+//
+// Everything below only gathers evidence and opens cases. No account is ever
+// banned automatically: a manager reads the evidence and decides, the same way
+// the existing ban page works.
+// ---------------------------------------------------------------------------
+
+const PRESENCE_BUCKET_SECONDS = 5 * 60;
+// Below this a link is too weak to be worth a manager's attention, so it is
+// still visible when looking an account up but does not open a case by itself.
+const ABUSE_FLAG_MIN_SCORE = 40;
+const ABUSE_LINK_LIMIT = 40;
+// A fresh account that starts right after another one goes quiet looks like the
+// same person switching, but only while the handover is tight.
+const ABUSE_TAKEOVER_WINDOW_MS = 72 * 60 * 60 * 1000;
+
+let abuseTablesReady = false;
+// Per-isolate note of the slot already written for an account, so the once a
+// second status poll does not become a database write every second.
+const presenceWritten = new Map();
+
+async function ensureAbuseTables(env) {
+  if(abuseTablesReady) {
+    return;
+  }
+  await env.DB.prepare(`
+    CREATE TABLE IF NOT EXISTS account_activity (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      source TEXT NOT NULL,
+      ip TEXT NOT NULL,
+      ip_prefix TEXT NOT NULL,
+      device_id TEXT NOT NULL DEFAULT '',
+      user_agent TEXT NOT NULL DEFAULT '',
+      client_name TEXT NOT NULL DEFAULT '',
+      client_name_lower TEXT NOT NULL DEFAULT '',
+      hits INTEGER NOT NULL DEFAULT 1,
+      first_seen_at TEXT NOT NULL,
+      last_seen_at TEXT NOT NULL,
+      UNIQUE(user_id, source, ip, device_id, client_name_lower),
+      FOREIGN KEY (user_id) REFERENCES users(id)
+    )
+  `).run();
+  for(const column of ['user_id', 'ip', 'ip_prefix', 'device_id', 'client_name_lower']) {
+    await env.DB.prepare(`
+      CREATE INDEX IF NOT EXISTS idx_account_activity_${column}
+      ON account_activity(${column})
+    `).run();
+  }
+  await env.DB.prepare(`
+    CREATE TABLE IF NOT EXISTS account_presence (
+      user_id INTEGER NOT NULL,
+      bucket INTEGER NOT NULL,
+      PRIMARY KEY (user_id, bucket)
+    )
+  `).run();
+  await env.DB.prepare(`
+    CREATE INDEX IF NOT EXISTS idx_account_presence_bucket
+    ON account_presence(bucket)
+  `).run();
+  await env.DB.prepare(`
+    CREATE TABLE IF NOT EXISTS abuse_reviews (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      related_user_id INTEGER NOT NULL,
+      status TEXT NOT NULL DEFAULT 'open',
+      trigger_kind TEXT NOT NULL DEFAULT '',
+      evidence TEXT NOT NULL DEFAULT '',
+      score INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      reviewed_by INTEGER,
+      reviewed_at TEXT,
+      resolution TEXT NOT NULL DEFAULT '',
+      note TEXT NOT NULL DEFAULT '',
+      UNIQUE(user_id, related_user_id)
+    )
+  `).run();
+  await env.DB.prepare(`
+    CREATE INDEX IF NOT EXISTS idx_abuse_reviews_status
+    ON abuse_reviews(status, created_at)
+  `).run();
+  await env.DB.prepare(`
+    CREATE INDEX IF NOT EXISTS idx_abuse_reviews_user
+    ON abuse_reviews(user_id)
+  `).run();
+  abuseTablesReady = true;
+}
+
+function presenceBucketFor(ms) {
+  return Math.floor(ms / 1000 / PRESENCE_BUCKET_SECONDS);
+}
+
+function uniqueStrings(values) {
+  const out = [];
+  const seen = new Set();
+  for(const raw of values) {
+    const value = String(raw || '').trim();
+    if(!value || seen.has(value)) {
+      continue;
+    }
+    seen.add(value);
+    out.push(value);
+  }
+  return out;
+}
+
+async function recordAccountPresence(env, userId, atMs = Date.now()) {
+  const id = Number(userId || 0);
+  if(!Number.isFinite(id) || id <= 0) {
+    return;
+  }
+  const bucket = presenceBucketFor(atMs);
+  if(presenceWritten.get(id) === bucket) {
+    return;
+  }
+  presenceWritten.set(id, bucket);
+  if(presenceWritten.size > 512) {
+    presenceWritten.clear();
+  }
+
+  await ensureAbuseTables(env);
+  await env.DB.prepare(`
+    INSERT OR IGNORE INTO account_presence (user_id, bucket) VALUES (?, ?)
+  `).bind(id, bucket).run();
+}
+
+async function recordAccountActivity(env, userId, details) {
+  const id = Number(userId || 0);
+  const ip = String(details?.ip || '').trim();
+  if(!Number.isFinite(id) || id <= 0 || !ip) {
+    return;
+  }
+
+  await ensureAbuseTables(env);
+  const now = nowIso();
+  const clientName = String(details?.clientName || '').trim();
+  await env.DB.prepare(`
+    INSERT INTO account_activity (
+      user_id, source, ip, ip_prefix, device_id, user_agent,
+      client_name, client_name_lower, hits, first_seen_at, last_seen_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+    ON CONFLICT(user_id, source, ip, device_id, client_name_lower)
+    DO UPDATE SET
+      hits = hits + 1,
+      user_agent = excluded.user_agent,
+      last_seen_at = excluded.last_seen_at
+  `).bind(
+    id,
+    String(details?.source || 'unknown'),
+    ip,
+    ipPrefix(ip),
+    String(details?.deviceId || ''),
+    String(details?.userAgent || '').slice(0, 300),
+    clientName,
+    lower(clientName),
+    now,
+    now,
+  ).run();
+}
+
+// Pulls every account that shares a piece of evidence with this one and scores
+// how much the evidence actually argues for "same person". The score is an aid
+// for reading the list, never a verdict.
+async function loadAccountLinks(env, userId) {
+  const id = Number(userId || 0);
+  if(!Number.isFinite(id) || id <= 0) {
+    return [];
+  }
+  await ensureAbuseTables(env);
+
+  const own = await env.DB.prepare(`
+    SELECT ip, ip_prefix, device_id, client_name_lower, first_seen_at, last_seen_at
+    FROM account_activity
+    WHERE user_id = ?
+  `).bind(id).all();
+  const ownRows = own?.results || [];
+  if(ownRows.length === 0) {
+    return [];
+  }
+
+  const ownFirstMs = Math.min(...ownRows.map((row) => Date.parse(row.first_seen_at) || Date.now()));
+  const ownLastMs = Math.max(...ownRows.map((row) => Date.parse(row.last_seen_at) || 0));
+
+  const buckets = {
+    device_id: uniqueStrings(ownRows.map((row) => row.device_id)),
+    ip: uniqueStrings(ownRows.map((row) => row.ip)),
+    ip_prefix: uniqueStrings(ownRows.map((row) => row.ip_prefix)),
+    client_name_lower: uniqueStrings(ownRows.map((row) => row.client_name_lower)),
+  };
+
+  const links = new Map();
+  const linkFor = (otherId) => {
+    if(!links.has(otherId)) {
+      links.set(otherId, {
+        accountId: otherId,
+        devices: [],
+        ips: [],
+        prefixes: [],
+        names: [],
+        firstSeenAt: '',
+        lastSeenAt: '',
+      });
+    }
+    return links.get(otherId);
+  };
+
+  const fields = [
+    ['device_id', 'devices'],
+    ['ip', 'ips'],
+    ['ip_prefix', 'prefixes'],
+    ['client_name_lower', 'names'],
+  ];
+
+  for(const [column, target] of fields) {
+    const values = buckets[column];
+    for(let offset = 0; offset < values.length; offset += 40) {
+      const chunk = values.slice(offset, offset + 40);
+      const placeholders = chunk.map(() => '?').join(',');
+      const found = await env.DB.prepare(`
+        SELECT user_id, ${column} AS value, MIN(first_seen_at) AS first_seen_at, MAX(last_seen_at) AS last_seen_at
+        FROM account_activity
+        WHERE ${column} IN (${placeholders}) AND user_id != ?
+        GROUP BY user_id, ${column}
+      `).bind(...chunk, id).all();
+
+      for(const row of found?.results || []) {
+        const otherId = Number(row.user_id || 0);
+        if(!Number.isFinite(otherId) || otherId <= 0) {
+          continue;
+        }
+        const link = linkFor(otherId);
+        link[target].push(String(row.value || ''));
+        if(!link.firstSeenAt || String(row.first_seen_at) < link.firstSeenAt) {
+          link.firstSeenAt = String(row.first_seen_at || '');
+        }
+        if(String(row.last_seen_at || '') > link.lastSeenAt) {
+          link.lastSeenAt = String(row.last_seen_at || '');
+        }
+      }
+    }
+  }
+
+  if(links.size === 0) {
+    return [];
+  }
+
+  const otherIds = [...links.keys()].slice(0, ABUSE_LINK_LIMIT);
+  const idPlaceholders = otherIds.map(() => '?').join(',');
+
+  const overlap = await env.DB.prepare(`
+    SELECT b.user_id AS other_id, COUNT(*) AS shared
+    FROM account_presence a
+    JOIN account_presence b ON b.bucket = a.bucket
+    WHERE a.user_id = ? AND b.user_id IN (${idPlaceholders})
+    GROUP BY b.user_id
+  `).bind(id, ...otherIds).all();
+  const sharedByAccount = new Map();
+  for(const row of overlap?.results || []) {
+    sharedByAccount.set(Number(row.other_id), Number(row.shared || 0));
+  }
+
+  const totals = await env.DB.prepare(`
+    SELECT user_id, COUNT(*) AS total
+    FROM account_presence
+    WHERE user_id IN (${idPlaceholders}, ?)
+    GROUP BY user_id
+  `).bind(...otherIds, id).all();
+  const totalByAccount = new Map();
+  for(const row of totals?.results || []) {
+    totalByAccount.set(Number(row.user_id), Number(row.total || 0));
+  }
+  const ownPresence = totalByAccount.get(id) || 0;
+
+  const profiles = await env.DB.prepare(`
+    SELECT id, username, COALESCE(display_name, username) AS display_name,
+           ban_is_permanent, ban_until, ban_reason, created_at
+    FROM users
+    WHERE id IN (${idPlaceholders})
+  `).bind(...otherIds).all();
+  const profileByAccount = new Map();
+  for(const row of profiles?.results || []) {
+    profileByAccount.set(Number(row.id), row);
+  }
+
+  const nowMs = Date.now();
+  const out = [];
+  for(const otherId of otherIds) {
+    const link = links.get(otherId);
+    const profile = profileByAccount.get(otherId);
+    if(!profile) {
+      continue;
+    }
+
+    const shared = sharedByAccount.get(otherId) || 0;
+    const otherPresence = totalByAccount.get(otherId) || 0;
+    const otherLastMs = Date.parse(link.lastSeenAt) || 0;
+    const otherFirstMs = Date.parse(link.firstSeenAt) || 0;
+    // Whoever went quiet first is the account that could have been abandoned.
+    const handoverGapMs = ownFirstMs > otherLastMs
+      ? ownFirstMs - otherLastMs
+      : (otherFirstMs > ownLastMs ? otherFirstMs - ownLastMs : -1);
+
+    const reasons = [];
+    let score = 0;
+    if(link.devices.length > 0) {
+      score += 50;
+      reasons.push({ kind: 'device', count: uniqueStrings(link.devices).length });
+    }
+    if(link.ips.length > 0) {
+      score += 25;
+      reasons.push({ kind: 'ip', count: uniqueStrings(link.ips).length });
+    } else if(link.prefixes.length > 0) {
+      score += 12;
+      reasons.push({ kind: 'ip_prefix', count: uniqueStrings(link.prefixes).length });
+    }
+    if(link.names.length > 0) {
+      score += 18;
+      reasons.push({ kind: 'client_name', count: uniqueStrings(link.names).length });
+    }
+    if(shared > 0) {
+      // Two accounts that were online together are almost certainly two people
+      // sharing a house or a cafe, so this pulls the score down hard.
+      score -= 30;
+      reasons.push({ kind: 'online_together', count: shared });
+    } else if(ownPresence > 0 && otherPresence > 0) {
+      score += 15;
+      reasons.push({ kind: 'never_together', count: 0 });
+    }
+    if(shared === 0 && handoverGapMs >= 0 && handoverGapMs <= ABUSE_TAKEOVER_WINDOW_MS) {
+      score += 15;
+      reasons.push({ kind: 'took_over', count: Math.round(handoverGapMs / (60 * 60 * 1000)) });
+    }
+
+    const permanent = Number(profile.ban_is_permanent || 0) !== 0;
+    const banUntilMs = profile.ban_until ? Date.parse(profile.ban_until) : NaN;
+    const banned = permanent || (Number.isFinite(banUntilMs) && banUntilMs > nowMs);
+
+    out.push({
+      accountId: otherId,
+      username: String(profile.username || ''),
+      displayName: String(profile.display_name || profile.username || ''),
+      createdAt: String(profile.created_at || ''),
+      banned,
+      banPermanent: permanent,
+      banUntil: String(profile.ban_until || ''),
+      banReason: String(profile.ban_reason || ''),
+      score: Math.max(0, Math.min(100, score)),
+      reasons,
+      sharedDevices: uniqueStrings(link.devices),
+      sharedIps: uniqueStrings(link.ips),
+      sharedPrefixes: uniqueStrings(link.prefixes),
+      sharedNames: uniqueStrings(link.names),
+      sharedSessions: shared,
+      firstSeenAt: link.firstSeenAt,
+      lastSeenAt: link.lastSeenAt,
+    });
+  }
+
+  out.sort((a, b) => b.score - a.score);
+  return out;
+}
+
+// Opens a case when an account turns up on evidence a banned account also used.
+// Failures are swallowed on purpose: this runs beside a login and must never be
+// the reason a player cannot get in.
+async function flagAbuseIfLinkedToBanned(env, userId, triggerKind) {
+  try {
+    const links = await loadAccountLinks(env, userId);
+    const now = nowIso();
+    for(const link of links) {
+      if(!link.banned || link.score < ABUSE_FLAG_MIN_SCORE) {
+        continue;
+      }
+      await env.DB.prepare(`
+        INSERT INTO abuse_reviews (
+          user_id, related_user_id, status, trigger_kind, evidence, score, created_at, updated_at
+        )
+        VALUES (?, ?, 'open', ?, ?, ?, ?, ?)
+        ON CONFLICT(user_id, related_user_id) DO UPDATE SET
+          evidence = excluded.evidence,
+          score = excluded.score,
+          updated_at = excluded.updated_at
+        WHERE abuse_reviews.status = 'open'
+      `).bind(
+        Number(userId),
+        link.accountId,
+        String(triggerKind || ''),
+        JSON.stringify(link.reasons),
+        link.score,
+        now,
+        now,
+      ).run();
+    }
+  } catch(err) {
+    console.log('abuse flag failed', String(err));
+  }
+}
+
+async function handleAdminAbuseReviews(context) {
+  const { request, env } = context;
+  const auth = await requireManager(context);
+  if(auth.error) {
+    return auth.error;
+  }
+  await ensureAbuseTables(env);
+
+  const url = new URL(request.url);
+  const status = String(url.searchParams.get('status') || 'open').trim() || 'open';
+
+  const rows = await env.DB.prepare(`
+    SELECT
+      r.id,
+      r.user_id,
+      r.related_user_id,
+      r.status,
+      r.trigger_kind,
+      r.evidence,
+      r.score,
+      r.created_at,
+      r.reviewed_at,
+      r.resolution,
+      r.note,
+      COALESCE(su.display_name, su.username) AS subject_name,
+      su.ban_is_permanent AS subject_ban_permanent,
+      su.ban_until AS subject_ban_until,
+      COALESCE(ru.display_name, ru.username) AS related_name
+    FROM abuse_reviews r
+    LEFT JOIN users su ON su.id = r.user_id
+    LEFT JOIN users ru ON ru.id = r.related_user_id
+    WHERE r.status = ?
+    ORDER BY r.score DESC, r.created_at DESC
+    LIMIT 100
+  `).bind(status).all();
+
+  const nowMs = Date.now();
+  const reviews = (rows?.results || []).map((row) => {
+    const permanent = Number(row.subject_ban_permanent || 0) !== 0;
+    const untilMs = row.subject_ban_until ? Date.parse(row.subject_ban_until) : NaN;
+    let reasons = [];
+    try {
+      reasons = JSON.parse(String(row.evidence || '[]'));
+    } catch {
+      reasons = [];
+    }
+    return {
+      id: Number(row.id),
+      accountId: Number(row.user_id),
+      accountName: String(row.subject_name || ''),
+      relatedAccountId: Number(row.related_user_id),
+      relatedAccountName: String(row.related_name || ''),
+      status: String(row.status || ''),
+      triggerKind: String(row.trigger_kind || ''),
+      score: Number(row.score || 0),
+      reasons,
+      createdAt: String(row.created_at || ''),
+      reviewedAt: String(row.reviewed_at || ''),
+      resolution: String(row.resolution || ''),
+      note: String(row.note || ''),
+      accountBanned: permanent || (Number.isFinite(untilMs) && untilMs > nowMs),
+    };
+  });
+
+  return json({ ok: true, reviews });
+}
+
+async function handleAdminAbuseLinks(context) {
+  const { request, env } = context;
+  const auth = await requireManager(context);
+  if(auth.error) {
+    return auth.error;
+  }
+
+  const url = new URL(request.url);
+  const accountId = Number(url.searchParams.get('accountId') || 0);
+  if(!Number.isFinite(accountId) || accountId <= 0) {
+    return json({ ok: false, message: 'Invalid account id' }, 400);
+  }
+
+  await ensureAbuseTables(env);
+  const links = await loadAccountLinks(env, accountId);
+
+  const activity = await env.DB.prepare(`
+    SELECT source, ip, ip_prefix, device_id, user_agent, client_name, hits, first_seen_at, last_seen_at
+    FROM account_activity
+    WHERE user_id = ?
+    ORDER BY last_seen_at DESC
+    LIMIT 50
+  `).bind(accountId).all();
+
+  return json({
+    ok: true,
+    accountId,
+    links,
+    activity: activity?.results || [],
+  });
+}
+
+async function handleAdminAbuseResolve(context) {
+  const { request, env } = context;
+  const auth = await requireManager(context);
+  if(auth.error) {
+    return auth.error;
+  }
+  await ensureAbuseTables(env);
+
+  const body = await parseRequestBody(request);
+  const data = typeof body === 'string' ? {} : (body || {});
+  const reviewId = Number(data.reviewId || 0);
+  const action = String(data.action || '').trim();
+  const note = String(data.note || '').trim();
+
+  if(!Number.isFinite(reviewId) || reviewId <= 0) {
+    return json({ ok: false, message: 'Invalid review id' }, 400);
+  }
+  if(action !== 'confirm' && action !== 'dismiss') {
+    return json({ ok: false, message: 'Invalid action' }, 400);
+  }
+
+  const review = await env.DB.prepare(`
+    SELECT id, user_id, related_user_id FROM abuse_reviews WHERE id = ? LIMIT 1
+  `).bind(reviewId).first();
+  if(!review) {
+    return json({ ok: false, message: 'Review not found' }, 404);
+  }
+
+  const banned = [];
+  if(action === 'confirm') {
+    // Only accounts that belong to this case can be banned through it, so a
+    // stray id in the request cannot turn into a ban.
+    const allowed = new Set([Number(review.user_id), Number(review.related_user_id)]);
+    const requested = Array.isArray(data.banAccountIds) ? data.banAccountIds : [];
+    const minutesRaw = Number(data.minutes ?? 0);
+    const permanent = minutesRaw <= 0;
+    const banUntil = permanent
+      ? null
+      : new Date(Date.now() + Math.max(1, Math.floor(minutesRaw)) * 60 * 1000).toISOString();
+    const reason = String(data.reason || '').trim()
+      || `Ban evasion review #${reviewId} (linked to account ${review.related_user_id})`;
+
+    for(const raw of requested) {
+      const accountId = Number(raw || 0);
+      if(!allowed.has(accountId)) {
+        continue;
+      }
+      const updated = await env.DB.prepare(`
+        UPDATE users SET ban_is_permanent = ?, ban_until = ?, ban_reason = ? WHERE id = ?
+      `).bind(permanent ? 1 : 0, banUntil, reason, accountId).run();
+      if((updated.meta?.changes || 0) === 1) {
+        banned.push(accountId);
+      }
+    }
+  }
+
+  const now = nowIso();
+  await env.DB.prepare(`
+    UPDATE abuse_reviews
+    SET status = 'closed', resolution = ?, note = ?, reviewed_by = ?, reviewed_at = ?, updated_at = ?
+    WHERE id = ?
+  `).bind(action, note, Number(auth.user.id), now, now, reviewId).run();
+
+  return json({ ok: true, reviewId, resolution: action, banned });
+}
+
 async function handleAdminBan(context) {
   const { request, env } = context;
   const auth = await requireManager(context);
@@ -6416,6 +7066,18 @@ export async function onRequest(context) {
 
   if(request.method === 'GET' && path === '/admin/users') {
     return handleAdminUsers(context);
+  }
+
+  if(request.method === 'GET' && path === '/admin/abuse/reviews') {
+    return handleAdminAbuseReviews(context);
+  }
+
+  if(request.method === 'GET' && path === '/admin/abuse/links') {
+    return handleAdminAbuseLinks(context);
+  }
+
+  if(request.method === 'POST' && path === '/admin/abuse/resolve') {
+    return handleAdminAbuseResolve(context);
   }
 
   if(request.method === 'GET' && path === '/admin/patreon/tiers') {

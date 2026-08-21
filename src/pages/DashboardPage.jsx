@@ -3,6 +3,9 @@ import { useNavigate } from 'react-router-dom';
 import {
   adminBanAccount,
   adminDeletePatreonTier,
+  adminGetAbuseLinks,
+  adminGetAbuseReviews,
+  adminResolveAbuseReview,
   adminGetMapTargets,
   adminGetServerMaintenance,
   adminGrantSubscriptionMonths,
@@ -456,6 +459,17 @@ export default function DashboardPage() {
   const [adminReasonCustom, setAdminReasonCustom] = useState('');
   const [adminSubmitting, setAdminSubmitting] = useState(false);
   const [showAdminBanConfirm, setShowAdminBanConfirm] = useState(false);
+  const [abuseReviews, setAbuseReviews] = useState([]);
+  const [abuseReviewsLoading, setAbuseReviewsLoading] = useState(false);
+  const [abuseCase, setAbuseCase] = useState(null);
+  const [abuseAccountId, setAbuseAccountId] = useState(0);
+  const [abuseLinks, setAbuseLinks] = useState([]);
+  const [abuseActivity, setAbuseActivity] = useState([]);
+  const [abuseLinksLoading, setAbuseLinksLoading] = useState(false);
+  const [abuseLookupInput, setAbuseLookupInput] = useState('');
+  const [abuseBanIds, setAbuseBanIds] = useState([]);
+  const [abuseNote, setAbuseNote] = useState('');
+  const [abuseSubmitting, setAbuseSubmitting] = useState(false);
   const [adminGrantPlanKey, setAdminGrantPlanKey] = useState('starter');
   const [adminGrantMonths, setAdminGrantMonths] = useState('1');
   const [adminGrantReason, setAdminGrantReason] = useState('');
@@ -552,7 +566,7 @@ export default function DashboardPage() {
   const adminLevel = Number(user?.is_admin || 0);
   const isManager = Number.isFinite(adminLevel) && adminLevel >= 1;
   const isOperator = Number.isFinite(adminLevel) && adminLevel >= 2;
-  const isAdminSection = activeSection === 'admin-ban' || activeSection === 'admin-plan-grant' || activeSection === 'admin-map-upload' || activeSection === 'admin-maintenance';
+  const isAdminSection = activeSection === 'admin-ban' || activeSection === 'admin-abuse' || activeSection === 'admin-plan-grant' || activeSection === 'admin-map-upload' || activeSection === 'admin-maintenance';
   const canUseInvite = signupCountry === 'TW' || signupCountry === 'KR' || plusActive || hasInviteCode;
   const trailFeatureLocked = subscriptionStateLoading || !plusActive;
   const plusSubscription = subscriptionInfo?.subscription || null;
@@ -651,6 +665,92 @@ export default function DashboardPage() {
       if(requestId === adminUsersRequestIdRef.current) {
         setAdminUsersLoading(false);
       }
+    }
+  };
+
+  const refreshAbuseReviews = async () => {
+    setAbuseReviewsLoading(true);
+    try {
+      const result = await adminGetAbuseReviews('open');
+      setAbuseReviews(Array.isArray(result?.reviews) ? result.reviews : []);
+    } catch {
+      setAbuseReviews([]);
+    } finally {
+      setAbuseReviewsLoading(false);
+    }
+  };
+
+  const loadAbuseLinks = async (accountId) => {
+    const id = Number(accountId || 0);
+    if(!Number.isFinite(id) || id <= 0) {
+      return;
+    }
+    setAbuseLinksLoading(true);
+    setAbuseAccountId(id);
+    try {
+      const result = await adminGetAbuseLinks(id);
+      setAbuseLinks(Array.isArray(result?.links) ? result.links : []);
+      setAbuseActivity(Array.isArray(result?.activity) ? result.activity : []);
+    } catch {
+      setAbuseLinks([]);
+      setAbuseActivity([]);
+    } finally {
+      setAbuseLinksLoading(false);
+    }
+  };
+
+  const openAbuseCase = async (review) => {
+    setAbuseCase(review || null);
+    setAbuseNote('');
+    // The flagged account is preselected because it is the one the case is
+    // about; the account it was linked to is usually already banned.
+    setAbuseBanIds(review ? [Number(review.accountId)] : []);
+    setAbuseLookupInput(review ? String(review.accountId) : '');
+    await loadAbuseLinks(review?.accountId);
+  };
+
+  const onAbuseLookup = async () => {
+    const id = Number(String(abuseLookupInput || '').trim());
+    if(!Number.isFinite(id) || id <= 0) {
+      return;
+    }
+    setAbuseCase(null);
+    setAbuseBanIds([]);
+    await loadAbuseLinks(id);
+  };
+
+  const toggleAbuseBanId = (accountId) => {
+    const id = Number(accountId || 0);
+    setAbuseBanIds((prev) => (prev.includes(id) ? prev.filter((entry) => entry !== id) : [...prev, id]));
+  };
+
+  const onAbuseResolve = async (action) => {
+    if(!abuseCase || abuseSubmitting) {
+      return;
+    }
+    setAbuseSubmitting(true);
+    setFeedback(null);
+    try {
+      const result = await adminResolveAbuseReview({
+        reviewId: abuseCase.id,
+        action,
+        note: abuseNote.trim(),
+        banAccountIds: action === 'confirm' ? abuseBanIds : [],
+        minutes: 0,
+      });
+      const bannedCount = Array.isArray(result?.banned) ? result.banned.length : 0;
+      setFeedback({ type: 'ok', message: t('dashboard.adminAbuseResolved', { count: bannedCount }) });
+      setAbuseCase(null);
+      setAbuseBanIds([]);
+      setAbuseNote('');
+      await refreshAbuseReviews();
+      if(abuseAccountId > 0) {
+        await loadAbuseLinks(abuseAccountId);
+      }
+    } catch(err) {
+      setFeedback({ type: 'error', message: err.message });
+    } finally {
+      setAbuseSubmitting(false);
     }
   };
 
@@ -1046,6 +1146,13 @@ export default function DashboardPage() {
   useEffect(() => {
     setAdminBanMode('temporary');
   }, [adminSelectedUser?.id, activeSection]);
+
+  useEffect(() => {
+    if(!isManager || activeSection !== 'admin-abuse') {
+      return;
+    }
+    refreshAbuseReviews();
+  }, [isManager, activeSection]);
 
   useEffect(() => {
     setAdminGrantPlanKey('starter');
@@ -2069,6 +2176,14 @@ ${t('dashboard.accessReasonLine', { reason: banReasonText || '-' })}`
                 <span className="dashboard-nav-icon" aria-hidden="true"><img src={iconSiren} alt="" /></span>
                 <span>{t('dashboard.adminBanNav')}</span>
               </button>
+              <button
+                className={`dashboard-nav-btn${activeSection === 'admin-abuse' ? ' active' : ''}`}
+                type="button"
+                onClick={() => setActiveSection('admin-abuse')}
+              >
+                <span className="dashboard-nav-icon" aria-hidden="true"><img src={iconSiren} alt="" /></span>
+                <span>{t('dashboard.adminAbuseNav')}</span>
+              </button>
               {isOperator ? (
                 <button
                   className={`dashboard-nav-btn${activeSection === 'admin-plan-grant' ? ' active' : ''}`}
@@ -2809,6 +2924,153 @@ ${t('dashboard.accessReasonLine', { reason: banReasonText || '-' })}`
                   </div>
                 </>
               ) : null}
+            </article>
+          ) : null}
+
+          {activeSection === 'admin-abuse' && isManager ? (
+            <article className="panel">
+              <h3>{t('dashboard.adminAbuseTitle')}</h3>
+              <p className="muted">{t('dashboard.adminAbuseIntro')}</p>
+
+              <div className="admin-form-grid">
+                <h4>{t('dashboard.adminAbuseQueueTitle')}</h4>
+                {abuseReviewsLoading ? (
+                  <p className="muted">{t('dashboard.adminAbuseLoading')}</p>
+                ) : abuseReviews.length === 0 ? (
+                  <p className="muted">{t('dashboard.adminAbuseQueueEmpty')}</p>
+                ) : (
+                  <div className="admin-abuse-list">
+                    {abuseReviews.map((review) => (
+                      <button
+                        key={review.id}
+                        type="button"
+                        className={`admin-abuse-case${abuseCase?.id === review.id ? ' active' : ''}`}
+                        onClick={() => openAbuseCase(review)}
+                      >
+                        <span className="admin-abuse-score">{review.score}</span>
+                        <span className="admin-abuse-case-text">
+                          {`${review.accountName} (#${review.accountId})`}
+                          {' → '}
+                          {`${review.relatedAccountName} (#${review.relatedAccountId})`}
+                        </span>
+                        {review.accountBanned ? (
+                          <span className="admin-abuse-tag">{t('dashboard.adminAbuseBannedTag')}</span>
+                        ) : null}
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                <label>
+                  {t('dashboard.adminAbuseLookupLabel')}
+                  <div className="admin-abuse-lookup">
+                    <input
+                      type="text"
+                      inputMode="numeric"
+                      value={abuseLookupInput}
+                      onChange={(event) => setAbuseLookupInput(event.target.value)}
+                      placeholder="123"
+                    />
+                    <button className="btn ghost" type="button" onClick={onAbuseLookup}>
+                      {t('dashboard.adminAbuseLookupButton')}
+                    </button>
+                  </div>
+                </label>
+
+                {abuseAccountId > 0 ? (
+                  <>
+                    <h4>{t('dashboard.adminAbuseLinksTitle')}</h4>
+                    {abuseLinksLoading ? (
+                      <p className="muted">{t('dashboard.adminAbuseLoading')}</p>
+                    ) : abuseLinks.length === 0 ? (
+                      <p className="muted">{t('dashboard.adminAbuseLinksEmpty')}</p>
+                    ) : (
+                      <div className="admin-abuse-list">
+                        {abuseLinks.map((link) => (
+                          <div key={link.accountId} className="admin-abuse-link">
+                            <div className="admin-abuse-link-head">
+                              <span className="admin-abuse-score">{link.score}</span>
+                              <span className="admin-abuse-case-text">
+                                {`${link.displayName} (#${link.accountId})`}
+                              </span>
+                              {link.banned ? (
+                                <span className="admin-abuse-tag">{t('dashboard.adminAbuseBannedTag')}</span>
+                              ) : null}
+                              {abuseCase ? (
+                                <label className="admin-abuse-pick">
+                                  <input
+                                    type="checkbox"
+                                    checked={abuseBanIds.includes(link.accountId)}
+                                    disabled={link.accountId !== abuseCase.accountId && link.accountId !== abuseCase.relatedAccountId}
+                                    onChange={() => toggleAbuseBanId(link.accountId)}
+                                  />
+                                  <span>{t('dashboard.adminAbuseSelectToBan')}</span>
+                                </label>
+                              ) : null}
+                            </div>
+                            <ul className="admin-abuse-reasons">
+                              {link.reasons.map((reason) => (
+                                <li key={reason.kind}>
+                                  {t(`dashboard.adminAbuseReason_${reason.kind}`, { count: reason.count })}
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    <h4>{t('dashboard.adminAbuseActivityTitle')}</h4>
+                    {abuseActivity.length === 0 ? (
+                      <p className="muted">{t('dashboard.adminAbuseLinksEmpty')}</p>
+                    ) : (
+                      <div className="admin-abuse-activity">
+                        {abuseActivity.map((entry, index) => (
+                          <div key={`${entry.source}-${entry.ip}-${index}`} className="admin-abuse-activity-row">
+                            <span>{entry.source}</span>
+                            <span>{entry.ip}</span>
+                            <span>{entry.client_name || '-'}</span>
+                            <span>{entry.hits}</span>
+                            <span>{String(entry.last_seen_at || '').slice(0, 16).replace('T', ' ')}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </>
+                ) : null}
+
+                {abuseCase ? (
+                  <>
+                    <label>
+                      {t('dashboard.adminAbuseNoteLabel')}
+                      <input
+                        type="text"
+                        value={abuseNote}
+                        onChange={(event) => setAbuseNote(event.target.value)}
+                        placeholder={t('dashboard.adminAbuseNotePlaceholder')}
+                      />
+                    </label>
+                    <div className="admin-ban-mode-toggle">
+                      <button
+                        className="btn danger"
+                        type="button"
+                        disabled={abuseSubmitting || abuseBanIds.length === 0}
+                        onClick={() => onAbuseResolve('confirm')}
+                      >
+                        {t('dashboard.adminAbuseConfirm')}
+                      </button>
+                      <button
+                        className="btn ghost"
+                        type="button"
+                        disabled={abuseSubmitting}
+                        onClick={() => onAbuseResolve('dismiss')}
+                      >
+                        {t('dashboard.adminAbuseDismiss')}
+                      </button>
+                    </div>
+                  </>
+                ) : null}
+              </div>
             </article>
           ) : null}
 

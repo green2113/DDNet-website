@@ -172,6 +172,23 @@ export async function adminSearchUsers(query = '') {
   return api(`/api/admin/users?q=${q}`, { method: 'GET' });
 }
 
+export async function adminGetAbuseReviews(status = 'open') {
+  const s = encodeURIComponent(String(status || 'open'));
+  return api(`/api/admin/abuse/reviews?status=${s}`, { method: 'GET' });
+}
+
+export async function adminGetAbuseLinks(accountId) {
+  const id = encodeURIComponent(String(accountId || ''));
+  return api(`/api/admin/abuse/links?accountId=${id}`, { method: 'GET' });
+}
+
+export async function adminResolveAbuseReview(payload) {
+  return api('/api/admin/abuse/resolve', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
 export async function startPatreonConnect() {
   window.location.assign('/api/billing/patreon/start');
 }

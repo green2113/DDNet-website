@@ -435,6 +435,121 @@ h3 {
   background: rgba(255, 255, 255, 0.04);
 }
 
+.admin-abuse-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.admin-abuse-case,
+.admin-abuse-link {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.04);
+  color: inherit;
+  text-align: left;
+}
+
+.admin-abuse-link {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+}
+
+.admin-abuse-case {
+  cursor: pointer;
+}
+
+.admin-abuse-case.active {
+  border-color: #a8bfff;
+  background: rgba(79, 124, 255, 0.28);
+}
+
+.admin-abuse-link-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.admin-abuse-score {
+  flex: 0 0 auto;
+  min-width: 34px;
+  padding: 2px 6px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.1);
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+  font-weight: 600;
+}
+
+.admin-abuse-case-text {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.admin-abuse-tag {
+  flex: 0 0 auto;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(255, 96, 96, 0.22);
+  color: #ffc9c9;
+  font-size: 12px;
+}
+
+.admin-abuse-pick {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.admin-abuse-reasons {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 13px;
+  opacity: 0.85;
+}
+
+.admin-abuse-lookup {
+  display: flex;
+  gap: 8px;
+}
+
+.admin-abuse-lookup input {
+  flex: 1 1 auto;
+}
+
+.admin-abuse-activity {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 13px;
+}
+
+.admin-abuse-activity-row {
+  display: grid;
+  grid-template-columns: 110px 1fr 1fr 50px 130px;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.admin-abuse-activity-row span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .admin-ban-mode-toggle {
   display: grid;
   grid-template-columns: 1fr 1fr;

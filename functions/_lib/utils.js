@@ -275,6 +275,48 @@ export function getClientIp(request) {
   return request.headers.get('CF-Connecting-IP') || '0.0.0.0';
 }
 
+// Households, mobile carriers and internet cafes hand out addresses that move
+// around inside one block, so the block is a weaker but much wider signal than
+// the address itself. Both are kept and weighted separately during review.
+export function ipPrefix(ip) {
+  const value = String(ip || '').trim();
+  if(!value) {
+    return '';
+  }
+  if(value.includes(':')) {
+    const parts = value.split(':');
+    return `${parts.slice(0, 4).join(':')}::/64`;
+  }
+  const octets = value.split('.');
+  if(octets.length !== 4) {
+    return '';
+  }
+  return `${octets.slice(0, 3).join('.')}.0/24`;
+}
+
+export const DEVICE_COOKIE = 'ddnet_did';
+
+// A browser-scoped random id. It survives logging out and creating another
+// account, which is exactly the case the review queue is looking for, but it is
+// trivially cleared, so it is evidence and never proof.
+export function getDeviceId(request) {
+  const raw = parseCookies(request)[DEVICE_COOKIE] || '';
+  return /^[0-9a-f]{32}$/.test(raw) ? raw : '';
+}
+
+export function newDeviceId() {
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  let out = '';
+  for(const b of bytes) {
+    out += b.toString(16).padStart(2, '0');
+  }
+  return out;
+}
+
+export function buildDeviceCookie(value, { secure = true } = {}) {
+  return buildSetCookie(DEVICE_COOKIE, value, { maxAge: 2 * 365 * 24 * 60 * 60, secure });
+}
+
 const VPN_PROXY_ASN_KEYWORDS = [
   'vpn',
   'proxy',
