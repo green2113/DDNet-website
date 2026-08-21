@@ -466,7 +466,8 @@ export default function DashboardPage() {
   const [abuseLinks, setAbuseLinks] = useState([]);
   const [abuseActivity, setAbuseActivity] = useState([]);
   const [abuseLinksLoading, setAbuseLinksLoading] = useState(false);
-  const [abuseLookupInput, setAbuseLookupInput] = useState('');
+  const [abuseSearchName, setAbuseSearchName] = useState('');
+  const [abusePickerOpen, setAbusePickerOpen] = useState(false);
   const [abuseBanIds, setAbuseBanIds] = useState([]);
   const [abuseNote, setAbuseNote] = useState('');
   const [abuseSubmitting, setAbuseSubmitting] = useState(false);
@@ -530,8 +531,10 @@ export default function DashboardPage() {
   );
   const [autoLoginSaving, setAutoLoginSaving] = useState(false);
   const adminPickerRef = useRef(null);
+  const abusePickerRef = useRef(null);
   const adminTrailMenuRef = useRef(null);
   const adminSearchInputRef = useRef(null);
+  const abuseSearchInputRef = useRef(null);
   const adminUsersRequestIdRef = useRef(0);
 
   const currentName = String(user?.username || '');
@@ -705,18 +708,18 @@ export default function DashboardPage() {
     // The flagged account is preselected because it is the one the case is
     // about; the account it was linked to is usually already banned.
     setAbuseBanIds(review ? [Number(review.accountId)] : []);
-    setAbuseLookupInput(review ? String(review.accountId) : '');
+    setAbuseSearchName(review ? String(review.accountName || review.accountId) : '');
+    setAbusePickerOpen(false);
     await loadAbuseLinks(review?.accountId);
   };
 
-  const onAbuseLookup = async () => {
-    const id = Number(String(abuseLookupInput || '').trim());
-    if(!Number.isFinite(id) || id <= 0) {
-      return;
-    }
+  const onAbusePickUser = async (entry) => {
+    setAbuseSearchName(String(entry?.username || ''));
+    setAbusePickerOpen(false);
+    blurAbusePickerFocus();
     setAbuseCase(null);
     setAbuseBanIds([]);
-    await loadAbuseLinks(id);
+    await loadAbuseLinks(entry?.id);
   };
 
   const toggleAbuseBanId = (accountId) => {
@@ -1157,6 +1160,27 @@ export default function DashboardPage() {
     }
     refreshAbuseReviews();
   }, [isManager, activeSection]);
+
+  useEffect(() => {
+    if(!isManager || activeSection !== 'admin-abuse' || !abusePickerOpen) {
+      return;
+    }
+    refreshAdminUsers();
+  }, [isManager, activeSection, abusePickerOpen]);
+
+  useEffect(() => {
+    if(!abusePickerOpen) {
+      return undefined;
+    }
+    const onMouseDown = (event) => {
+      if(!abusePickerRef.current || abusePickerRef.current.contains(event.target)) {
+        return;
+      }
+      setAbusePickerOpen(false);
+    };
+    document.addEventListener('mousedown', onMouseDown);
+    return () => document.removeEventListener('mousedown', onMouseDown);
+  }, [abusePickerOpen]);
 
   useEffect(() => {
     setAdminGrantPlanKey('starter');
@@ -1996,15 +2020,20 @@ ${t('dashboard.accessReasonLine', { reason: banReasonText || '-' })}`
   const accessStatusClass = isBanned
     ? (banPermanent ? 'status-text status-permanent' : 'status-text status-temporary')
     : 'status-text status-normal';
-  const adminSearchLower = adminSearchName.trim().toLowerCase();
-  const adminFilteredUsers = adminSearchLower
-    ? adminUsers.filter((entry) => {
+  const filterAdminUsersByName = (needle) => {
+    const lowered = needle.trim().toLowerCase();
+    if(!lowered) {
+      return adminUsers;
+    }
+    return adminUsers.filter((entry) => {
       const username = String(entry?.username || '').toLowerCase();
       const displayName = String(entry?.display_name || entry?.username || '').toLowerCase();
       const dummyName = String(entry?.dummy_name || '').toLowerCase();
-      return username.includes(adminSearchLower) || displayName.includes(adminSearchLower) || dummyName.includes(adminSearchLower);
-    })
-    : adminUsers;
+      return username.includes(lowered) || displayName.includes(lowered) || dummyName.includes(lowered);
+    });
+  };
+  const adminFilteredUsers = filterAdminUsersByName(adminSearchName);
+  const abuseFilteredUsers = filterAdminUsersByName(abuseSearchName);
   const adminUserStatusText = (targetUser) => {
     const permanent = Number(targetUser?.ban_is_permanent || 0) !== 0;
     const untilRaw = String(targetUser?.ban_until || '');
@@ -2072,6 +2101,14 @@ ${t('dashboard.accessReasonLine', { reason: banReasonText || '-' })}`
     }
     if(adminSearchInputRef.current) {
       adminSearchInputRef.current.blur();
+    }
+  };
+  const blurAbusePickerFocus = () => {
+    if(typeof document !== 'undefined' && document.activeElement instanceof HTMLElement) {
+      document.activeElement.blur();
+    }
+    if(abuseSearchInputRef.current) {
+      abuseSearchInputRef.current.blur();
     }
   };
   const navItems = [
@@ -2977,17 +3014,53 @@ ${t('dashboard.accessReasonLine', { reason: banReasonText || '-' })}`
 
                 <label>
                   {t('dashboard.adminAbuseLookupLabel')}
-                  <div className="admin-abuse-lookup">
+                  <div className="admin-user-picker" ref={abusePickerRef}>
                     <input
-                      type="text"
-                      inputMode="numeric"
-                      value={abuseLookupInput}
-                      onChange={(event) => setAbuseLookupInput(event.target.value)}
-                      placeholder="123"
+                      ref={abuseSearchInputRef}
+                      value={abuseSearchName}
+                      onChange={(event) => {
+                        setAbuseSearchName(event.target.value);
+                        setAbusePickerOpen(true);
+                      }}
+                      onFocus={() => setAbusePickerOpen(true)}
+                      placeholder={t('dashboard.adminSearchPlaceholder')}
                     />
-                    <button className="btn ghost" type="button" onClick={onAbuseLookup}>
-                      {t('dashboard.adminAbuseLookupButton')}
-                    </button>
+                    {abusePickerOpen ? (
+                      <div className="admin-user-list-wrap">
+                        <div className="admin-user-list-header">
+                          <span>{t('dashboard.rowUserId')}</span>
+                          <span>{t('dashboard.rowUsername')}</span>
+                          <span>{t('dashboard.rowDisplayName')}</span>
+                          <span>{t('dashboard.rowDummyName')}</span>
+                          <span>{t('dashboard.rowAccess')}</span>
+                        </div>
+                        <div className="admin-user-list">
+                          {adminUsersLoading && adminUsers.length === 0 ? (
+                            <div className="admin-user-list-empty">{t('dashboard.adminNoUsers')}</div>
+                          ) : abuseFilteredUsers.length === 0 ? (
+                            <div className="admin-user-list-empty">{t('dashboard.adminNoUsers')}</div>
+                          ) : (
+                            abuseFilteredUsers.map((entry) => (
+                              <button
+                                key={entry.id}
+                                className="admin-user-row"
+                                type="button"
+                                onMouseDown={(event) => event.preventDefault()}
+                                onClick={() => onAbusePickUser(entry)}
+                              >
+                                <span>{entry.id}</span>
+                                {renderAdminUserCell(entry.username || '-')}
+                                {renderAdminUserCell(entry.display_name || entry.username || '-')}
+                                {renderAdminUserCell(entry.dummy_name || '-')}
+                                <Tooltip label={adminUserStatusText(entry)}>
+                                  <span className="admin-user-cell-text">{adminUserStatusCompact(entry)}</span>
+                                </Tooltip>
+                              </button>
+                            ))
+                          )}
+                        </div>
+                      </div>
+                    ) : null}
                   </div>
                 </label>
 

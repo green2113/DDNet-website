@@ -519,15 +519,6 @@ h3 {
   opacity: 0.85;
 }
 
-.admin-abuse-lookup {
-  display: flex;
-  gap: 8px;
-}
-
-.admin-abuse-lookup input {
-  flex: 1 1 auto;
-}
-
 .admin-abuse-activity {
   display: flex;
   flex-direction: column;
