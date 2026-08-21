@@ -6212,13 +6212,18 @@ async function ensureAbuseTables(env) {
     CREATE INDEX IF NOT EXISTS idx_abuse_reviews_user
     ON abuse_reviews(user_id)
   `).run();
-  // Added after the table shipped, so it may already be there.
-  try {
-    await env.DB.prepare(`
-      ALTER TABLE abuse_reviews ADD COLUMN kind TEXT NOT NULL DEFAULT 'evasion'
-    `).run();
-  } catch {
-    // Column exists.
+  // Added after the table shipped, so they may already be there.
+  const laterColumns = [
+    `kind TEXT NOT NULL DEFAULT 'evasion'`,
+    `reopened_at TEXT NOT NULL DEFAULT ''`,
+    `prior_resolution TEXT NOT NULL DEFAULT ''`,
+  ];
+  for(const column of laterColumns) {
+    try {
+      await env.DB.prepare(`ALTER TABLE abuse_reviews ADD COLUMN ${column}`).run();
+    } catch {
+      // Column exists.
+    }
   }
   await env.DB.prepare(`
     CREATE INDEX IF NOT EXISTS idx_abuse_reviews_kind_status
@@ -6693,6 +6698,13 @@ async function loadAccountSharingSignals(env, userId) {
   };
 }
 
+// Records a case, or refreshes the one already open for this pair.
+//
+// A closed case normally stays closed, so a decision an admin already made is
+// not undone by the next login. The exception is a pair cleared as ordinary
+// multi-accounting whose counterpart has since been banned: that is a different
+// question from the one that was answered, so it goes back on the queue marked
+// as a re-review, carrying the earlier verdict along for context.
 async function upsertAbuseReview(env, { userId, relatedUserId, kind, triggerKind, reasons, score }) {
   const now = nowIso();
   await env.DB.prepare(`
@@ -6702,10 +6714,28 @@ async function upsertAbuseReview(env, { userId, relatedUserId, kind, triggerKind
     VALUES (?, ?, ?, 'open', ?, ?, ?, ?, ?)
     ON CONFLICT(user_id, related_user_id) DO UPDATE SET
       kind = excluded.kind,
+      trigger_kind = excluded.trigger_kind,
       evidence = excluded.evidence,
       score = excluded.score,
-      updated_at = excluded.updated_at
+      updated_at = excluded.updated_at,
+      status = 'open',
+      created_at = CASE
+        WHEN abuse_reviews.status = 'open' THEN abuse_reviews.created_at
+        ELSE excluded.created_at
+      END,
+      reopened_at = CASE
+        WHEN abuse_reviews.status = 'open' THEN abuse_reviews.reopened_at
+        ELSE excluded.updated_at
+      END,
+      prior_resolution = CASE
+        WHEN abuse_reviews.status = 'open' THEN abuse_reviews.prior_resolution
+        ELSE abuse_reviews.resolution
+      END,
+      resolution = CASE WHEN abuse_reviews.status = 'open' THEN abuse_reviews.resolution ELSE '' END,
+      reviewed_by = CASE WHEN abuse_reviews.status = 'open' THEN abuse_reviews.reviewed_by ELSE NULL END,
+      reviewed_at = CASE WHEN abuse_reviews.status = 'open' THEN abuse_reviews.reviewed_at ELSE NULL END
     WHERE abuse_reviews.status = 'open'
+       OR (excluded.kind = 'evasion' AND abuse_reviews.kind <> 'evasion')
   `).bind(
     Number(userId),
     Number(relatedUserId),
@@ -6788,6 +6818,8 @@ async function handleAdminAbuseReviews(context) {
       r.reviewed_at,
       r.resolution,
       r.note,
+      r.reopened_at,
+      r.prior_resolution,
       COALESCE(su.display_name, su.username) AS subject_name,
       su.ban_is_permanent AS subject_ban_permanent,
       su.ban_until AS subject_ban_until,
@@ -6825,6 +6857,8 @@ async function handleAdminAbuseReviews(context) {
       reviewedAt: String(row.reviewed_at || ''),
       resolution: String(row.resolution || ''),
       note: String(row.note || ''),
+      reopenedAt: String(row.reopened_at || ''),
+      priorResolution: String(row.prior_resolution || ''),
       accountBanned: permanent || (Number.isFinite(untilMs) && untilMs > nowMs),
     };
   });

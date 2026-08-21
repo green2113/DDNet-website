@@ -504,6 +504,22 @@ h3 {
   font-size: 12px;
 }
 
+.admin-abuse-tag.reopened {
+  background: rgba(255, 186, 84, 0.22);
+  color: #ffdca8;
+}
+
+.admin-abuse-reopened {
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border-left: 3px solid rgba(255, 186, 84, 0.7);
+  border-radius: 6px;
+  background: rgba(255, 186, 84, 0.1);
+  color: #ffdca8;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
 .admin-abuse-pick {
   display: flex;
   align-items: center;

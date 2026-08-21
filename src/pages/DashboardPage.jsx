@@ -3039,6 +3039,11 @@ ${t('dashboard.accessReasonLine', { reason: banReasonText || '-' })}`
                             ? `${review.accountName} (#${review.accountId})`
                             : `${review.accountName} (#${review.accountId}) → ${review.relatedAccountName} (#${review.relatedAccountId})`}
                         </span>
+                        {review.reopenedAt ? (
+                          <span className="admin-abuse-tag reopened">
+                            {t('dashboard.adminAbuseReopenedTag')}
+                          </span>
+                        ) : null}
                         {review.accountBanned ? (
                           <span className="admin-abuse-tag">{t('dashboard.adminAbuseBannedTag')}</span>
                         ) : null}
@@ -3178,6 +3183,16 @@ ${t('dashboard.accessReasonLine', { reason: banReasonText || '-' })}`
 
                 {abuseCase ? (
                   <>
+                    {abuseCase.reopenedAt ? (
+                      <p className="admin-abuse-reopened">
+                        {t('dashboard.adminAbuseReopenedBody', {
+                          resolution: abuseCase.priorResolution
+                            ? t(`dashboard.adminAbuseResolution_${abuseCase.priorResolution}`)
+                            : t('dashboard.adminAbuseResolution_unknown'),
+                        })}
+                        {abuseCase.note ? ` — ${abuseCase.note}` : ''}
+                      </p>
+                    ) : null}
                     <h4>{t('dashboard.adminAbuseTargetsTitle')}</h4>
                     <div className="admin-abuse-targets">
                       {abuseCaseTargets.map((target) => (
