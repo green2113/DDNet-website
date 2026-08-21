@@ -464,7 +464,9 @@ export default function DashboardPage() {
   const [abuseCase, setAbuseCase] = useState(null);
   const [abuseAccountId, setAbuseAccountId] = useState(0);
   const [abuseLinks, setAbuseLinks] = useState([]);
+  const [abuseSharing, setAbuseSharing] = useState(null);
   const [abuseActivity, setAbuseActivity] = useState([]);
+  const [abuseKindFilter, setAbuseKindFilter] = useState('all');
   const [abuseLinksLoading, setAbuseLinksLoading] = useState(false);
   const [abuseSearchName, setAbuseSearchName] = useState('');
   const [abusePickerOpen, setAbusePickerOpen] = useState(false);
@@ -671,10 +673,10 @@ export default function DashboardPage() {
     }
   };
 
-  const refreshAbuseReviews = async () => {
+  const refreshAbuseReviews = async (kind = abuseKindFilter) => {
     setAbuseReviewsLoading(true);
     try {
-      const result = await adminGetAbuseReviews('open');
+      const result = await adminGetAbuseReviews('open', kind);
       setAbuseReviews(Array.isArray(result?.reviews) ? result.reviews : []);
     } catch {
       setAbuseReviews([]);
@@ -693,9 +695,11 @@ export default function DashboardPage() {
     try {
       const result = await adminGetAbuseLinks(id);
       setAbuseLinks(Array.isArray(result?.links) ? result.links : []);
+      setAbuseSharing(result?.sharing || null);
       setAbuseActivity(Array.isArray(result?.activity) ? result.activity : []);
     } catch {
       setAbuseLinks([]);
+      setAbuseSharing(null);
       setAbuseActivity([]);
     } finally {
       setAbuseLinksLoading(false);
@@ -1158,8 +1162,8 @@ export default function DashboardPage() {
     if(!isManager || activeSection !== 'admin-abuse') {
       return;
     }
-    refreshAbuseReviews();
-  }, [isManager, activeSection]);
+    refreshAbuseReviews(abuseKindFilter);
+  }, [isManager, activeSection, abuseKindFilter]);
 
   useEffect(() => {
     if(!isManager || activeSection !== 'admin-abuse' || !abusePickerOpen) {
@@ -2034,6 +2038,22 @@ ${t('dashboard.accessReasonLine', { reason: banReasonText || '-' })}`
   };
   const adminFilteredUsers = filterAdminUsersByName(adminSearchName);
   const abuseFilteredUsers = filterAdminUsersByName(abuseSearchName);
+  const abuseKindOptions = [
+    { value: 'all', label: t('dashboard.adminAbuseKindAll') },
+    { value: 'evasion', label: t('dashboard.adminAbuseKindEvasion') },
+    { value: 'multi_account', label: t('dashboard.adminAbuseKindMulti') },
+    { value: 'sharing', label: t('dashboard.adminAbuseKindSharing') },
+  ];
+  const abuseKindLabel = (kind) => abuseKindOptions.find((option) => option.value === kind)?.label || kind;
+  // A sharing case is about one account, so it has no counterpart to ban.
+  const abuseCaseTargets = abuseCase
+    ? [
+      { id: Number(abuseCase.accountId), name: abuseCase.accountName },
+      ...(Number(abuseCase.relatedAccountId) > 0
+        ? [{ id: Number(abuseCase.relatedAccountId), name: abuseCase.relatedAccountName }]
+        : []),
+    ]
+    : [];
   const adminUserStatusText = (targetUser) => {
     const permanent = Number(targetUser?.ban_is_permanent || 0) !== 0;
     const untilRaw = String(targetUser?.ban_until || '');
@@ -2985,6 +3005,18 @@ ${t('dashboard.accessReasonLine', { reason: banReasonText || '-' })}`
 
               <div className="admin-form-grid">
                 <h4>{t('dashboard.adminAbuseQueueTitle')}</h4>
+                <div className="admin-abuse-filter">
+                  {abuseKindOptions.map((option) => (
+                    <button
+                      key={option.value}
+                      type="button"
+                      className={`btn ghost${abuseKindFilter === option.value ? ' active' : ''}`}
+                      onClick={() => setAbuseKindFilter(option.value)}
+                    >
+                      {option.label}
+                    </button>
+                  ))}
+                </div>
                 {abuseReviewsLoading ? (
                   <p className="muted">{t('dashboard.adminAbuseLoading')}</p>
                 ) : abuseReviews.length === 0 ? (
@@ -2999,10 +3031,13 @@ ${t('dashboard.accessReasonLine', { reason: banReasonText || '-' })}`
                         onClick={() => openAbuseCase(review)}
                       >
                         <span className="admin-abuse-score">{review.score}</span>
+                        <span className={`admin-abuse-kind kind-${review.kind}`}>
+                          {abuseKindLabel(review.kind)}
+                        </span>
                         <span className="admin-abuse-case-text">
-                          {`${review.accountName} (#${review.accountId})`}
-                          {' → '}
-                          {`${review.relatedAccountName} (#${review.relatedAccountId})`}
+                          {review.kind === 'sharing'
+                            ? `${review.accountName} (#${review.accountId})`
+                            : `${review.accountName} (#${review.accountId}) → ${review.relatedAccountName} (#${review.relatedAccountId})`}
                         </span>
                         {review.accountBanned ? (
                           <span className="admin-abuse-tag">{t('dashboard.adminAbuseBannedTag')}</span>
@@ -3066,6 +3101,32 @@ ${t('dashboard.accessReasonLine', { reason: banReasonText || '-' })}`
 
                 {abuseAccountId > 0 ? (
                   <>
+                    <h4>{t('dashboard.adminAbuseSharingTitle')}</h4>
+                    {!abuseSharing || abuseSharing.reasons.length === 0 ? (
+                      <p className="muted">{t('dashboard.adminAbuseSharingEmpty')}</p>
+                    ) : (
+                      <div className="admin-abuse-link">
+                        <div className="admin-abuse-link-head">
+                          <span className="admin-abuse-score">{abuseSharing.score}</span>
+                          <span className="admin-abuse-case-text">
+                            {t('dashboard.adminAbuseSharingSummary', {
+                              handovers: abuseSharing.handovers,
+                              switches: abuseSharing.switches,
+                              networks: abuseSharing.networks,
+                              names: abuseSharing.names,
+                            })}
+                          </span>
+                        </div>
+                        <ul className="admin-abuse-reasons">
+                          {abuseSharing.reasons.map((reason) => (
+                            <li key={reason.kind}>
+                              {t(`dashboard.adminAbuseReason_${reason.kind}`, { count: reason.count })}
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+
                     <h4>{t('dashboard.adminAbuseLinksTitle')}</h4>
                     {abuseLinksLoading ? (
                       <p className="muted">{t('dashboard.adminAbuseLoading')}</p>
@@ -3082,17 +3143,6 @@ ${t('dashboard.accessReasonLine', { reason: banReasonText || '-' })}`
                               </span>
                               {link.banned ? (
                                 <span className="admin-abuse-tag">{t('dashboard.adminAbuseBannedTag')}</span>
-                              ) : null}
-                              {abuseCase ? (
-                                <label className="admin-abuse-pick">
-                                  <input
-                                    type="checkbox"
-                                    checked={abuseBanIds.includes(link.accountId)}
-                                    disabled={link.accountId !== abuseCase.accountId && link.accountId !== abuseCase.relatedAccountId}
-                                    onChange={() => toggleAbuseBanId(link.accountId)}
-                                  />
-                                  <span>{t('dashboard.adminAbuseSelectToBan')}</span>
-                                </label>
                               ) : null}
                             </div>
                             <ul className="admin-abuse-reasons">
@@ -3128,6 +3178,19 @@ ${t('dashboard.accessReasonLine', { reason: banReasonText || '-' })}`
 
                 {abuseCase ? (
                   <>
+                    <h4>{t('dashboard.adminAbuseTargetsTitle')}</h4>
+                    <div className="admin-abuse-targets">
+                      {abuseCaseTargets.map((target) => (
+                        <label key={target.id} className="admin-abuse-pick">
+                          <input
+                            type="checkbox"
+                            checked={abuseBanIds.includes(target.id)}
+                            onChange={() => toggleAbuseBanId(target.id)}
+                          />
+                          <span>{`${target.name} (#${target.id})`}</span>
+                        </label>
+                      ))}
+                    </div>
                     <label>
                       {t('dashboard.adminAbuseNoteLabel')}
                       <input

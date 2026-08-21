@@ -1197,7 +1197,7 @@ async function handleRegister(context) {
       deviceId,
       userAgent: request.headers.get('user-agent') || '',
     });
-    await flagAbuseIfLinkedToBanned(env, userId, 'web_signup');
+    await flagAbuseCases(env, userId, 'web_signup');
   })().catch((err) => console.log('activity record failed', String(err)));
   if(typeof context.waitUntil === 'function') {
     context.waitUntil(recordEvidence);
@@ -1322,7 +1322,7 @@ async function handleLogin(context) {
       deviceId,
       userAgent: request.headers.get('user-agent') || '',
     });
-    await flagAbuseIfLinkedToBanned(env, row.id, 'web_login');
+    await flagAbuseCases(env, row.id, 'web_login');
   })().catch((err) => console.log('activity record failed', String(err)));
   if(typeof context.waitUntil === 'function') {
     context.waitUntil(recordEvidence);
@@ -4354,8 +4354,8 @@ async function handleGameVerify(context) {
         ip: clientIp,
         clientName,
       });
-      await recordAccountPresence(env, user.id);
-      await flagAbuseIfLinkedToBanned(env, user.id, 'game_verify');
+      await recordAccountPresence(env, user.id, { ip: clientIp });
+      await flagAbuseCases(env, user.id, 'game_verify');
     })().catch((err) => console.log('activity record failed', String(err)));
     if(typeof context.waitUntil === 'function') {
       context.waitUntil(recordEvidence);
@@ -4438,8 +4438,8 @@ async function handleGameAutoLogin(context) {
       ip: clientIp,
       clientName,
     });
-    await recordAccountPresence(env, user.id);
-    await flagAbuseIfLinkedToBanned(env, user.id, 'game_auto_login');
+    await recordAccountPresence(env, user.id, { ip: clientIp });
+    await flagAbuseCases(env, user.id, 'game_auto_login');
   })().catch((err) => console.log('activity record failed', String(err)));
   if(typeof context.waitUntil === 'function') {
     context.waitUntil(recordEvidence);
@@ -4542,8 +4542,9 @@ async function handleGameAccountStatus(context) {
 
   // This runs once a second per logged in player and is the only signal that
   // says who was online at the same time, which is what separates "two people
-  // in one house" from "one person on two accounts".
-  const heartbeat = recordAccountPresence(env, accountId)
+  // in one house" from "one person on two accounts", and one account being
+  // played by two people from one person moving between machines.
+  const heartbeat = recordAccountPresence(env, accountId, { ip: gameClientIpFromRequest(request) })
     .catch((err) => console.log('presence record failed', String(err)));
   if(typeof context.waitUntil === 'function') {
     context.waitUntil(heartbeat);
@@ -6107,10 +6108,23 @@ async function handleInternalMapDeployFile(context, jobIdRaw) {
 // ---------------------------------------------------------------------------
 
 const PRESENCE_BUCKET_SECONDS = 5 * 60;
-// Below this a link is too weak to be worth a manager's attention, so it is
+// Below these a signal is too weak to be worth a manager's attention, so it is
 // still visible when looking an account up but does not open a case by itself.
-const ABUSE_FLAG_MIN_SCORE = 40;
+// Links to a banned account are held to a lower bar than links between two
+// accounts in good standing, because the latter are mostly families and cafes.
+const ABUSE_EVASION_MIN_SCORE = 40;
+const ABUSE_MULTI_MIN_SCORE = 55;
+const ABUSE_SHARING_MIN_SCORE = 50;
 const ABUSE_LINK_LIMIT = 40;
+const ABUSE_REVIEW_KINDS = ['all', 'evasion', 'multi_account', 'sharing'];
+// How far back sharing evidence is read. An account that changed hands a year
+// ago is a different question from one being played by two people this week.
+const SHARING_WINDOW_MS = 14 * 24 * 60 * 60 * 1000;
+// Slots allowed between leaving one network and appearing on another before the
+// change stops looking like one person handing the account to the next.
+const SHARING_HANDOVER_BUCKETS = 3;
+// Slots of real playtime in one day that one person is unlikely to reach alone.
+const SHARING_LONG_DAY_SLOTS = 192;
 // A fresh account that starts right after another one goes quiet looks like the
 // same person switching, but only while the handover is tight.
 const ABUSE_TAKEOVER_WINDOW_MS = 72 * 60 * 60 * 1000;
@@ -6160,6 +6174,19 @@ async function ensureAbuseTables(env) {
     ON account_presence(bucket)
   `).run();
   await env.DB.prepare(`
+    CREATE TABLE IF NOT EXISTS account_presence_source (
+      user_id INTEGER NOT NULL,
+      bucket INTEGER NOT NULL,
+      device_id TEXT NOT NULL DEFAULT '',
+      ip_prefix TEXT NOT NULL DEFAULT '',
+      PRIMARY KEY (user_id, bucket, device_id, ip_prefix)
+    )
+  `).run();
+  await env.DB.prepare(`
+    CREATE INDEX IF NOT EXISTS idx_account_presence_source_user
+    ON account_presence_source(user_id, bucket)
+  `).run();
+  await env.DB.prepare(`
     CREATE TABLE IF NOT EXISTS abuse_reviews (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       user_id INTEGER NOT NULL,
@@ -6185,6 +6212,18 @@ async function ensureAbuseTables(env) {
     CREATE INDEX IF NOT EXISTS idx_abuse_reviews_user
     ON abuse_reviews(user_id)
   `).run();
+  // Added after the table shipped, so it may already be there.
+  try {
+    await env.DB.prepare(`
+      ALTER TABLE abuse_reviews ADD COLUMN kind TEXT NOT NULL DEFAULT 'evasion'
+    `).run();
+  } catch {
+    // Column exists.
+  }
+  await env.DB.prepare(`
+    CREATE INDEX IF NOT EXISTS idx_abuse_reviews_kind_status
+    ON abuse_reviews(kind, status, created_at)
+  `).run();
   abuseTablesReady = true;
 }
 
@@ -6206,17 +6245,25 @@ function uniqueStrings(values) {
   return out;
 }
 
-async function recordAccountPresence(env, userId, atMs = Date.now()) {
+// `source` is where the account was being played from. It is recorded next to
+// the plain presence row because a slot that holds two different networks means
+// two people were on the one account at the same time.
+async function recordAccountPresence(env, userId, source = null, atMs = Date.now()) {
   const id = Number(userId || 0);
   if(!Number.isFinite(id) || id <= 0) {
     return;
   }
   const bucket = presenceBucketFor(atMs);
-  if(presenceWritten.get(id) === bucket) {
+  const deviceId = String(source?.deviceId || '').trim();
+  const prefix = source?.ip ? ipPrefix(String(source.ip)) : '';
+  // Keyed by source so a second player on the same account in the same slot is
+  // still written instead of being swallowed by the first one's cache entry.
+  const cacheKey = `${id}|${deviceId}|${prefix}`;
+  if(presenceWritten.get(cacheKey) === bucket) {
     return;
   }
-  presenceWritten.set(id, bucket);
-  if(presenceWritten.size > 512) {
+  presenceWritten.set(cacheKey, bucket);
+  if(presenceWritten.size > 2048) {
     presenceWritten.clear();
   }
 
@@ -6224,6 +6271,12 @@ async function recordAccountPresence(env, userId, atMs = Date.now()) {
   await env.DB.prepare(`
     INSERT OR IGNORE INTO account_presence (user_id, bucket) VALUES (?, ?)
   `).bind(id, bucket).run();
+  if(deviceId || prefix) {
+    await env.DB.prepare(`
+      INSERT OR IGNORE INTO account_presence_source (user_id, bucket, device_id, ip_prefix)
+      VALUES (?, ?, ?, ?)
+    `).bind(id, bucket, deviceId, prefix).run();
+  }
 }
 
 async function recordAccountActivity(env, userId, details) {
@@ -6463,39 +6516,248 @@ async function loadAccountLinks(env, userId) {
   return out;
 }
 
-// Opens a case when an account turns up on evidence a banned account also used.
-// Failures are swallowed on purpose: this runs beside a login and must never be
-// the reason a player cannot get in.
-async function flagAbuseIfLinkedToBanned(env, userId, triggerKind) {
+// Reads the account's presence timeline and counts how the network it is played
+// from changes over it.
+function readNetworkSwitches(rows) {
+  let handovers = 0;
+  let returns = 0;
+  let switches = 0;
+  const seen = new Set();
+  let previous = null;
+
+  for(const row of rows) {
+    const bucket = Number(row.bucket || 0);
+    const prefix = String(row.ip_prefix || '');
+    if(!prefix) {
+      continue;
+    }
+    if(!previous) {
+      previous = { bucket, prefix };
+      seen.add(prefix);
+      continue;
+    }
+    // Two rows in one slot are a switch inside five minutes, which the loop
+    // below would otherwise read as an ordinary gap of zero.
+    if(prefix !== previous.prefix) {
+      switches++;
+      if(bucket - previous.bucket <= SHARING_HANDOVER_BUCKETS) {
+        handovers++;
+      }
+      if(seen.has(prefix)) {
+        returns++;
+      }
+      seen.add(prefix);
+    }
+    previous = { bucket, prefix };
+  }
+
+  return { switches, handovers, returns };
+}
+
+// Reads which in-game name is used the most from each network. One person keeps
+// their name when they move between networks; two people usually do not.
+function readNetworkProfiles(rows) {
+  const bestNameByNetwork = new Map();
+  for(const row of rows) {
+    const prefix = String(row.ip_prefix || '');
+    const name = String(row.client_name_lower || '');
+    const hits = Number(row.hits || 0);
+    if(!prefix || !name) {
+      continue;
+    }
+    const current = bestNameByNetwork.get(prefix);
+    if(!current || hits > current.hits) {
+      bestNameByNetwork.set(prefix, { name, hits });
+    }
+  }
+  const dominantNames = new Set([...bestNameByNetwork.values()].map((entry) => entry.name));
+  return { networksWithName: bestNameByNetwork.size, profiles: dominantNames.size };
+}
+
+// Looks for one account being played by more than one person.
+//
+// Only one session per account is allowed, so two people cannot be online on it
+// at once and simultaneity is not available as evidence. What they leave behind
+// instead is the seam between their turns: the account keeps bouncing between
+// networks, hands over from one to another within minutes, carries a different
+// in-game name on each network, and stays online longer than one person plays.
+async function loadAccountSharingSignals(env, userId) {
+  const id = Number(userId || 0);
+  if(!Number.isFinite(id) || id <= 0) {
+    return null;
+  }
+  await ensureAbuseTables(env);
+
+  const sinceBucket = presenceBucketFor(Date.now() - SHARING_WINDOW_MS);
+
+  const timeline = await env.DB.prepare(`
+    SELECT bucket, ip_prefix
+    FROM account_presence_source
+    WHERE user_id = ? AND bucket >= ? AND ip_prefix != ''
+    ORDER BY bucket ASC
+    LIMIT 6000
+  `).bind(id, sinceBucket).all();
+  const { switches, handovers, returns } = readNetworkSwitches(timeline?.results || []);
+
+  const byNetwork = await env.DB.prepare(`
+    SELECT ip_prefix, client_name_lower, SUM(hits) AS hits
+    FROM account_activity
+    WHERE user_id = ? AND ip_prefix != '' AND client_name_lower != ''
+    GROUP BY ip_prefix, client_name_lower
+  `).bind(id).all();
+  const { profiles } = readNetworkProfiles(byNetwork?.results || []);
+
+  // A day is 288 five minute slots. Counting the slots the account was actually
+  // online gives real playtime, not just the span from first to last login.
+  const longDayRows = await env.DB.prepare(`
+    SELECT bucket / 288 AS day, COUNT(*) AS slots
+    FROM account_presence
+    WHERE user_id = ? AND bucket >= ?
+    GROUP BY day
+    HAVING slots >= ?
+  `).bind(id, sinceBucket, SHARING_LONG_DAY_SLOTS).all();
+  const longDays = (longDayRows?.results || []).length;
+
+  const spread = await env.DB.prepare(`
+    SELECT
+      COUNT(DISTINCT NULLIF(ip_prefix, '')) AS networks,
+      COUNT(DISTINCT NULLIF(device_id, '')) AS devices,
+      COUNT(DISTINCT NULLIF(client_name_lower, '')) AS names
+    FROM account_activity
+    WHERE user_id = ?
+  `).bind(id).first();
+  const networks = Number(spread?.networks || 0);
+  const devices = Number(spread?.devices || 0);
+  const names = Number(spread?.names || 0);
+
+  const reasons = [];
+  let score = 0;
+
+  // The strongest thing single session enforcement can show: the account leaves
+  // one network and is back from another within minutes, over and over. One
+  // person moving between their own connections leaves a gap instead.
+  if(handovers >= 5) {
+    score += 45;
+    reasons.push({ kind: 'sharing_handover', count: handovers });
+  } else if(handovers >= 2) {
+    score += 25;
+    reasons.push({ kind: 'sharing_handover_few', count: handovers });
+  } else if(handovers >= 1) {
+    score += 10;
+    reasons.push({ kind: 'sharing_handover_few', count: handovers });
+  }
+
+  if(profiles >= 3) {
+    score += 30;
+    reasons.push({ kind: 'sharing_profiles', count: profiles });
+  } else if(profiles >= 2) {
+    score += 20;
+    reasons.push({ kind: 'sharing_profiles', count: profiles });
+  }
+
+  if(longDays >= 3) {
+    score += 20;
+    reasons.push({ kind: 'sharing_long_days', count: longDays });
+  } else if(longDays >= 1) {
+    score += 8;
+    reasons.push({ kind: 'sharing_long_days', count: longDays });
+  }
+
+  // Going back to a network already left says the change was not a move. On its
+  // own it also describes one person alternating between home and mobile data,
+  // so it only ever tops up a case the seams above already made.
+  if(returns >= 6) {
+    score += 15;
+    reasons.push({ kind: 'sharing_alternating', count: returns });
+  }
+  if(networks >= 6) {
+    score += 10;
+    reasons.push({ kind: 'sharing_networks', count: networks });
+  }
+  if(devices >= 3) {
+    score += 10;
+    reasons.push({ kind: 'sharing_devices', count: devices });
+  }
+
+  return {
+    score: Math.max(0, Math.min(100, score)),
+    reasons,
+    handovers,
+    switches,
+    returns,
+    profiles,
+    longDays,
+    networks,
+    devices,
+    names,
+  };
+}
+
+async function upsertAbuseReview(env, { userId, relatedUserId, kind, triggerKind, reasons, score }) {
+  const now = nowIso();
+  await env.DB.prepare(`
+    INSERT INTO abuse_reviews (
+      user_id, related_user_id, kind, status, trigger_kind, evidence, score, created_at, updated_at
+    )
+    VALUES (?, ?, ?, 'open', ?, ?, ?, ?, ?)
+    ON CONFLICT(user_id, related_user_id) DO UPDATE SET
+      kind = excluded.kind,
+      evidence = excluded.evidence,
+      score = excluded.score,
+      updated_at = excluded.updated_at
+    WHERE abuse_reviews.status = 'open'
+  `).bind(
+    Number(userId),
+    Number(relatedUserId),
+    kind,
+    String(triggerKind || ''),
+    JSON.stringify(reasons),
+    score,
+    now,
+    now,
+  ).run();
+}
+
+// Opens the cases an account's own evidence argues for. Failures are swallowed
+// on purpose: this runs beside a login and must never be the reason a player
+// cannot get in.
+async function flagAbuseCases(env, userId, triggerKind) {
   try {
     const links = await loadAccountLinks(env, userId);
-    const now = nowIso();
     for(const link of links) {
-      if(!link.banned || link.score < ABUSE_FLAG_MIN_SCORE) {
+      const kind = link.banned ? 'evasion' : 'multi_account';
+      const minimum = link.banned ? ABUSE_EVASION_MIN_SCORE : ABUSE_MULTI_MIN_SCORE;
+      if(link.score < minimum) {
         continue;
       }
-      await env.DB.prepare(`
-        INSERT INTO abuse_reviews (
-          user_id, related_user_id, status, trigger_kind, evidence, score, created_at, updated_at
-        )
-        VALUES (?, ?, 'open', ?, ?, ?, ?, ?)
-        ON CONFLICT(user_id, related_user_id) DO UPDATE SET
-          evidence = excluded.evidence,
-          score = excluded.score,
-          updated_at = excluded.updated_at
-        WHERE abuse_reviews.status = 'open'
-      `).bind(
-        Number(userId),
-        link.accountId,
-        String(triggerKind || ''),
-        JSON.stringify(link.reasons),
-        link.score,
-        now,
-        now,
-      ).run();
+      await upsertAbuseReview(env, {
+        userId,
+        relatedUserId: link.accountId,
+        kind,
+        triggerKind,
+        reasons: link.reasons,
+        score: link.score,
+      });
     }
   } catch(err) {
-    console.log('abuse flag failed', String(err));
+    console.log('abuse link flag failed', String(err));
+  }
+
+  try {
+    const sharing = await loadAccountSharingSignals(env, userId);
+    if(sharing && sharing.score >= ABUSE_SHARING_MIN_SCORE) {
+      // Sharing is about one account, so there is no counterpart to point at.
+      await upsertAbuseReview(env, {
+        userId,
+        relatedUserId: 0,
+        kind: 'sharing',
+        triggerKind,
+        reasons: sharing.reasons,
+        score: sharing.score,
+      });
+    }
+  } catch(err) {
+    console.log('abuse sharing flag failed', String(err));
   }
 }
 
@@ -6509,12 +6771,15 @@ async function handleAdminAbuseReviews(context) {
 
   const url = new URL(request.url);
   const status = String(url.searchParams.get('status') || 'open').trim() || 'open';
+  const kind = String(url.searchParams.get('kind') || 'all').trim() || 'all';
+  const kindFilter = ABUSE_REVIEW_KINDS.includes(kind) ? kind : 'all';
 
   const rows = await env.DB.prepare(`
     SELECT
       r.id,
       r.user_id,
       r.related_user_id,
+      r.kind,
       r.status,
       r.trigger_kind,
       r.evidence,
@@ -6530,10 +6795,10 @@ async function handleAdminAbuseReviews(context) {
     FROM abuse_reviews r
     LEFT JOIN users su ON su.id = r.user_id
     LEFT JOIN users ru ON ru.id = r.related_user_id
-    WHERE r.status = ?
+    WHERE r.status = ? AND (? = 'all' OR r.kind = ?)
     ORDER BY r.score DESC, r.created_at DESC
     LIMIT 100
-  `).bind(status).all();
+  `).bind(status, kindFilter, kindFilter).all();
 
   const nowMs = Date.now();
   const reviews = (rows?.results || []).map((row) => {
@@ -6551,6 +6816,7 @@ async function handleAdminAbuseReviews(context) {
       accountName: String(row.subject_name || ''),
       relatedAccountId: Number(row.related_user_id),
       relatedAccountName: String(row.related_name || ''),
+      kind: String(row.kind || 'evasion'),
       status: String(row.status || ''),
       triggerKind: String(row.trigger_kind || ''),
       score: Number(row.score || 0),
@@ -6581,6 +6847,7 @@ async function handleAdminAbuseLinks(context) {
 
   await ensureAbuseTables(env);
   const links = await loadAccountLinks(env, accountId);
+  const sharing = await loadAccountSharingSignals(env, accountId);
 
   const activity = await env.DB.prepare(`
     SELECT source, ip, ip_prefix, device_id, user_agent, client_name, hits, first_seen_at, last_seen_at
@@ -6594,8 +6861,19 @@ async function handleAdminAbuseLinks(context) {
     ok: true,
     accountId,
     links,
+    sharing,
     activity: activity?.results || [],
   });
+}
+
+function defaultAbuseBanReason(kind, reviewId, review) {
+  if(kind === 'sharing') {
+    return `Account sharing review #${reviewId}`;
+  }
+  if(kind === 'multi_account') {
+    return `Multi-account review #${reviewId} (linked to account ${review.related_user_id})`;
+  }
+  return `Ban evasion review #${reviewId} (linked to account ${review.related_user_id})`;
 }
 
 async function handleAdminAbuseResolve(context) {
@@ -6620,25 +6898,29 @@ async function handleAdminAbuseResolve(context) {
   }
 
   const review = await env.DB.prepare(`
-    SELECT id, user_id, related_user_id FROM abuse_reviews WHERE id = ? LIMIT 1
+    SELECT id, user_id, related_user_id, kind FROM abuse_reviews WHERE id = ? LIMIT 1
   `).bind(reviewId).first();
   if(!review) {
     return json({ ok: false, message: 'Review not found' }, 404);
   }
+  const reviewKind = String(review.kind || 'evasion');
 
   const banned = [];
   if(action === 'confirm') {
     // Only accounts that belong to this case can be banned through it, so a
-    // stray id in the request cannot turn into a ban.
-    const allowed = new Set([Number(review.user_id), Number(review.related_user_id)]);
+    // stray id in the request cannot turn into a ban. Sharing cases carry no
+    // counterpart, so the subject is the only account on the list.
+    const allowed = new Set([Number(review.user_id)]);
+    if(Number(review.related_user_id) > 0) {
+      allowed.add(Number(review.related_user_id));
+    }
     const requested = Array.isArray(data.banAccountIds) ? data.banAccountIds : [];
     const minutesRaw = Number(data.minutes ?? 0);
     const permanent = minutesRaw <= 0;
     const banUntil = permanent
       ? null
       : new Date(Date.now() + Math.max(1, Math.floor(minutesRaw)) * 60 * 1000).toISOString();
-    const reason = String(data.reason || '').trim()
-      || `Ban evasion review #${reviewId} (linked to account ${review.related_user_id})`;
+    const reason = String(data.reason || '').trim() || defaultAbuseBanReason(reviewKind, reviewId, review);
 
     for(const raw of requested) {
       const accountId = Number(raw || 0);

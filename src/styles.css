@@ -512,6 +512,47 @@ h3 {
   white-space: nowrap;
 }
 
+.admin-abuse-filter {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.admin-abuse-filter .btn.active {
+  border-color: rgba(120, 160, 255, 0.7);
+  background: rgba(79, 124, 255, 0.28);
+}
+
+.admin-abuse-kind {
+  flex: 0 0 auto;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.1);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.admin-abuse-kind.kind-evasion {
+  background: rgba(255, 96, 96, 0.22);
+  color: #ffc9c9;
+}
+
+.admin-abuse-kind.kind-multi_account {
+  background: rgba(255, 186, 96, 0.22);
+  color: #ffe0b0;
+}
+
+.admin-abuse-kind.kind-sharing {
+  background: rgba(120, 200, 255, 0.22);
+  color: #c4e6ff;
+}
+
+.admin-abuse-targets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+}
+
 .admin-abuse-reasons {
   margin: 0;
   padding-left: 18px;

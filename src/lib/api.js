@@ -172,9 +172,10 @@ export async function adminSearchUsers(query = '') {
   return api(`/api/admin/users?q=${q}`, { method: 'GET' });
 }
 
-export async function adminGetAbuseReviews(status = 'open') {
+export async function adminGetAbuseReviews(status = 'open', kind = 'all') {
   const s = encodeURIComponent(String(status || 'open'));
-  return api(`/api/admin/abuse/reviews?status=${s}`, { method: 'GET' });
+  const k = encodeURIComponent(String(kind || 'all'));
+  return api(`/api/admin/abuse/reviews?status=${s}&kind=${k}`, { method: 'GET' });
 }
 
 export async function adminGetAbuseLinks(accountId) {
