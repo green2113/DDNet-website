@@ -566,7 +566,7 @@ export default function DashboardPage() {
   const adminLevel = Number(user?.is_admin || 0);
   const isManager = Number.isFinite(adminLevel) && adminLevel >= 1;
   const isOperator = Number.isFinite(adminLevel) && adminLevel >= 2;
-  const isAdminSection = activeSection === 'admin-ban' || activeSection === 'admin-abuse' || activeSection === 'admin-plan-grant' || activeSection === 'admin-map-upload' || activeSection === 'admin-maintenance';
+  const isAdminSection = activeSection === 'admin-ban' || activeSection === 'admin-abuse' || activeSection === 'admin-patreon' || activeSection === 'admin-plan-grant' || activeSection === 'admin-map-upload' || activeSection === 'admin-maintenance';
   const canUseInvite = signupCountry === 'TW' || signupCountry === 'KR' || plusActive || hasInviteCode;
   const trailFeatureLocked = subscriptionStateLoading || !plusActive;
   const plusSubscription = subscriptionInfo?.subscription || null;
@@ -832,7 +832,7 @@ export default function DashboardPage() {
   }, [isManager, isAdminSection]);
 
   useEffect(() => {
-    if(!isOperator && (activeSection === 'admin-plan-grant' || activeSection === 'admin-map-upload' || activeSection === 'admin-maintenance')) {
+    if(!isOperator && (activeSection === 'admin-patreon' || activeSection === 'admin-plan-grant' || activeSection === 'admin-map-upload' || activeSection === 'admin-maintenance')) {
       setActiveSection(isManager ? 'admin-ban' : 'account');
     }
   }, [isOperator, isManager, activeSection]);
@@ -854,13 +854,17 @@ export default function DashboardPage() {
       return undefined;
     }
     refreshAdminUsers();
-    if(isOperator && activeSection === 'admin-ban') {
-      refreshAdminPatreonTiers();
-    }
     return () => {
       adminUsersRequestIdRef.current += 1;
     };
   }, [isManager, isOperator, activeSection]);
+
+  useEffect(() => {
+    if(!isOperator || activeSection !== 'admin-patreon') {
+      return;
+    }
+    refreshAdminPatreonTiers();
+  }, [isOperator, activeSection]);
 
   const refreshTrailSettings = async () => {
     setAdminTrailLoading(true);
@@ -2196,6 +2200,16 @@ ${t('dashboard.accessReasonLine', { reason: banReasonText || '-' })}`
               ) : null}
               {isOperator ? (
                 <button
+                  className={`dashboard-nav-btn${activeSection === 'admin-patreon' ? ' active' : ''}`}
+                  type="button"
+                  onClick={() => setActiveSection('admin-patreon')}
+                >
+                  <span className="dashboard-nav-icon" aria-hidden="true"><img src={iconCreditCard} alt="" /></span>
+                  <span>{t('dashboard.adminPatreonNav')}</span>
+                </button>
+              ) : null}
+              {isOperator ? (
+                <button
                   className={`dashboard-nav-btn${activeSection === 'admin-map-upload' ? ' active' : ''}`}
                   type="button"
                   onClick={() => setActiveSection('admin-map-upload')}
@@ -2832,98 +2846,98 @@ ${t('dashboard.accessReasonLine', { reason: banReasonText || '-' })}`
                 </div>
               ) : null}
 
-              {isOperator ? (
-                <>
-                  <div className="dashboard-nav-divider" />
-                  <h3>Patreon Tier Rules</h3>
-                  <p className="muted">Only active patrons in allowed Starter/Plus tiers receive matching benefits.</p>
-                  <div className="admin-form-grid">
-                    <label>
-                      Plan Key
-                      <select
-                        value={adminPatreonPlanKey}
-                        onChange={(event) => setAdminPatreonPlanKey(event.target.value === 'starter' ? 'starter' : 'plus')}
-                      >
-                        <option value="plus">Plus</option>
-                        <option value="starter">Starter</option>
-                      </select>
-                    </label>
-                    <label>
-                      Patreon Tier ID
-                      <input
-                        value={adminPatreonTierId}
-                        onChange={(event) => setAdminPatreonTierId(event.target.value)}
-                        placeholder="e.g. 12345678"
-                      />
-                    </label>
-                    <label>
-                      Tier Title (optional)
-                      <input
-                        value={adminPatreonTierTitle}
-                        onChange={(event) => setAdminPatreonTierTitle(event.target.value)}
-                        placeholder="e.g. Ravion Plus"
-                      />
-                    </label>
-                    <label>
-                      Active
-                      <select
-                        value={adminPatreonTierActive ? '1' : '0'}
-                        onChange={(event) => setAdminPatreonTierActive(event.target.value === '1')}
-                      >
-                        <option value="1">Enabled</option>
-                        <option value="0">Disabled</option>
-                      </select>
-                    </label>
-                  </div>
-                  <div className="admin-actions">
-                    <button className="btn admin-main-action" type="button" onClick={onAdminPatreonTierSave} disabled={adminPatreonSubmitting}>
-                      Save Patreon Tier
-                    </button>
-                  </div>
+            </article>
+          ) : null}
 
-                  <div className="admin-tier-list">
-                    <div className="admin-tier-list-header">
-                      <span>Plan</span>
-                      <span>Tier ID</span>
-                      <span>Title</span>
-                      <span>Status</span>
-                      <span>Action</span>
-                    </div>
-                    <div className="admin-tier-list-body">
-                      {adminPatreonLoading ? (
-                        <div className="admin-user-list-empty">Loading tiers...</div>
-                      ) : adminPatreonTiers.length === 0 ? (
-                        <div className="admin-user-list-empty">No Patreon tier rules yet.</div>
-                      ) : (
-                        adminPatreonTiers.map((tier) => (
-                          <div className="admin-tier-row" key={tier.external_tier_id}>
-                            <span>{String(tier.plan_key || '-').toUpperCase()}</span>
-                            <span>{tier.external_tier_id}</span>
-                            <span>{tier.tier_title || '-'}</span>
-                            <span className={Number(tier.active || 0) === 1 ? 'status-text status-normal' : 'status-text status-temporary'}>
-                              {Number(tier.active || 0) === 1 ? 'Enabled' : 'Disabled'}
-                            </span>
-                            <span>
-                              {Number(tier.active || 0) === 1 ? (
-                                <button
-                                  className="btn ghost"
-                                  type="button"
-                                  onClick={() => onAdminPatreonTierDisable(tier.external_tier_id)}
-                                  disabled={adminPatreonSubmitting}
-                                >
-                                  Disable
-                                </button>
-                              ) : (
-                                <span className="muted">-</span>
-                              )}
-                            </span>
-                          </div>
-                        ))
-                      )}
-                    </div>
-                  </div>
-                </>
-              ) : null}
+          {activeSection === 'admin-patreon' && isOperator ? (
+            <article className="panel">
+              <h3>Patreon Tier Rules</h3>
+              <p className="muted">Only active patrons in allowed Starter/Plus tiers receive matching benefits.</p>
+              <div className="admin-form-grid">
+                <label>
+                  Plan Key
+                  <select
+                    value={adminPatreonPlanKey}
+                    onChange={(event) => setAdminPatreonPlanKey(event.target.value === 'starter' ? 'starter' : 'plus')}
+                  >
+                    <option value="plus">Plus</option>
+                    <option value="starter">Starter</option>
+                  </select>
+                </label>
+                <label>
+                  Patreon Tier ID
+                  <input
+                    value={adminPatreonTierId}
+                    onChange={(event) => setAdminPatreonTierId(event.target.value)}
+                    placeholder="e.g. 12345678"
+                  />
+                </label>
+                <label>
+                  Tier Title (optional)
+                  <input
+                    value={adminPatreonTierTitle}
+                    onChange={(event) => setAdminPatreonTierTitle(event.target.value)}
+                    placeholder="e.g. Ravion Plus"
+                  />
+                </label>
+                <label>
+                  Active
+                  <select
+                    value={adminPatreonTierActive ? '1' : '0'}
+                    onChange={(event) => setAdminPatreonTierActive(event.target.value === '1')}
+                  >
+                    <option value="1">Enabled</option>
+                    <option value="0">Disabled</option>
+                  </select>
+                </label>
+              </div>
+              <div className="admin-actions">
+                <button className="btn admin-main-action" type="button" onClick={onAdminPatreonTierSave} disabled={adminPatreonSubmitting}>
+                  Save Patreon Tier
+                </button>
+              </div>
+
+              <div className="admin-tier-list">
+                <div className="admin-tier-list-header">
+                  <span>Plan</span>
+                  <span>Tier ID</span>
+                  <span>Title</span>
+                  <span>Status</span>
+                  <span>Action</span>
+                </div>
+                <div className="admin-tier-list-body">
+                  {adminPatreonLoading ? (
+                    <div className="admin-user-list-empty">Loading tiers...</div>
+                  ) : adminPatreonTiers.length === 0 ? (
+                    <div className="admin-user-list-empty">No Patreon tier rules yet.</div>
+                  ) : (
+                    adminPatreonTiers.map((tier) => (
+                      <div className="admin-tier-row" key={tier.external_tier_id}>
+                        <span>{String(tier.plan_key || '-').toUpperCase()}</span>
+                        <span>{tier.external_tier_id}</span>
+                        <span>{tier.tier_title || '-'}</span>
+                        <span className={Number(tier.active || 0) === 1 ? 'status-text status-normal' : 'status-text status-temporary'}>
+                          {Number(tier.active || 0) === 1 ? 'Enabled' : 'Disabled'}
+                        </span>
+                        <span>
+                          {Number(tier.active || 0) === 1 ? (
+                            <button
+                              className="btn ghost"
+                              type="button"
+                              onClick={() => onAdminPatreonTierDisable(tier.external_tier_id)}
+                              disabled={adminPatreonSubmitting}
+                            >
+                              Disable
+                            </button>
+                          ) : (
+                            <span className="muted">-</span>
+                          )}
+                        </span>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
             </article>
           ) : null}
 
