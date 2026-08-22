@@ -6116,15 +6116,19 @@ async function handleInternalMapDeployFile(context, jobIdRaw) {
 // ---------------------------------------------------------------------------
 
 const PRESENCE_BUCKET_SECONDS = 5 * 60;
-// Below these a signal is too weak to be worth a manager's attention, so it is
-// still visible when looking an account up but does not open a case by itself.
-// Links to a banned account are held to a lower bar than links between two
-// accounts in good standing, because the latter are mostly families and cafes.
-const ABUSE_EVASION_MIN_SCORE = 40;
-const ABUSE_MULTI_MIN_SCORE = 55;
-const ABUSE_SHARING_MIN_SCORE = 50;
+// Any link with a real signal gets a row in the review queue. The score only
+// decides which tier it sits in, not whether a manager can see it.
+const ABUSE_QUEUE_MIN_SCORE = 10;
+// Tiers describe how strong the evidence looks, not how harsh the punishment
+// should be:
+//   low     10-39  worth a glance — PC cafe, family, shared Wi‑Fi
+//   medium  40-64  real overlap — should review
+//   high    65+    strong same-person signal — review first
+const ABUSE_LEVEL_MEDIUM = 40;
+const ABUSE_LEVEL_HIGH = 65;
 const ABUSE_LINK_LIMIT = 40;
 const ABUSE_REVIEW_KINDS = ['all', 'evasion', 'multi_account', 'sharing'];
+const ABUSE_REVIEW_LEVELS = ['all', 'low', 'medium', 'high'];
 // How far back sharing evidence is read. An account that changed hands a year
 // ago is a different question from one being played by two people this week.
 const SHARING_WINDOW_MS = 14 * 24 * 60 * 60 * 1000;
@@ -6136,6 +6140,46 @@ const SHARING_LONG_DAY_SLOTS = 192;
 // A fresh account that starts right after another one goes quiet looks like the
 // same person switching, but only while the handover is tight.
 const ABUSE_TAKEOVER_WINDOW_MS = 72 * 60 * 60 * 1000;
+
+function abuseLevelFromScore(score) {
+  const value = Number(score || 0);
+  if(value >= ABUSE_LEVEL_HIGH) {
+    return 'high';
+  }
+  if(value >= ABUSE_LEVEL_MEDIUM) {
+    return 'medium';
+  }
+  if(value >= ABUSE_QUEUE_MIN_SCORE) {
+    return 'low';
+  }
+  return null;
+}
+
+function abuseLevelSqlFilter(level) {
+  if(level === 'high') {
+    return 'r.score >= ?';
+  }
+  if(level === 'medium') {
+    return 'r.score >= ? AND r.score < ?';
+  }
+  if(level === 'low') {
+    return 'r.score >= ? AND r.score < ?';
+  }
+  return '1 = 1';
+}
+
+function abuseLevelSqlBind(level) {
+  if(level === 'high') {
+    return [ABUSE_LEVEL_HIGH];
+  }
+  if(level === 'medium') {
+    return [ABUSE_LEVEL_MEDIUM, ABUSE_LEVEL_HIGH];
+  }
+  if(level === 'low') {
+    return [ABUSE_QUEUE_MIN_SCORE, ABUSE_LEVEL_MEDIUM];
+  }
+  return [];
+}
 
 let abuseTablesReady = false;
 // Per-isolate note of the slot already written for an account, so the once a
@@ -6802,8 +6846,7 @@ async function flagAbuseCases(env, userId, triggerKind) {
     const links = await loadAccountLinks(env, userId);
     for(const link of links) {
       const kind = link.banned ? 'evasion' : 'multi_account';
-      const minimum = link.banned ? ABUSE_EVASION_MIN_SCORE : ABUSE_MULTI_MIN_SCORE;
-      if(link.score < minimum) {
+      if(link.score < ABUSE_QUEUE_MIN_SCORE || link.reasons.length === 0) {
         continue;
       }
       await upsertAbuseReview(env, {
@@ -6821,7 +6864,7 @@ async function flagAbuseCases(env, userId, triggerKind) {
 
   try {
     const sharing = await loadAccountSharingSignals(env, userId);
-    if(sharing && sharing.score >= ABUSE_SHARING_MIN_SCORE) {
+    if(sharing && sharing.score >= ABUSE_QUEUE_MIN_SCORE && sharing.reasons.length > 0) {
       // Sharing is about one account, so there is no counterpart to point at.
       await upsertAbuseReview(env, {
         userId,
@@ -6849,6 +6892,10 @@ async function handleAdminAbuseReviews(context) {
   const status = String(url.searchParams.get('status') || 'open').trim() || 'open';
   const kind = String(url.searchParams.get('kind') || 'all').trim() || 'all';
   const kindFilter = ABUSE_REVIEW_KINDS.includes(kind) ? kind : 'all';
+  const levelRaw = String(url.searchParams.get('level') || 'all').trim() || 'all';
+  const levelFilter = ABUSE_REVIEW_LEVELS.includes(levelRaw) ? levelRaw : 'all';
+  const levelSql = abuseLevelSqlFilter(levelFilter);
+  const levelBind = abuseLevelSqlBind(levelFilter);
 
   const rows = await env.DB.prepare(`
     SELECT
@@ -6873,10 +6920,10 @@ async function handleAdminAbuseReviews(context) {
     FROM abuse_reviews r
     LEFT JOIN users su ON su.id = r.user_id
     LEFT JOIN users ru ON ru.id = r.related_user_id
-    WHERE r.status = ? AND (? = 'all' OR r.kind = ?)
+    WHERE r.status = ? AND (? = 'all' OR r.kind = ?) AND (${levelSql})
     ORDER BY r.score DESC, r.created_at DESC
     LIMIT 100
-  `).bind(status, kindFilter, kindFilter).all();
+  `).bind(status, kindFilter, kindFilter, ...levelBind).all();
 
   const nowMs = Date.now();
   const reviews = (rows?.results || []).map((row) => {
@@ -6898,6 +6945,7 @@ async function handleAdminAbuseReviews(context) {
       status: String(row.status || ''),
       triggerKind: String(row.trigger_kind || ''),
       score: Number(row.score || 0),
+      level: abuseLevelFromScore(Number(row.score || 0)),
       reasons,
       createdAt: String(row.created_at || ''),
       reviewedAt: String(row.reviewed_at || ''),
@@ -6940,8 +6988,14 @@ async function handleAdminAbuseLinks(context) {
   return json({
     ok: true,
     accountId,
-    links,
-    sharing,
+    links: links.map((link) => ({
+      ...link,
+      level: abuseLevelFromScore(link.score),
+    })),
+    sharing: sharing ? {
+      ...sharing,
+      level: abuseLevelFromScore(sharing.score),
+    } : null,
     activity: activity?.results || [],
   });
 }

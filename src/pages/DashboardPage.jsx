@@ -467,6 +467,7 @@ export default function DashboardPage() {
   const [abuseSharing, setAbuseSharing] = useState(null);
   const [abuseActivity, setAbuseActivity] = useState([]);
   const [abuseKindFilter, setAbuseKindFilter] = useState('all');
+  const [abuseLevelFilter, setAbuseLevelFilter] = useState('all');
   const [abuseLinksLoading, setAbuseLinksLoading] = useState(false);
   const [abuseSearchName, setAbuseSearchName] = useState('');
   const [abusePickerOpen, setAbusePickerOpen] = useState(false);
@@ -673,10 +674,10 @@ export default function DashboardPage() {
     }
   };
 
-  const refreshAbuseReviews = async (kind = abuseKindFilter) => {
+  const refreshAbuseReviews = async (kind = abuseKindFilter, level = abuseLevelFilter) => {
     setAbuseReviewsLoading(true);
     try {
-      const result = await adminGetAbuseReviews('open', kind);
+      const result = await adminGetAbuseReviews('open', kind, level);
       setAbuseReviews(Array.isArray(result?.reviews) ? result.reviews : []);
     } catch {
       setAbuseReviews([]);
@@ -1162,8 +1163,8 @@ export default function DashboardPage() {
     if(!isManager || activeSection !== 'admin-abuse') {
       return;
     }
-    refreshAbuseReviews(abuseKindFilter);
-  }, [isManager, activeSection, abuseKindFilter]);
+    refreshAbuseReviews(abuseKindFilter, abuseLevelFilter);
+  }, [isManager, activeSection, abuseKindFilter, abuseLevelFilter]);
 
   useEffect(() => {
     if(!isManager || activeSection !== 'admin-abuse' || !abusePickerOpen) {
@@ -2044,7 +2045,14 @@ ${t('dashboard.accessReasonLine', { reason: banReasonText || '-' })}`
     { value: 'multi_account', label: t('dashboard.adminAbuseKindMulti') },
     { value: 'sharing', label: t('dashboard.adminAbuseKindSharing') },
   ];
+  const abuseLevelOptions = [
+    { value: 'all', label: t('dashboard.adminAbuseLevelAll') },
+    { value: 'low', label: t('dashboard.adminAbuseLevel_low') },
+    { value: 'medium', label: t('dashboard.adminAbuseLevel_medium') },
+    { value: 'high', label: t('dashboard.adminAbuseLevel_high') },
+  ];
   const abuseKindLabel = (kind) => abuseKindOptions.find((option) => option.value === kind)?.label || kind;
+  const abuseLevelLabel = (level) => abuseLevelOptions.find((option) => option.value === level)?.label || level;
   // A sharing case is about one account, so it has no counterpart to ban.
   const abuseCaseTargets = abuseCase
     ? [
@@ -3017,6 +3025,18 @@ ${t('dashboard.accessReasonLine', { reason: banReasonText || '-' })}`
                     </button>
                   ))}
                 </div>
+                <div className="admin-abuse-filter">
+                  {abuseLevelOptions.map((option) => (
+                    <button
+                      key={option.value}
+                      type="button"
+                      className={`btn ghost${abuseLevelFilter === option.value ? ' active' : ''}`}
+                      onClick={() => setAbuseLevelFilter(option.value)}
+                    >
+                      {option.label}
+                    </button>
+                  ))}
+                </div>
                 {abuseReviewsLoading ? (
                   <p className="muted">{t('dashboard.adminAbuseLoading')}</p>
                 ) : abuseReviews.length === 0 ? (
@@ -3030,7 +3050,12 @@ ${t('dashboard.accessReasonLine', { reason: banReasonText || '-' })}`
                         className={`admin-abuse-case${abuseCase?.id === review.id ? ' active' : ''}`}
                         onClick={() => openAbuseCase(review)}
                       >
-                        <span className="admin-abuse-score">{review.score}</span>
+                        <span className={`admin-abuse-level level-${review.level || 'low'}`}>
+                          {abuseLevelLabel(review.level || 'low')}
+                        </span>
+                        <span className="admin-abuse-score" title={t('dashboard.adminAbuseScoreHint')}>
+                          {review.score}
+                        </span>
                         <span className={`admin-abuse-kind kind-${review.kind}`}>
                           {abuseKindLabel(review.kind)}
                         </span>
@@ -3112,6 +3137,9 @@ ${t('dashboard.accessReasonLine', { reason: banReasonText || '-' })}`
                     ) : (
                       <div className="admin-abuse-link">
                         <div className="admin-abuse-link-head">
+                          <span className={`admin-abuse-level level-${abuseSharing.level || 'low'}`}>
+                            {abuseLevelLabel(abuseSharing.level || 'low')}
+                          </span>
                           <span className="admin-abuse-score">{abuseSharing.score}</span>
                           <span className="admin-abuse-case-text">
                             {t('dashboard.adminAbuseSharingSummary', {
@@ -3142,7 +3170,10 @@ ${t('dashboard.accessReasonLine', { reason: banReasonText || '-' })}`
                         {abuseLinks.map((link) => (
                           <div key={link.accountId} className="admin-abuse-link">
                             <div className="admin-abuse-link-head">
-                              <span className="admin-abuse-score">{link.score}</span>
+                          <span className={`admin-abuse-level level-${link.level || 'low'}`}>
+                            {abuseLevelLabel(link.level || 'low')}
+                          </span>
+                          <span className="admin-abuse-score">{link.score}</span>
                               <span className="admin-abuse-case-text">
                                 {`${link.displayName} (#${link.accountId})`}
                               </span>
