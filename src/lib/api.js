@@ -190,6 +190,13 @@ export async function adminResolveAbuseReview(payload) {
   });
 }
 
+export async function adminCreateAbuseTestCase(payload) {
+  return api('/api/admin/abuse/test-case', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
 export async function startPatreonConnect() {
   window.location.assign('/api/billing/patreon/start');
 }

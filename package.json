@@ -6,9 +6,9 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build",
+    "build": "vite build && node scripts/copy-spa-fallback.mjs",
     "preview": "vite preview",
-    "pages:build": "npm run d1:migrate && vite build",
+    "pages:build": "npm run d1:migrate && npm run build",
     "deploy": "npm run d1:migrate && wrangler pages deploy dist",
     "deploy:only": "wrangler pages deploy dist",
     "d1:migrate": "wrangler d1 migrations apply ddnet_req_login --remote",

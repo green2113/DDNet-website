@@ -1356,12 +1356,14 @@ async function handleMe(context) {
     return result.error;
   }
 
-  // Password login is recorded as web_login. This catches return visits where
-  // the session cookie alone gets them in, which matters for shared-browser
-  // abuse signals.
-  recordWebSessionActivity(env, result.user.id, request, context);
+  const response = json({ ok: true, user: result.user });
+  const sideEffect = recordWebSessionActivity(env, result.user.id, request, context)
+    .catch((err) => console.log('web session record failed', String(err)));
+  if(typeof context.waitUntil === 'function') {
+    context.waitUntil(sideEffect);
+  }
 
-  return json({ ok: true, user: result.user });
+  return response;
 }
 
 async function handleMyAutoLoginSettingsGet(context) {
@@ -7024,6 +7026,96 @@ async function handleAdminAbuseResolve(context) {
   return json({ ok: true, reviewId, resolution: action, banned });
 }
 
+// Opens or refreshes a review case with chosen score and evidence. For staging
+// and UI checks only; production cases from real logins are unaffected unless
+// you pick the same account pair.
+async function handleAdminAbuseTestCase(context) {
+  const { request, env } = context;
+  const auth = await requireManager(context);
+  if(auth.error) {
+    return auth.error;
+  }
+  await ensureAbuseTables(env);
+
+  const body = await parseRequestBody(request);
+  const data = typeof body === 'string' ? {} : (body || {});
+  const accountId = Number(data.accountId || 0);
+  const relatedAccountId = Number(data.relatedAccountId || 0);
+  const kindRaw = String(data.kind || 'multi_account').trim();
+  const kind = ['evasion', 'multi_account', 'sharing'].includes(kindRaw) ? kindRaw : 'multi_account';
+  const score = Math.max(0, Math.min(100, Math.floor(Number(data.score || 75))));
+  const reasons = Array.isArray(data.reasons) && data.reasons.length > 0
+    ? data.reasons
+    : [{ kind: kind === 'sharing' ? 'sharing_handover' : 'device', count: 3 }];
+
+  if(!Number.isFinite(accountId) || accountId <= 0) {
+    return json({ ok: false, message: 'Invalid account id' }, 400);
+  }
+  if(kind !== 'sharing' && (!Number.isFinite(relatedAccountId) || relatedAccountId <= 0)) {
+    return json({ ok: false, message: 'relatedAccountId is required for this kind' }, 400);
+  }
+  if(kind === 'sharing' && relatedAccountId > 0 && relatedAccountId !== accountId) {
+    return json({ ok: false, message: 'sharing test cases must use relatedAccountId 0' }, 400);
+  }
+
+  const subject = await env.DB.prepare(`SELECT id FROM users WHERE id = ? LIMIT 1`).bind(accountId).first();
+  if(!subject) {
+    return json({ ok: false, message: 'Account not found' }, 404);
+  }
+  if(relatedAccountId > 0) {
+    const related = await env.DB.prepare(`SELECT id FROM users WHERE id = ? LIMIT 1`).bind(relatedAccountId).first();
+    if(!related) {
+      return json({ ok: false, message: 'Related account not found' }, 404);
+    }
+  }
+
+  const now = nowIso();
+  const relatedId = kind === 'sharing' ? 0 : relatedAccountId;
+  await env.DB.prepare(`
+    INSERT INTO abuse_reviews (
+      user_id, related_user_id, kind, status, trigger_kind, evidence, score, created_at, updated_at
+    )
+    VALUES (?, ?, ?, 'open', 'admin_test', ?, ?, ?, ?)
+    ON CONFLICT(user_id, related_user_id) DO UPDATE SET
+      kind = excluded.kind,
+      status = 'open',
+      trigger_kind = excluded.trigger_kind,
+      evidence = excluded.evidence,
+      score = excluded.score,
+      updated_at = excluded.updated_at,
+      resolution = '',
+      reviewed_by = NULL,
+      reviewed_at = NULL,
+      note = '',
+      reopened_at = '',
+      prior_resolution = ''
+  `).bind(
+    accountId,
+    relatedId,
+    kind,
+    JSON.stringify(reasons),
+    score,
+    now,
+    now,
+  ).run();
+
+  const row = await env.DB.prepare(`
+    SELECT id FROM abuse_reviews
+    WHERE user_id = ? AND related_user_id = ?
+    LIMIT 1
+  `).bind(accountId, relatedId).first();
+
+  return json({
+    ok: true,
+    reviewId: Number(row?.id || 0),
+    accountId,
+    relatedAccountId: relatedId,
+    kind,
+    score,
+    reasons,
+  });
+}
+
 async function handleAdminBan(context) {
   const { request, env } = context;
   const auth = await requireManager(context);
@@ -7438,6 +7530,10 @@ export async function onRequest(context) {
 
   if(request.method === 'POST' && path === '/admin/abuse/resolve') {
     return handleAdminAbuseResolve(context);
+  }
+
+  if(request.method === 'POST' && path === '/admin/abuse/test-case') {
+    return handleAdminAbuseTestCase(context);
   }
 
   if(request.method === 'GET' && path === '/admin/patreon/tiers') {

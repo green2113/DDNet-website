@@ -2,6 +2,7 @@ import { Navigate, Route, Routes } from 'react-router-dom';
 import { BackgroundOrbs } from './components/Layout';
 import { RequireAuth } from './components/RequireAuth';
 import { RequireGuest } from './components/RequireGuest';
+import { SpaFallback } from './components/SpaFallback';
 import HomePage from './pages/HomePage';
 import LoginPage from './pages/LoginPage';
 import RegisterPage from './pages/RegisterPage';
@@ -34,10 +35,26 @@ export default function App() {
         />
         <Route path="/blocked" element={<BlockedPage />} />
         <Route
+          path="/dashboard"
+          element={
+            <RequireAuth>
+              <DashboardPage />
+            </RequireAuth>
+          }
+        />
+        <Route
           path="/dashboard/*"
           element={
             <RequireAuth>
               <DashboardPage />
+            </RequireAuth>
+          }
+        />
+        <Route
+          path="/billing/plans"
+          element={
+            <RequireAuth>
+              <PlanStorePage />
             </RequireAuth>
           }
         />
@@ -50,6 +67,14 @@ export default function App() {
           }
         />
         <Route
+          path="/billing/subscribe"
+          element={
+            <RequireAuth>
+              <PlanSubscribePage />
+            </RequireAuth>
+          }
+        />
+        <Route
           path="/billing/subscribe/*"
           element={
             <RequireAuth>
@@ -57,7 +82,7 @@ export default function App() {
             </RequireAuth>
           }
         />
-        <Route path="*" element={<Navigate to="/" replace />} />
+        <Route path="*" element={<SpaFallback />} />
       </Routes>
     </>
   );
