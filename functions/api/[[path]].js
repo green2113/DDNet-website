@@ -1350,10 +1350,16 @@ async function handleLogout(context) {
 }
 
 async function handleMe(context) {
+  const { request, env } = context;
   const result = await currentUser(context);
   if(result.error) {
     return result.error;
   }
+
+  // Password login is recorded as web_login. This catches return visits where
+  // the session cookie alone gets them in, which matters for shared-browser
+  // abuse signals.
+  recordWebSessionActivity(env, result.user.id, request, context);
 
   return json({ ok: true, user: result.user });
 }
@@ -6133,6 +6139,7 @@ let abuseTablesReady = false;
 // Per-isolate note of the slot already written for an account, so the once a
 // second status poll does not become a database write every second.
 const presenceWritten = new Map();
+const webSessionWritten = new Map();
 
 async function ensureAbuseTables(env) {
   if(abuseTablesReady) {
@@ -6317,6 +6324,43 @@ async function recordAccountActivity(env, userId, details) {
     now,
     now,
   ).run();
+}
+
+// A valid session cookie getting someone into the site without typing a password
+// again. Same five minute dedupe as presence so a dashboard refresh loop does
+// not inflate hits.
+async function recordWebSessionActivity(env, userId, request, context) {
+  const id = Number(userId || 0);
+  const ip = getClientIp(request);
+  if(!Number.isFinite(id) || id <= 0 || !ip) {
+    return;
+  }
+
+  const deviceId = getDeviceId(request) || '';
+  const bucket = presenceBucketFor(Date.now());
+  const cacheKey = `${id}|${deviceId}|${ipPrefix(ip)}|${bucket}`;
+  if(webSessionWritten.get(cacheKey) === bucket) {
+    return;
+  }
+  webSessionWritten.set(cacheKey, bucket);
+  if(webSessionWritten.size > 2048) {
+    webSessionWritten.clear();
+  }
+
+  const recordEvidence = (async () => {
+    await recordAccountActivity(env, id, {
+      source: 'web_session',
+      ip,
+      deviceId,
+      userAgent: request.headers.get('user-agent') || '',
+    });
+    await flagAbuseCases(env, id, 'web_session');
+  })().catch((err) => console.log('activity record failed', String(err)));
+  if(typeof context.waitUntil === 'function') {
+    context.waitUntil(recordEvidence);
+  } else {
+    await recordEvidence;
+  }
 }
 
 // Pulls every account that shares a piece of evidence with this one and scores

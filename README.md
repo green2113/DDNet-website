@@ -24,9 +24,6 @@ npm install
 npm run d1:migrate
 ```
 
-If you already deployed before this update, run migrations again so `game_login_code_plain` is added.
-Without this migration, the service still works, but legacy hashed rows can only show current code after one reissue.
-
 5. Set production variables in Pages project:
 
 - `SESSION_SECRET`
@@ -41,6 +38,31 @@ Without this migration, the service still works, but legacy hashed rows can only
 
 ```bash
 npm run deploy
+```
+
+## 1.5) Schema changes
+
+Pushing to `main` makes Cloudflare Pages build and deploy on its own, so migrations
+have to run inside that build or they never run at all. Set the Pages build command
+to `npm run pages:build`, which applies pending migrations before Vite builds. That
+order matters: the new schema has to be in place before the code that expects it
+goes live.
+
+The build needs `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` as build
+environment variables, otherwise `wrangler` cannot reach D1 and the build fails.
+Failing there is on purpose — a deploy that skipped its migration is worse than one
+that did not happen.
+
+Put new schema changes in `migrations/` only. Several `ensure*` functions in
+`functions/api/[[path]].js` also create tables and columns at runtime, kept for the
+schema that predates this setup. Adding a change to both is what breaks a deploy:
+the running worker adds the column first, and the migration then fails on
+`duplicate column name`.
+
+Check what is pending at any time:
+
+```bash
+npm run d1:status
 ```
 
 ## 2) Local dev

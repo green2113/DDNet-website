@@ -34,7 +34,7 @@ export default function App() {
         />
         <Route path="/blocked" element={<BlockedPage />} />
         <Route
-          path="/dashboard"
+          path="/dashboard/*"
           element={
             <RequireAuth>
               <DashboardPage />
@@ -42,7 +42,7 @@ export default function App() {
           }
         />
         <Route
-          path="/billing/plans"
+          path="/billing/plans/*"
           element={
             <RequireAuth>
               <PlanStorePage />
@@ -50,7 +50,7 @@ export default function App() {
           }
         />
         <Route
-          path="/billing/subscribe"
+          path="/billing/subscribe/*"
           element={
             <RequireAuth>
               <PlanSubscribePage />

@@ -2,7 +2,7 @@ import { useEffect } from 'react';
 import { Navigate } from 'react-router-dom';
 import { useAuth } from './AuthProvider';
 import { useI18n } from './I18nProvider';
-import { readReturnUrl } from '../lib/redirect';
+import { readInternalNextPath, readReturnUrl } from '../lib/redirect';
 
 export function RequireGuest({ children }) {
   const { user, loading } = useAuth();
@@ -24,6 +24,10 @@ export function RequireGuest({ children }) {
   }
 
   if(user) {
+    const nextPath = readInternalNextPath();
+    if(nextPath) {
+      return <Navigate to={nextPath} replace />;
+    }
     if(returnUrl) {
       return (
         <main className="shell">

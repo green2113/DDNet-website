@@ -1,3 +1,16 @@
+// ?next=/dashboard — same-site return after a session check fails on refresh.
+export function readInternalNextPath() {
+  if(typeof window === 'undefined') {
+    return null;
+  }
+  const params = new URLSearchParams(window.location.search);
+  const next = String(params.get('next') || '').trim();
+  if(!next.startsWith('/') || next.startsWith('//')) {
+    return null;
+  }
+  return next;
+}
+
 // 회원가입/로그인 후 되돌아갈 외부 사이트(playravion.com 계열)를 안전하게 판별합니다.
 const ALLOWED_RETURN_BASE_HOSTS = ['playravion.com'];
 

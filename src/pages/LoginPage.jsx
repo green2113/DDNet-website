@@ -4,13 +4,14 @@ import { checkPasswordResetCode, getGeo, login, requestPasswordResetCode, resetP
 import { useAuth } from '../components/AuthProvider';
 import { useI18n } from '../components/I18nProvider';
 import { LanguageSelector } from '../components/Layout';
-import { readReturnUrl, withReturnParam } from '../lib/redirect';
+import { readInternalNextPath, readReturnUrl, withReturnParam } from '../lib/redirect';
 
 export default function LoginPage() {
   const navigate = useNavigate();
   const { refresh } = useAuth();
   const { t, language } = useI18n();
   const returnUrl = readReturnUrl();
+  const nextPath = readInternalNextPath();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [submitting, setSubmitting] = useState(false);
@@ -77,7 +78,9 @@ export default function LoginPage() {
       await login({ email: email.trim(), password });
       await refresh();
       setTimeout(() => {
-        if(returnUrl) {
+        if(nextPath) {
+          navigate(nextPath, { replace: true });
+        } else if(returnUrl) {
           window.location.replace(returnUrl);
         } else {
           navigate('/dashboard');

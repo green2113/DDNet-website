@@ -5,4 +5,9 @@
 /reset-password /index.html 200
 /verify-email /index.html 200
 /invite/accept /index.html 200
-/ /index.html 200
+/billing/plans /index.html 200
+/billing/plans/* /index.html 200
+/billing/subscribe /index.html 200
+/billing/subscribe/* /index.html 200
+/blocked /index.html 200
+/* /index.html 200
