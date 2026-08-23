@@ -4362,6 +4362,7 @@ async function handleGameVerify(context) {
         ip: clientIp,
         clientName,
       });
+      await startOnlineSession(env, user.id, { ip: clientIp, clientName });
       await recordAccountPresence(env, user.id, { ip: clientIp });
       await flagAbuseCases(env, user.id, 'game_verify');
     })().catch((err) => console.log('activity record failed', String(err)));
@@ -4446,6 +4447,7 @@ async function handleGameAutoLogin(context) {
       ip: clientIp,
       clientName,
     });
+    await startOnlineSession(env, user.id, { ip: clientIp, clientName });
     await recordAccountPresence(env, user.id, { ip: clientIp });
     await flagAbuseCases(env, user.id, 'game_auto_login');
   })().catch((err) => console.log('activity record failed', String(err)));
@@ -4548,12 +4550,12 @@ async function handleGameAccountStatus(context) {
   }
   const trailState = await loadGameTrailState(env, accountId);
 
-  // This runs once a second per logged in player and is the only signal that
-  // says who was online at the same time, which is what separates "two people
-  // in one house" from "one person on two accounts", and one account being
-  // played by two people from one person moving between machines.
-  const heartbeat = recordAccountPresence(env, accountId, { ip: gameClientIpFromRequest(request) })
-    .catch((err) => console.log('presence record failed', String(err)));
+  const clientIp = gameClientIpFromRequest(request);
+  const clientName = gameClientNameFromRequest(request);
+  const heartbeat = (async () => {
+    await touchOnlineSession(env, accountId, { ip: clientIp, clientName });
+    await recordAccountPresence(env, accountId, { ip: clientIp });
+  })().catch((err) => console.log('presence record failed', String(err)));
   if(typeof context.waitUntil === 'function') {
     context.waitUntil(heartbeat);
   }
@@ -4584,6 +4586,45 @@ async function handleGameAccountStatus(context) {
     plusExtraEndlessJump: trailState.plusExtraEndlessJump,
     plusExtraJetpack: trailState.plusExtraJetpack,
   });
+}
+
+async function handleGameSessionEnd(context) {
+  const { request, env } = context;
+  const key = request.headers.get('X-Game-Server-Key') || '';
+  if(!env.GAME_SERVER_API_KEY || !timingSafeEqual(key, env.GAME_SERVER_API_KEY)) {
+    return json({ ok: false, message: 'Unauthorized game server key' }, 401);
+  }
+
+  const accountId = Number(request.headers.get('X-Game-Account-Id') || 0);
+  if(!Number.isFinite(accountId) || accountId <= 0) {
+    return json({ ok: false, message: 'Invalid account id' }, 400);
+  }
+
+  const reason = normalizeSessionEndReason(request.headers.get('X-Game-Session-End-Reason') || 'disconnect');
+  await endOnlineSession(env, accountId, reason);
+  return json({ ok: true, accountId, reason });
+}
+
+async function handleGameSessionsEnd(context) {
+  const { request, env } = context;
+  const key = request.headers.get('X-Game-Server-Key') || '';
+  if(!env.GAME_SERVER_API_KEY || !timingSafeEqual(key, env.GAME_SERVER_API_KEY)) {
+    return json({ ok: false, message: 'Unauthorized game server key' }, 401);
+  }
+
+  const body = await parseRequestBody(request);
+  const data = typeof body === 'string' ? {} : (body || {});
+  const rawIds = Array.isArray(data.accountIds) ? data.accountIds : [];
+  const accountIds = rawIds
+    .map((value) => Number(value || 0))
+    .filter((value) => Number.isFinite(value) && value > 0);
+  const reason = normalizeSessionEndReason(data.reason || 'server_shutdown');
+  if(accountIds.length === 0) {
+    return json({ ok: true, ended: 0, reason });
+  }
+
+  await endOnlineSessionsBulk(env, accountIds, reason);
+  return json({ ok: true, ended: accountIds.length, reason });
 }
 
 function parseBoundedInt(raw, fallback, min, max) {
@@ -6186,6 +6227,13 @@ let abuseTablesReady = false;
 // second status poll does not become a database write every second.
 const presenceWritten = new Map();
 const webSessionWritten = new Map();
+const sessionTouchWritten = new Map();
+// If heartbeats stop without a clean disconnect (crash, kill -9), close the
+// open session after this long using last_seen_at as the end time.
+const ONLINE_SESSION_STALE_MS = 15 * 60 * 1000;
+// Writing last_seen_at every second would hammer D1; thirty seconds is enough
+// for overlap math while keeping intervals honest.
+const ONLINE_SESSION_TOUCH_MS = 30 * 1000;
 
 async function ensureAbuseTables(env) {
   if(abuseTablesReady) {
@@ -6281,6 +6329,27 @@ async function ensureAbuseTables(env) {
   await env.DB.prepare(`
     CREATE INDEX IF NOT EXISTS idx_abuse_reviews_kind_status
     ON abuse_reviews(kind, status, created_at)
+  `).run();
+  await env.DB.prepare(`
+    CREATE TABLE IF NOT EXISTS account_online_sessions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      started_at TEXT NOT NULL,
+      last_seen_at TEXT NOT NULL,
+      ended_at TEXT,
+      end_reason TEXT NOT NULL DEFAULT '',
+      ip_prefix TEXT NOT NULL DEFAULT '',
+      client_name TEXT NOT NULL DEFAULT '',
+      FOREIGN KEY (user_id) REFERENCES users(id)
+    )
+  `).run();
+  await env.DB.prepare(`
+    CREATE INDEX IF NOT EXISTS idx_account_online_sessions_user_started
+    ON account_online_sessions(user_id, started_at)
+  `).run();
+  await env.DB.prepare(`
+    CREATE INDEX IF NOT EXISTS idx_account_online_sessions_user_open
+    ON account_online_sessions(user_id, ended_at)
   `).run();
   abuseTablesReady = true;
 }
@@ -6409,6 +6478,140 @@ async function recordWebSessionActivity(env, userId, request, context) {
   }
 }
 
+function normalizeSessionEndReason(raw) {
+  const value = String(raw || '').trim().toLowerCase();
+  const allowed = new Set([
+    'disconnect',
+    'handoff',
+    'server_shutdown',
+    'reconnect',
+    'timeout',
+    'logout',
+  ]);
+  return allowed.has(value) ? value : 'disconnect';
+}
+
+async function closeStaleOnlineSessions(env, userId = null) {
+  await ensureAbuseTables(env);
+  const cutoff = new Date(Date.now() - ONLINE_SESSION_STALE_MS).toISOString();
+  const id = Number(userId || 0);
+  if(Number.isFinite(id) && id > 0) {
+    await env.DB.prepare(`
+      UPDATE account_online_sessions
+      SET ended_at = last_seen_at,
+          end_reason = 'timeout'
+      WHERE user_id = ? AND ended_at IS NULL AND last_seen_at < ?
+    `).bind(id, cutoff).run();
+    return;
+  }
+  await env.DB.prepare(`
+    UPDATE account_online_sessions
+    SET ended_at = last_seen_at,
+        end_reason = 'timeout'
+    WHERE ended_at IS NULL AND last_seen_at < ?
+  `).bind(cutoff).run();
+}
+
+async function endOpenOnlineSessions(env, userId, reason, endedAt = nowIso()) {
+  const id = Number(userId || 0);
+  if(!Number.isFinite(id) || id <= 0) {
+    return;
+  }
+  await ensureAbuseTables(env);
+  await env.DB.prepare(`
+    UPDATE account_online_sessions
+    SET ended_at = ?,
+        end_reason = ?,
+        last_seen_at = CASE WHEN last_seen_at > ? THEN last_seen_at ELSE ? END
+    WHERE user_id = ? AND ended_at IS NULL
+  `).bind(endedAt, normalizeSessionEndReason(reason), endedAt, endedAt, id).run();
+}
+
+async function startOnlineSession(env, userId, details = {}) {
+  const id = Number(userId || 0);
+  if(!Number.isFinite(id) || id <= 0) {
+    return;
+  }
+  await ensureAbuseTables(env);
+  await closeStaleOnlineSessions(env, id);
+  const now = nowIso();
+  await endOpenOnlineSessions(env, id, 'reconnect', now);
+  const ip = String(details?.ip || '').trim();
+  await env.DB.prepare(`
+    INSERT INTO account_online_sessions (
+      user_id, started_at, last_seen_at, ended_at, end_reason, ip_prefix, client_name
+    )
+    VALUES (?, ?, ?, NULL, '', ?, ?)
+  `).bind(
+    id,
+    now,
+    now,
+    ip ? ipPrefix(ip) : '',
+    String(details?.clientName || '').trim(),
+  ).run();
+  sessionTouchWritten.set(String(id), Date.now());
+}
+
+async function touchOnlineSession(env, userId, details = {}) {
+  const id = Number(userId || 0);
+  if(!Number.isFinite(id) || id <= 0) {
+    return;
+  }
+  await ensureAbuseTables(env);
+  await closeStaleOnlineSessions(env, id);
+
+  const nowMs = Date.now();
+  const cacheKey = String(id);
+  const lastTouch = sessionTouchWritten.get(cacheKey) || 0;
+  const now = nowIso();
+  const ip = String(details?.ip || '').trim();
+  const clientName = String(details?.clientName || '').trim();
+  const prefix = ip ? ipPrefix(ip) : '';
+
+  const open = await env.DB.prepare(`
+    SELECT id
+    FROM account_online_sessions
+    WHERE user_id = ? AND ended_at IS NULL
+    ORDER BY id DESC
+    LIMIT 1
+  `).bind(id).first();
+
+  if(!open?.id) {
+    await startOnlineSession(env, id, details);
+    return;
+  }
+
+  if(nowMs - lastTouch < ONLINE_SESSION_TOUCH_MS) {
+    return;
+  }
+  sessionTouchWritten.set(cacheKey, nowMs);
+
+  await env.DB.prepare(`
+    UPDATE account_online_sessions
+    SET last_seen_at = ?,
+        ip_prefix = CASE WHEN ? != '' THEN ? ELSE ip_prefix END,
+        client_name = CASE WHEN ? != '' THEN ? ELSE client_name END
+    WHERE id = ?
+  `).bind(now, prefix, prefix, clientName, clientName, open.id).run();
+}
+
+async function endOnlineSession(env, userId, reason, endedAt = nowIso()) {
+  await endOpenOnlineSessions(env, userId, reason, endedAt);
+  sessionTouchWritten.delete(String(userId || ''));
+}
+
+async function endOnlineSessionsBulk(env, accountIds, reason, endedAt = nowIso()) {
+  const normalizedReason = normalizeSessionEndReason(reason);
+  for(const rawId of accountIds || []) {
+    const id = Number(rawId || 0);
+    if(!Number.isFinite(id) || id <= 0) {
+      continue;
+    }
+    await endOpenOnlineSessions(env, id, normalizedReason, endedAt);
+    sessionTouchWritten.delete(String(id));
+  }
+}
+
 // Pulls every account that shares a piece of evidence with this one and scores
 // how much the evidence actually argues for "same person". The score is an aid
 // for reading the list, never a verdict.
@@ -6418,6 +6621,7 @@ async function loadAccountLinks(env, userId) {
     return [];
   }
   await ensureAbuseTables(env);
+  await closeStaleOnlineSessions(env);
 
   const own = await env.DB.prepare(`
     SELECT ip, ip_prefix, device_id, client_name_lower, first_seen_at, last_seen_at
@@ -6498,21 +6702,25 @@ async function loadAccountLinks(env, userId) {
   const otherIds = [...links.keys()].slice(0, ABUSE_LINK_LIMIT);
   const idPlaceholders = otherIds.map(() => '?').join(',');
 
-  const overlap = await env.DB.prepare(`
+  const overlap = otherIds.length === 0 ? { results: [] } : await env.DB.prepare(`
     SELECT b.user_id AS other_id, COUNT(*) AS shared
-    FROM account_presence a
-    JOIN account_presence b ON b.bucket = a.bucket
-    WHERE a.user_id = ? AND b.user_id IN (${idPlaceholders})
+    FROM account_online_sessions a
+    JOIN account_online_sessions b
+      ON b.user_id IN (${idPlaceholders})
+      AND b.user_id != a.user_id
+      AND a.started_at < COALESCE(b.ended_at, b.last_seen_at)
+      AND b.started_at < COALESCE(a.ended_at, a.last_seen_at)
+    WHERE a.user_id = ?
     GROUP BY b.user_id
-  `).bind(id, ...otherIds).all();
+  `).bind(...otherIds, id).all();
   const sharedByAccount = new Map();
   for(const row of overlap?.results || []) {
     sharedByAccount.set(Number(row.other_id), Number(row.shared || 0));
   }
 
-  const totals = await env.DB.prepare(`
+  const totals = otherIds.length === 0 ? { results: [] } : await env.DB.prepare(`
     SELECT user_id, COUNT(*) AS total
-    FROM account_presence
+    FROM account_online_sessions
     WHERE user_id IN (${idPlaceholders}, ?)
     GROUP BY user_id
   `).bind(...otherIds, id).all();
@@ -6520,7 +6728,7 @@ async function loadAccountLinks(env, userId) {
   for(const row of totals?.results || []) {
     totalByAccount.set(Number(row.user_id), Number(row.total || 0));
   }
-  const ownPresence = totalByAccount.get(id) || 0;
+  const ownSessions = totalByAccount.get(id) || 0;
 
   const profiles = await env.DB.prepare(`
     SELECT id, username, COALESCE(display_name, username) AS display_name,
@@ -6543,7 +6751,7 @@ async function loadAccountLinks(env, userId) {
     }
 
     const shared = sharedByAccount.get(otherId) || 0;
-    const otherPresence = totalByAccount.get(otherId) || 0;
+    const otherSessions = totalByAccount.get(otherId) || 0;
     const otherLastMs = Date.parse(link.lastSeenAt) || 0;
     const otherFirstMs = Date.parse(link.firstSeenAt) || 0;
     // Whoever went quiet first is the account that could have been abandoned.
@@ -6573,7 +6781,7 @@ async function loadAccountLinks(env, userId) {
       // sharing a house or a cafe, so this pulls the score down hard.
       score -= 30;
       reasons.push({ kind: 'online_together', count: shared });
-    } else if(ownPresence > 0 && otherPresence > 0) {
+    } else if(ownSessions > 0 && otherSessions > 0) {
       score += 15;
       reasons.push({ kind: 'never_together', count: 0 });
     }
@@ -7496,6 +7704,14 @@ export async function onRequest(context) {
 
   if(request.method === 'POST' && path === '/game/account-status') {
     return handleGameAccountStatus(context);
+  }
+
+  if(request.method === 'POST' && path === '/game/session-end') {
+    return handleGameSessionEnd(context);
+  }
+
+  if(request.method === 'POST' && path === '/game/sessions-end') {
+    return handleGameSessionsEnd(context);
   }
 
   if(request.method === 'POST' && path === '/game/casino-balance') {
